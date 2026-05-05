@@ -13,9 +13,6 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# ══════════════════════════════
-# Supabase функции
-# ══════════════════════════════
 def get_user(user_id):
     try:
         r = sb.table("users").select("*").eq("user_id", user_id).execute()
@@ -23,11 +20,16 @@ def get_user(user_id):
     except:
         return None
 
-def register_user(user_id, username, referrer_id=None):
+def register_user(user_id, username, first_name=None, last_name=None, referrer_id=None):
     try:
         existing = get_user(user_id)
         if not existing:
-            data = {"user_id": user_id, "username": username or ""}
+            data = {
+                "user_id": user_id,
+                "username": username or "",
+                "first_name": first_name or "",
+                "last_name": last_name or ""
+            }
             if referrer_id:
                 data["referrer_id"] = referrer_id
             sb.table("users").insert(data).execute()
@@ -41,74 +43,12 @@ def get_subscription(user_id):
     except:
         return None
 
-def create_subscription(user_id, devices, months, sub_url):
-    try:
-        expires = datetime.now() + timedelta(days=months*30)
-        sb.table("subscriptions").insert({
-            "user_id": user_id,
-            "devices": devices,
-            "status": "active",
-            "sub_url": sub_url,
-            "started_at": datetime.now().isoformat(),
-            "expires_at": expires.isoformat()
-        }).execute()
-        return expires
-    except Exception as e:
-        logging.error(f"Subscription error: {e}")
-        return None
-
 def deactivate_subscription(sub_id):
     try:
         sb.table("subscriptions").update({"status": "inactive"}).eq("id", sub_id).execute()
     except Exception as e:
         logging.error(f"Deactivate error: {e}")
 
-# ══════════════════════════════
-# 3X-UI API
-# ══════════════════════════════
-async def get_panel_session():
-    connector = aiohttp.TCPConnector(ssl=False)
-    session = aiohttp.ClientSession(connector=connector)
-    await session.post(f"{PANEL_URL}/login", json={
-        "username": PANEL_USER,
-        "password": PANEL_PASS
-    })
-    return session
-
-async def create_xui_client(user_id, devices, days):
-    client_uuid = str(uuid.uuid4())
-    email = f"user_{user_id}"
-    expire_ms = int((datetime.now() + timedelta(days=days)).timestamp() * 1000)
-    session = await get_panel_session()
-    try:
-        resp = await session.post(f"{PANEL_URL}/api/inbounds/addClient", json={
-            "id": INBOUND_ID,
-            "settings": f'{{"clients":[{{"id":"{client_uuid}","email":"{email}","limitIp":{devices},"totalGB":0,"expiryTime":{expire_ms},"enable":true,"flow":"xtls-rprx-vision"}}]}}'
-        })
-        data = await resp.json()
-        await session.close()
-        if data.get("success"):
-            return client_uuid
-    except Exception as e:
-        logging.error(f"XUI error: {e}")
-    await session.close()
-    return None
-
-async def toggle_xui_client(client_uuid, user_id, enable):
-    email = f"user_{user_id}"
-    session = await get_panel_session()
-    try:
-        await session.post(f"{PANEL_URL}/api/inbounds/updateClient/{client_uuid}", json={
-            "id": INBOUND_ID,
-            "settings": f'{{"clients":[{{"id":"{client_uuid}","email":"{email}","enable":{str(enable).lower()},"flow":"xtls-rprx-vision"}}]}}'
-        })
-    except Exception as e:
-        logging.error(f"Toggle error: {e}")
-    await session.close()
-
-# ══════════════════════════════
-# Проверка истёкших подписок
-# ══════════════════════════════
 async def check_expired():
     while True:
         try:
@@ -135,9 +75,27 @@ async def check_expired():
             logging.error(f"Check expired error: {e}")
         await asyncio.sleep(3600)
 
-# ══════════════════════════════
-# Меню
-# ══════════════════════════════
+async def get_panel_session():
+    connector = aiohttp.TCPConnector(ssl=False)
+    session = aiohttp.ClientSession(connector=connector)
+    await session.post(f"{PANEL_URL}/login", json={
+        "username": PANEL_USER,
+        "password": PANEL_PASS
+    })
+    return session
+
+async def toggle_xui_client(client_uuid, user_id, enable):
+    email = f"user_{user_id}"
+    session = await get_panel_session()
+    try:
+        await session.post(f"{PANEL_URL}/api/inbounds/updateClient/{client_uuid}", json={
+            "id": INBOUND_ID,
+            "settings": f'{{"clients":[{{"id":"{client_uuid}","email":"{email}","enable":{str(enable).lower()},"flow":"xtls-rprx-vision"}}]}}'
+        })
+    except Exception as e:
+        logging.error(f"Toggle error: {e}")
+    await session.close()
+
 PRICES = {
     1: {"1": 149, "3": 399, "12": 1399},
     2: {"1": 249, "3": 649, "12": 2299},
@@ -159,7 +117,13 @@ def main_menu():
 async def start(message: types.Message):
     args = message.text.split()
     referrer_id = int(args[1]) if len(args) > 1 and args[1].isdigit() else None
-    register_user(message.from_user.id, message.from_user.username, referrer_id)
+    register_user(
+        message.from_user.id,
+        message.from_user.username,
+        message.from_user.first_name,
+        message.from_user.last_name,
+        referrer_id
+    )
     if referrer_id:
         try:
             sb.table("referrals").insert({
@@ -183,7 +147,6 @@ async def menu(message: types.Message):
 
 @dp.callback_query(lambda c: c.data == "connect")
 async def connect(callback: types.CallbackQuery):
-    user = get_user(callback.from_user.id)
     sub = get_subscription(callback.from_user.id)
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🚀 Подключить VPN", callback_data="howto")],
