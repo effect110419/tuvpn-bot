@@ -1,92 +1,143 @@
 import asyncio
 import logging
-import sqlite3
 import uuid
 import aiohttp
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-
-BOT_TOKEN = "8752254235:AAGB0u5p4BHlCYU1IMTWpte_Un2HaefF_vE"
-PANEL_URL = "https://89.125.53.210:17627/I4z8tB7MLF8wPjpKDW"
-PANEL_USER = "clmHydSJD6"
-PANEL_PASS = "otfCjziZyn"
-INBOUND_ID = 2
+from supabase import create_client
+from config import *
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
+sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-def init_db():
-    conn = sqlite3.connect('/root/tuvpn.db')
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS users (
-        user_id INTEGER PRIMARY KEY,
-        username TEXT,
-        sub_url TEXT,
-        devices INTEGER DEFAULT 1,
-        status TEXT DEFAULT 'inactive',
-        expires TEXT,
-        client_uuid TEXT
-    )''')
-    conn.commit()
-    conn.close()
-
+# ══════════════════════════════
+# Supabase функции
+# ══════════════════════════════
 def get_user(user_id):
-    conn = sqlite3.connect('/root/tuvpn.db')
-    c = conn.cursor()
-    c.execute('SELECT * FROM users WHERE user_id=?', (user_id,))
-    user = c.fetchone()
-    conn.close()
-    return user
+    try:
+        r = sb.table("users").select("*").eq("user_id", user_id).execute()
+        return r.data[0] if r.data else None
+    except:
+        return None
 
-def register_user(user_id, username):
-    conn = sqlite3.connect('/root/tuvpn.db')
-    c = conn.cursor()
-    c.execute('INSERT OR IGNORE INTO users (user_id, username) VALUES (?,?)',
-              (user_id, username or ""))
-    conn.commit()
-    conn.close()
+def register_user(user_id, username, referrer_id=None):
+    try:
+        existing = get_user(user_id)
+        if not existing:
+            data = {"user_id": user_id, "username": username or ""}
+            if referrer_id:
+                data["referrer_id"] = referrer_id
+            sb.table("users").insert(data).execute()
+    except Exception as e:
+        logging.error(f"Register error: {e}")
 
-def deactivate_user(user_id):
-    conn = sqlite3.connect('/root/tuvpn.db')
-    c = conn.cursor()
-    c.execute('UPDATE users SET status="inactive" WHERE user_id=?', (user_id,))
-    conn.commit()
-    conn.close()
+def get_subscription(user_id):
+    try:
+        r = sb.table("subscriptions").select("*").eq("user_id", user_id).eq("status", "active").execute()
+        return r.data[0] if r.data else None
+    except:
+        return None
 
+def create_subscription(user_id, devices, months, sub_url):
+    try:
+        expires = datetime.now() + timedelta(days=months*30)
+        sb.table("subscriptions").insert({
+            "user_id": user_id,
+            "devices": devices,
+            "status": "active",
+            "sub_url": sub_url,
+            "started_at": datetime.now().isoformat(),
+            "expires_at": expires.isoformat()
+        }).execute()
+        return expires
+    except Exception as e:
+        logging.error(f"Subscription error: {e}")
+        return None
+
+def deactivate_subscription(sub_id):
+    try:
+        sb.table("subscriptions").update({"status": "inactive"}).eq("id", sub_id).execute()
+    except Exception as e:
+        logging.error(f"Deactivate error: {e}")
+
+# ══════════════════════════════
+# 3X-UI API
+# ══════════════════════════════
+async def get_panel_session():
+    connector = aiohttp.TCPConnector(ssl=False)
+    session = aiohttp.ClientSession(connector=connector)
+    await session.post(f"{PANEL_URL}/login", json={
+        "username": PANEL_USER,
+        "password": PANEL_PASS
+    })
+    return session
+
+async def create_xui_client(user_id, devices, days):
+    client_uuid = str(uuid.uuid4())
+    email = f"user_{user_id}"
+    expire_ms = int((datetime.now() + timedelta(days=days)).timestamp() * 1000)
+    session = await get_panel_session()
+    try:
+        resp = await session.post(f"{PANEL_URL}/api/inbounds/addClient", json={
+            "id": INBOUND_ID,
+            "settings": f'{{"clients":[{{"id":"{client_uuid}","email":"{email}","limitIp":{devices},"totalGB":0,"expiryTime":{expire_ms},"enable":true,"flow":"xtls-rprx-vision"}}]}}'
+        })
+        data = await resp.json()
+        await session.close()
+        if data.get("success"):
+            return client_uuid
+    except Exception as e:
+        logging.error(f"XUI error: {e}")
+    await session.close()
+    return None
+
+async def toggle_xui_client(client_uuid, user_id, enable):
+    email = f"user_{user_id}"
+    session = await get_panel_session()
+    try:
+        await session.post(f"{PANEL_URL}/api/inbounds/updateClient/{client_uuid}", json={
+            "id": INBOUND_ID,
+            "settings": f'{{"clients":[{{"id":"{client_uuid}","email":"{email}","enable":{str(enable).lower()},"flow":"xtls-rprx-vision"}}]}}'
+        })
+    except Exception as e:
+        logging.error(f"Toggle error: {e}")
+    await session.close()
+
+# ══════════════════════════════
+# Проверка истёкших подписок
+# ══════════════════════════════
 async def check_expired():
     while True:
         try:
-            conn = sqlite3.connect('/root/tuvpn.db')
-            c = conn.cursor()
-            c.execute("SELECT user_id, client_uuid FROM users WHERE status='active'")
-            users = c.fetchall()
-            conn.close()
+            r = sb.table("subscriptions").select("*, users(client_uuid)").eq("status", "active").execute()
             now = datetime.now()
-            for user_id, client_uuid in users:
-                user = get_user(user_id)
-                if user and user[5]:
+            for sub in r.data:
+                expires = datetime.fromisoformat(sub["expires_at"])
+                if now > expires:
+                    deactivate_subscription(sub["id"])
+                    client_uuid = sub.get("users", {}).get("client_uuid")
+                    if client_uuid:
+                        await toggle_xui_client(client_uuid, sub["user_id"], False)
                     try:
-                        expires = datetime.strptime(user[5], "%d.%m.%Y")
-                        if now > expires:
-                            deactivate_user(user_id)
-                            try:
-                                await bot.send_message(user_id,
-                                    "⚠️ Ваша подписка TuVPN истекла.\n\n"
-                                    "Продлите подписку чтобы восстановить доступ!",
-                                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                                        [InlineKeyboardButton(text="🛒 Продлить", callback_data="buy")]
-                                    ])
-                                )
-                            except:
-                                pass
+                        await bot.send_message(
+                            sub["user_id"],
+                            "⚠️ Ваша подписка TuVPN истекла.\n\nПродлите подписку чтобы восстановить доступ!",
+                            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                                [InlineKeyboardButton(text="🛒 Продлить", callback_data="buy")]
+                            ])
+                        )
                     except:
                         pass
         except Exception as e:
             logging.error(f"Check expired error: {e}")
         await asyncio.sleep(3600)
 
+# ══════════════════════════════
+# Меню
+# ══════════════════════════════
 PRICES = {
     1: {"1": 149, "3": 399, "12": 1399},
     2: {"1": 249, "3": 649, "12": 2299},
@@ -106,7 +157,17 @@ def main_menu():
 
 @dp.message(Command("start"))
 async def start(message: types.Message):
-    register_user(message.from_user.id, message.from_user.username)
+    args = message.text.split()
+    referrer_id = int(args[1]) if len(args) > 1 and args[1].isdigit() else None
+    register_user(message.from_user.id, message.from_user.username, referrer_id)
+    if referrer_id:
+        try:
+            sb.table("referrals").insert({
+                "referrer_id": referrer_id,
+                "referred_id": message.from_user.id
+            }).execute()
+        except:
+            pass
     await message.answer(
         "Привет! 🖐\n\n"
         "🌊 TuVPN — просто включи и пользуйся.\n\n"
@@ -123,25 +184,22 @@ async def menu(message: types.Message):
 @dp.callback_query(lambda c: c.data == "connect")
 async def connect(callback: types.CallbackQuery):
     user = get_user(callback.from_user.id)
+    sub = get_subscription(callback.from_user.id)
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🚀 Подключить VPN", callback_data="howto")],
         [InlineKeyboardButton(text="🛒 Продлить / Купить подписку", callback_data="buy")],
         [InlineKeyboardButton(text="📱 Мои устройства", callback_data="my_devices")],
         [InlineKeyboardButton(text="🏠 На старт", callback_data="back")],
     ])
-    # user = (user_id, username, sub_url, devices, status, expires, client_uuid)
-    #           0        1        2        3         4       5        6
-    if user and user[4] == 'active':
-        expires = user[5] or "—"
-        devices = user[3] or 1
-        sub_url = user[2] or "—"
+    if sub:
+        expires = datetime.fromisoformat(sub["expires_at"]).strftime("%d.%m.%Y")
         text = (
-            f"Ваша подписка активна до: {expires}\n\n"
+            f"Подписка активна до: {expires}\n\n"
             f"👤 ID: {callback.from_user.id}\n"
             f"📊 Статус: активна\n"
-            f"📱 Устройств: {devices}\n\n"
+            f"📱 Устройств: {sub['devices']}\n\n"
             f"Ваша ссылка подписки:\n"
-            f"`{sub_url}`\n\n"
+            f"`{sub['sub_url']}`\n\n"
             f"🛠 Поддержка: @MaxArtVPN_bot\n\n"
             f"Нажмите Подключить VPN и следуйте инструкции"
         )
@@ -158,12 +216,12 @@ async def connect(callback: types.CallbackQuery):
 
 @dp.callback_query(lambda c: c.data == "my_devices")
 async def my_devices(callback: types.CallbackQuery):
-    user = get_user(callback.from_user.id)
+    sub = get_subscription(callback.from_user.id)
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Добавить устройства", callback_data="buy")],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="connect")],
     ])
-    devices = user[3] if user else 1
+    devices = sub["devices"] if sub else 0
     await callback.message.answer(
         f"📱 Ваши устройства\n\nПодключено устройств: {devices}\n\nХотите добавить больше?",
         reply_markup=kb
@@ -297,7 +355,6 @@ async def back(callback: types.CallbackQuery):
 
 async def main():
     logging.basicConfig(level=logging.INFO)
-    init_db()
     asyncio.create_task(check_expired())
     await dp.start_polling(bot)
 
