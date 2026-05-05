@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import uuid
+import json
 import aiohttp
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types
@@ -21,21 +22,20 @@ def get_user(user_id):
         r = sb.table("users").select("*").eq("user_id", user_id).execute()
         return r.data[0] if r.data else None
     except Exception as e:
-        logging.error(f"get_user error: {e}")
+        logging.error(f"get_user: {e}")
         return None
 
 def register_user(user_id, username, first_name=None, last_name=None, referrer_id=None):
     try:
-        existing = get_user(user_id)
-        if not existing:
+        if not get_user(user_id):
             data = {"user_id": user_id, "username": username or "", "first_name": first_name or "", "last_name": last_name or ""}
             if referrer_id:
                 data["referrer_id"] = referrer_id
             sb.table("users").insert(data).execute()
-            return True  # новый пользователь
+            return True
         return False
     except Exception as e:
-        logging.error(f"register_user error: {e}")
+        logging.error(f"register_user: {e}")
         return False
 
 def get_subscription(user_id):
@@ -43,160 +43,142 @@ def get_subscription(user_id):
         r = sb.table("subscriptions").select("*").eq("user_id", user_id).eq("status", "active").execute()
         return r.data[0] if r.data else None
     except Exception as e:
-        logging.error(f"get_subscription error: {e}")
+        logging.error(f"get_subscription: {e}")
         return None
 
-def create_subscription(user_id, devices, days, client_uuid, sub_url):
+def create_db_subscription(user_id, devices, days, client_uuid, sub_url):
     try:
-        expires = datetime.now() + timedelta(days=days)
+        expires = (datetime.now() + timedelta(days=days)).isoformat()
         sb.table("subscriptions").insert({
-            "user_id": user_id,
-            "devices": devices,
-            "status": "active",
-            "sub_url": sub_url,
-            "started_at": datetime.now().isoformat(),
-            "expires_at": expires.isoformat()
+            "user_id": user_id, "devices": devices, "status": "active",
+            "sub_url": sub_url, "started_at": datetime.now().isoformat(), "expires_at": expires
         }).execute()
         sb.table("users").update({"client_uuid": client_uuid}).eq("user_id", user_id).execute()
         return expires
     except Exception as e:
-        logging.error(f"create_subscription error: {e}")
-        return None
-
-def extend_subscription(sub_id, user_id, days):
-    try:
-        sub = get_subscription(user_id)
-        if sub:
-            current_expires = datetime.fromisoformat(sub["expires_at"])
-            new_expires = max(current_expires, datetime.now()) + timedelta(days=days)
-            sb.table("subscriptions").update({
-                "expires_at": new_expires.isoformat(),
-                "status": "active"
-            }).eq("id", sub_id).execute()
-            return new_expires
-        return None
-    except Exception as e:
-        logging.error(f"extend_subscription error: {e}")
+        logging.error(f"create_db_subscription: {e}")
         return None
 
 def deactivate_subscription(sub_id):
     try:
         sb.table("subscriptions").update({"status": "inactive"}).eq("id", sub_id).execute()
     except Exception as e:
-        logging.error(f"deactivate error: {e}")
+        logging.error(f"deactivate_subscription: {e}")
+
+def extend_db_subscription(sub_id, user_id, days):
+    try:
+        sub = get_subscription(user_id)
+        if sub:
+            current = datetime.fromisoformat(sub["expires_at"])
+            new_expires = max(current, datetime.now()) + timedelta(days=days)
+            sb.table("subscriptions").update({
+                "expires_at": new_expires.isoformat(), "status": "active"
+            }).eq("id", sub_id).execute()
+            return new_expires
+        return None
+    except Exception as e:
+        logging.error(f"extend_db_subscription: {e}")
+        return None
 
 # ══════════════════════════════
 # 3X-UI API
 # ══════════════════════════════
-PANEL_BASE = f"{PANEL_URL}"
-XUI_PATH = "/xui/API/inbounds"
-
-async def get_xui_session():
+async def xui_session():
+    jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
-    session = aiohttp.ClientSession(connector=connector)
-    await session.post(f"{PANEL_BASE}/login", json={
-        "username": PANEL_USER, "password": PANEL_PASS
-    })
+    session = aiohttp.ClientSession(connector=connector, cookie_jar=jar)
+    await session.post(f"{PANEL_URL}/login", json={"username": PANEL_USER, "password": PANEL_PASS})
     return session
 
-async def create_xui_client(user_id, devices, days):
-    """Создаёт уникального клиента в 3X-UI и возвращает (uuid, sub_url)"""
+async def xui_add_client(user_id, devices, days):
     client_uuid = str(uuid.uuid4())
     email = f"user_{user_id}"
     expire_ms = int((datetime.now() + timedelta(days=days)).timestamp() * 1000)
-
-    session = await get_xui_session()
+    session = await xui_session()
     try:
         payload = {
             "id": INBOUND_ID,
-            "settings": f'{{"clients":[{{"id":"{client_uuid}","email":"{email}","limitIp":{devices},"totalGB":0,"expiryTime":{expire_ms},"enable":true,"flow":"xtls-rprx-vision","comment":""}}]}}'
+            "settings": json.dumps({"clients": [{
+                "id": client_uuid, "email": email, "limitIp": devices,
+                "totalGB": 0, "expiryTime": expire_ms, "enable": True, "flow": "xtls-rprx-vision"
+            }]})
         }
-        resp = await session.post(f"{PANEL_BASE}{XUI_PATH}/addClient", json=payload)
+        resp = await session.post(f"{PANEL_URL}/panel/api/inbounds/addClient", json=payload)
         data = await resp.json()
         await session.close()
-
         if data.get("success"):
-            # Формируем уникальную ссылку подписки для этого пользователя
-            sub_url = f"https://{SERVER_IP}:8443/sub.txt?uuid={client_uuid}"
+            sub_url = f"https://{SERVER_IP}:8443/sub/{client_uuid}"
             return client_uuid, sub_url
-        else:
-            logging.error(f"XUI addClient failed: {data}")
+        logging.error(f"xui_add_client error: {data}")
     except Exception as e:
-        logging.error(f"create_xui_client error: {e}")
+        logging.error(f"xui_add_client exception: {e}")
         await session.close()
     return None, None
 
-async def toggle_xui_client(client_uuid, user_id, enable, devices=1):
-    """Включает или выключает клиента"""
+async def xui_toggle_client(client_uuid, user_id, enable, devices=1):
     email = f"user_{user_id}"
-    session = await get_xui_session()
+    session = await xui_session()
     try:
         payload = {
             "id": INBOUND_ID,
-            "settings": f'{{"clients":[{{"id":"{client_uuid}","email":"{email}","limitIp":{devices},"enable":{str(enable).lower()},"flow":"xtls-rprx-vision"}}]}}'
+            "settings": json.dumps({"clients": [{
+                "id": client_uuid, "email": email, "limitIp": devices,
+                "enable": enable, "flow": "xtls-rprx-vision"
+            }]})
         }
-        await session.post(f"{PANEL_BASE}{XUI_PATH}/updateClient/{client_uuid}", json=payload)
+        await session.post(f"{PANEL_URL}/panel/api/inbounds/updateClient/{client_uuid}", json=payload)
     except Exception as e:
-        logging.error(f"toggle_xui_client error: {e}")
+        logging.error(f"xui_toggle_client: {e}")
     await session.close()
 
-async def extend_xui_client(client_uuid, user_id, devices, days):
-    """Продлевает дату окончания клиента"""
+async def xui_extend_client(client_uuid, user_id, devices, days):
     email = f"user_{user_id}"
     expire_ms = int((datetime.now() + timedelta(days=days)).timestamp() * 1000)
-    session = await get_xui_session()
+    session = await xui_session()
     try:
         payload = {
             "id": INBOUND_ID,
-            "settings": f'{{"clients":[{{"id":"{client_uuid}","email":"{email}","limitIp":{devices},"expiryTime":{expire_ms},"enable":true,"flow":"xtls-rprx-vision"}}]}}'
+            "settings": json.dumps({"clients": [{
+                "id": client_uuid, "email": email, "limitIp": devices,
+                "expiryTime": expire_ms, "enable": True, "flow": "xtls-rprx-vision"
+            }]})
         }
-        await session.post(f"{PANEL_BASE}{XUI_PATH}/updateClient/{client_uuid}", json=payload)
+        await session.post(f"{PANEL_URL}/panel/api/inbounds/updateClient/{client_uuid}", json=payload)
     except Exception as e:
-        logging.error(f"extend_xui_client error: {e}")
+        logging.error(f"xui_extend_client: {e}")
     await session.close()
 
 # ══════════════════════════════
 # РЕФЕРАЛЬНАЯ СИСТЕМА
 # ══════════════════════════════
-async def process_referral_bonus(referrer_id, bonus_days, reason):
-    """Начисляет бонусные дни рефереру"""
+async def give_referral_bonus(user_id, days, reason):
     try:
-        sub = get_subscription(referrer_id)
+        sub = get_subscription(user_id)
+        user = get_user(user_id)
+        client_uuid = user.get("client_uuid") if user else None
         if sub:
-            user = get_user(referrer_id)
-            client_uuid = user.get("client_uuid") if user else None
-            devices = sub.get("devices", 1)
-            new_expires = extend_subscription(sub["id"], referrer_id, bonus_days)
+            new_expires = extend_db_subscription(sub["id"], user_id, days)
             if client_uuid and new_expires:
-                remaining = (new_expires - datetime.now()).days
-                await extend_xui_client(client_uuid, referrer_id, devices, remaining)
-            await bot.send_message(
-                referrer_id,
-                f"🎁 Вам начислено {bonus_days} дней за реферала!\n\n"
-                f"Причина: {reason}\n"
-                f"Подписка продлена до: {new_expires.strftime('%d.%m.%Y') if new_expires else '—'}"
-            )
-        else:
-            # Нет активной подписки — создаём запись о будущем бонусе
-            # (применится при следующей покупке)
-            logging.info(f"Referrer {referrer_id} has no active sub, bonus {bonus_days}d pending")
+                remaining = max(1, (new_expires - datetime.now()).days)
+                await xui_extend_client(client_uuid, user_id, sub["devices"], remaining)
+        await bot.send_message(user_id,
+            f"🎁 Вам начислено {days} дней бонуса!\nПричина: {reason}"
+        )
     except Exception as e:
-        logging.error(f"process_referral_bonus error: {e}")
+        logging.error(f"give_referral_bonus: {e}")
 
-async def give_new_user_bonus(user_id, bonus_days=7):
-    """Даёт новому пользователю пришедшему по рефералке бесплатные дни"""
+async def give_new_user_bonus(user_id, days=7):
     try:
-        client_uuid, sub_url = await create_xui_client(user_id, 1, bonus_days)
+        client_uuid, sub_url = await xui_add_client(user_id, 1, days)
         if client_uuid:
-            create_subscription(user_id, 1, bonus_days, client_uuid, sub_url)
-            await bot.send_message(
-                user_id,
-                f"🎁 Вам начислено {bonus_days} дней бесплатного доступа TuVPN!\n\n"
+            create_db_subscription(user_id, 1, days, client_uuid, sub_url)
+            await bot.send_message(user_id,
+                f"🎁 Вам начислено {days} дней бесплатного доступа!\n\n"
                 f"Ваша ссылка подписки:\n`{sub_url}`\n\n"
-                f"📋 Нажмите /start и следуйте инструкции для подключения!"
+                f"Нажмите /start для подключения!"
             )
     except Exception as e:
-        logging.error(f"give_new_user_bonus error: {e}")
+        logging.error(f"give_new_user_bonus: {e}")
 
 # ══════════════════════════════
 # ПРОВЕРКА ИСТЁКШИХ ПОДПИСОК
@@ -204,30 +186,27 @@ async def give_new_user_bonus(user_id, bonus_days=7):
 async def check_expired():
     while True:
         try:
-            r = sb.table("subscriptions").select("*, users(client_uuid, devices)").eq("status", "active").execute()
+            r = sb.table("subscriptions").select("*").eq("status", "active").execute()
             now = datetime.now()
             for sub in r.data:
                 expires = datetime.fromisoformat(sub["expires_at"])
                 if now > expires:
                     deactivate_subscription(sub["id"])
-                    user_data = sub.get("users", {})
-                    client_uuid = user_data.get("client_uuid") if user_data else None
-                    devices = user_data.get("devices", 1) if user_data else 1
+                    user = get_user(sub["user_id"])
+                    client_uuid = user.get("client_uuid") if user else None
                     if client_uuid:
-                        await toggle_xui_client(client_uuid, sub["user_id"], False, devices)
+                        await xui_toggle_client(client_uuid, sub["user_id"], False, sub.get("devices", 1))
                     try:
-                        await bot.send_message(
-                            sub["user_id"],
-                            "⚠️ Ваша подписка TuVPN истекла.\n\n"
-                            "Продлите подписку чтобы восстановить доступ!",
+                        await bot.send_message(sub["user_id"],
+                            "⚠️ Ваша подписка TuVPN истекла.\n\nПродлите подписку чтобы восстановить доступ!",
                             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                                [InlineKeyboardButton(text="🛒 Продлить подписку", callback_data="buy")]
+                                [InlineKeyboardButton(text="🛒 Продлить", callback_data="buy")]
                             ])
                         )
                     except:
                         pass
         except Exception as e:
-            logging.error(f"check_expired error: {e}")
+            logging.error(f"check_expired: {e}")
         await asyncio.sleep(3600)
 
 # ══════════════════════════════
@@ -240,9 +219,6 @@ PRICES = {
 }
 DAYS = {"1": 30, "3": 90, "12": 365}
 
-# ══════════════════════════════
-# МЕНЮ
-# ══════════════════════════════
 def main_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⚡️ Подключиться", callback_data="connect")],
@@ -254,37 +230,19 @@ def main_menu():
          InlineKeyboardButton(text="🛠 Помощь", callback_data="support")],
     ])
 
-# ══════════════════════════════
-# HANDLERS
-# ══════════════════════════════
 @dp.message(Command("start"))
 async def start(message: types.Message):
     args = message.text.split()
     referrer_id = int(args[1]) if len(args) > 1 and args[1].isdigit() else None
-
-    is_new = register_user(
-        message.from_user.id,
-        message.from_user.username,
-        message.from_user.first_name,
-        message.from_user.last_name,
-        referrer_id
-    )
-
-    # Реферальная логика
+    is_new = register_user(message.from_user.id, message.from_user.username,
+                           message.from_user.first_name, message.from_user.last_name, referrer_id)
     if is_new and referrer_id and referrer_id != message.from_user.id:
         try:
-            # Записываем реферала
-            sb.table("referrals").insert({
-                "referrer_id": referrer_id,
-                "referred_id": message.from_user.id
-            }).execute()
-            # Новый пользователь получает 7 дней бесплатно
+            sb.table("referrals").insert({"referrer_id": referrer_id, "referred_id": message.from_user.id}).execute()
             await give_new_user_bonus(message.from_user.id, 7)
-            # Реферер получает 3 дня за переход
-            await process_referral_bonus(referrer_id, 3, "Друг перешёл по вашей ссылке")
+            await give_referral_bonus(referrer_id, 3, "Друг перешёл по вашей ссылке")
         except Exception as e:
-            logging.error(f"Referral processing error: {e}")
-
+            logging.error(f"referral processing: {e}")
     await message.answer(
         "Привет! 🖐\n\n"
         "🌊 TuVPN — просто включи и пользуйся.\n\n"
@@ -314,8 +272,7 @@ async def connect(callback: types.CallbackQuery):
             f"👤 ID: {callback.from_user.id}\n"
             f"📊 Статус: активна\n"
             f"📱 Устройств: {sub['devices']}\n\n"
-            f"Ваша ссылка подписки:\n"
-            f"`{sub['sub_url']}`\n\n"
+            f"Ваша ссылка подписки:\n`{sub['sub_url']}`\n\n"
             f"🛠 Поддержка: @TuVPN_support\n\n"
             f"Нажмите Подключить VPN и следуйте инструкции"
         )
@@ -337,9 +294,8 @@ async def my_devices(callback: types.CallbackQuery):
         [InlineKeyboardButton(text="➕ Добавить устройства", callback_data="buy")],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="connect")],
     ])
-    devices = sub["devices"] if sub else 0
     await callback.message.answer(
-        f"📱 Ваши устройства\n\nПодключено устройств: {devices}\n\nХотите добавить больше?",
+        f"📱 Ваши устройства\n\nПодключено устройств: {sub['devices'] if sub else 0}\n\nХотите больше?",
         reply_markup=kb
     )
     await callback.answer()
@@ -360,9 +316,9 @@ async def choose_period(callback: types.CallbackQuery):
     devices = int(callback.data.split("_")[1])
     p = PRICES[devices]
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"🗓 1 месяц  /  {devices} уст.  —  {p['1']} ₽", callback_data=f"period_{devices}_1")],
-        [InlineKeyboardButton(text=f"📆 3 месяца  /  {devices} уст.  —  {p['3']} ₽", callback_data=f"period_{devices}_3")],
-        [InlineKeyboardButton(text=f"🏆 1 год  /  {devices} уст.  —  {p['12']} ₽", callback_data=f"period_{devices}_12")],
+        [InlineKeyboardButton(text=f"🗓 1 месяц / {devices} уст. — {p['1']} ₽", callback_data=f"period_{devices}_1")],
+        [InlineKeyboardButton(text=f"📆 3 месяца / {devices} уст. — {p['3']} ₽", callback_data=f"period_{devices}_3")],
+        [InlineKeyboardButton(text=f"🏆 1 год / {devices} уст. — {p['12']} ₽", callback_data=f"period_{devices}_12")],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="buy")],
     ])
     await callback.message.answer(
@@ -379,7 +335,6 @@ async def choose_payment(callback: types.CallbackQuery):
     price = PRICES[devices][months]
     days = DAYS[months]
     months_label = {"1": "1 месяц", "3": "3 месяца", "12": "1 год"}[months]
-
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💳 Банковская карта РФ", callback_data=f"pay_card_{devices}_{months}")],
         [InlineKeyboardButton(text="◀️ Назад", callback_data=f"devices_{devices}")],
@@ -394,13 +349,8 @@ async def choose_payment(callback: types.CallbackQuery):
 
 @dp.callback_query(lambda c: c.data.startswith("pay_card_"))
 async def pay_card(callback: types.CallbackQuery):
-    parts = callback.data.split("_")
-    devices = int(parts[2])
-    months = parts[3]
-    price = PRICES[devices][months]
-    months_label = {"1": "1 месяц", "3": "3 месяца", "12": "1 год"}[months]
     await callback.answer(
-        f"⏳ Оплата картой скоро будет доступна!\n\nПока напишите в поддержку: @TuVPN_support",
+        "⏳ Оплата картой скоро будет доступна!\nПока напишите: @TuVPN_support",
         show_alert=True
     )
 
@@ -410,9 +360,7 @@ async def channel(callback: types.CallbackQuery):
 
 @dp.callback_query(lambda c: c.data == "about")
 async def about(callback: types.CallbackQuery):
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="back")]
-    ])
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="back")]])
     await callback.message.answer(
         "🌊 TuVPN — твой надёжный щит в сети\n\n"
         "Стабильный • Быстрый • Безопасный\n\n"
@@ -458,9 +406,7 @@ async def referral(callback: types.CallbackQuery):
 
 @dp.callback_query(lambda c: c.data == "howto")
 async def howto(callback: types.CallbackQuery):
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="back")]
-    ])
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="back")]])
     await callback.message.answer(
         "📋 Как подключиться к TuVPN\n\n"
         "🍏 iPhone:\n"
@@ -475,8 +421,7 @@ async def howto(callback: types.CallbackQuery):
         "3. Скопируй ссылку подписки\n"
         "4. В v2rayTun: + → Импорт по ссылке\n"
         "5. Вставь ссылку → готово!\n\n"
-        "🆘 Не выходит? Пиши — поможем!\n"
-        "@TuVPN_support",
+        "🆘 Не выходит? Пиши — поможем!\n@TuVPN_support",
         reply_markup=kb
     )
     await callback.answer()
@@ -490,7 +435,7 @@ async def support(callback: types.CallbackQuery):
     await callback.message.answer(
         "🛠 Помощь TuVPN\n\n"
         "На связи и готовы решить любой вопрос!\n\n"
-        "✉️ Напиши нам — ответим быстро\n"
+        "✉️ Пиши — отвечаем быстро\n"
         "⏱ Среднее время ответа: до 1 часа\n\n"
         "👉 @TuVPN_support",
         reply_markup=kb
