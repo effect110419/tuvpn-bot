@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TuVPN — Admin Panel</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root{--bg:#0a0e1a;--bg2:#0f1526;--bg3:#161d35;--border:#1e2a4a;--accent:#3b82f6;--accent2:#06b6d4;--accent3:#8b5cf6;--green:#10b981;--red:#ef4444;--yellow:#f59e0b;--text:#e2e8f0;--text2:#94a3b8;--text3:#475569;--glow:0 0 40px rgba(59,130,246,0.08)}
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:'Syne',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;display:flex}
+  .sidebar{width:240px;min-height:100vh;background:var(--bg2);border-right:1px solid var(--border);display:flex;flex-direction:column;position:fixed;left:0;top:0;bottom:0;z-index:100}
+  .logo{padding:28px 24px 20px;border-bottom:1px solid var(--border)}
+  .logo h1{font-size:22px;font-weight:800;background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+  .logo span{font-family:'Space Mono',monospace;font-size:10px;color:var(--text3);letter-spacing:2px;text-transform:uppercase}
+  .nav{padding:16px 12px;flex:1}
+  .nav-section{font-family:'Space Mono',monospace;font-size:9px;color:var(--text3);letter-spacing:3px;text-transform:uppercase;padding:16px 12px 8px}
+  .nav-item{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:8px;cursor:pointer;color:var(--text2);font-size:14px;font-weight:600;transition:all .2s;margin-bottom:2px}
+  .nav-item:hover{background:var(--bg3);color:var(--text)}
+  .nav-item.active{background:rgba(59,130,246,.15);color:var(--accent)}
+  .sidebar-footer{padding:16px 24px;border-top:1px solid var(--border)}
+  .admin-badge{display:flex;align-items:center;gap:10px}
+  .admin-avatar{width:32px;height:32px;background:linear-gradient(135deg,var(--accent),var(--accent3));border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:800}
+  .admin-name{font-size:13px;font-weight:700}
+  .admin-role{font-size:11px;color:var(--text3);font-family:'Space Mono',monospace}
+  .main{margin-left:240px;flex:1;min-height:100vh}
+  .topbar{background:var(--bg2);border-bottom:1px solid var(--border);padding:16px 32px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:50}
+  .page-title{font-size:20px;font-weight:800}
+  .topbar-right{display:flex;align-items:center;gap:12px}
+  .btn{padding:8px 16px;border-radius:8px;border:none;cursor:pointer;font-family:'Syne',sans-serif;font-weight:700;font-size:13px;transition:all .2s;text-decoration:none;display:inline-block;text-align:center}
+  .btn-primary{background:var(--accent);color:white}
+  .btn-primary:hover{background:#2563eb;transform:translateY(-1px)}
+  .btn-ghost{background:transparent;color:var(--text2);border:1px solid var(--border)}
+  .btn-ghost:hover{background:var(--bg3);color:var(--text)}
+  .btn-danger{background:var(--red);color:white}
+  .btn-success{background:var(--green);color:white}
+  .btn-sm{padding:5px 10px;font-size:12px}
+  .content{padding:32px}
+  .page{display:none}
+  .page.active{display:block}
+  .stats-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:24px}
+  .stat-card{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:20px;position:relative;overflow:hidden;box-shadow:var(--glow);transition:transform .2s}
+  .stat-card:hover{transform:translateY(-2px)}
+  .stat-card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px}
+  .stat-card.blue::before{background:linear-gradient(90deg,var(--accent),var(--accent2))}
+  .stat-card.green::before{background:linear-gradient(90deg,var(--green),#34d399)}
+  .stat-card.purple::before{background:linear-gradient(90deg,var(--accent3),#a78bfa)}
+  .stat-card.yellow::before{background:linear-gradient(90deg,var(--yellow),#fbbf24)}
+  .stat-label{font-family:'Space Mono',monospace;font-size:10px;color:var(--text3);letter-spacing:2px;text-transform:uppercase;margin-bottom:8px}
+  .stat-value{font-size:32px;font-weight:800;line-height:1;margin-bottom:6px}
+  .stat-value.blue{color:var(--accent)}.stat-value.green{color:var(--green)}.stat-value.purple{color:var(--accent3)}.stat-value.yellow{color:var(--yellow)}
+  .stat-sub{font-size:12px;color:var(--text3)}
+  .stat-icon{position:absolute;right:16px;top:16px;font-size:28px;opacity:.15}
+  .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:24px}
+  .grid-3{display:grid;grid-template-columns:2fr 1fr;gap:16px;margin-bottom:24px}
+  .card{background:var(--bg2);border:1px solid var(--border);border-radius:12px;overflow:hidden;box-shadow:var(--glow);margin-bottom:16px}
+  .card-header{padding:16px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
+  .card-title{font-size:15px;font-weight:700}
+  .card-body{padding:20px}
+  .table-wrap{overflow-x:auto}
+  table{width:100%;border-collapse:collapse}
+  th{font-family:'Space Mono',monospace;font-size:10px;color:var(--text3);letter-spacing:2px;text-transform:uppercase;padding:10px 16px;text-align:left;border-bottom:1px solid var(--border)}
+  td{padding:12px 16px;font-size:14px;border-bottom:1px solid rgba(30,42,74,.5)}
+  tr:last-child td{border-bottom:none}
+  tr:hover td{background:rgba(255,255,255,.02)}
+  .user-cell{display:flex;align-items:center;gap:10px}
+  .user-ava{width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:13px;flex-shrink:0}
+  .user-name{font-weight:700;font-size:14px}
+  .user-id{font-family:'Space Mono',monospace;font-size:11px;color:var(--text3)}
+  .badge{display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border-radius:20px;font-size:11px;font-weight:700;font-family:'Space Mono',monospace}
+  .badge::before{content:'●';font-size:8px}
+  .badge-green{background:rgba(16,185,129,.15);color:var(--green)}
+  .badge-red{background:rgba(239,68,68,.15);color:var(--red)}
+  .badge-blue{background:rgba(59,130,246,.15);color:var(--accent)}
+  .badge-yellow{background:rgba(245,158,11,.15);color:var(--yellow)}
+  .badge-purple{background:rgba(139,92,246,.15);color:var(--accent3)}
+  .toolbar{display:flex;align-items:center;gap:12px;margin-bottom:16px}
+  .search-input{background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:9px 14px;color:var(--text);font-family:'Syne',sans-serif;font-size:14px;width:280px;outline:none;transition:border-color .2s}
+  .search-input:focus{border-color:var(--accent)}
+  .search-input::placeholder{color:var(--text3)}
+  select.filter{background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:9px 14px;color:var(--text);font-family:'Syne',sans-serif;font-size:14px;outline:none;cursor:pointer}
+  .activity-item{display:flex;align-items:flex-start;gap:12px;padding:12px 0;border-bottom:1px solid rgba(30,42,74,.5)}
+  .activity-item:last-child{border-bottom:none}
+  .activity-dot{width:8px;height:8px;border-radius:50%;margin-top:5px;flex-shrink:0}
+  .activity-text{font-size:13px;line-height:1.5}
+  .activity-time{font-family:'Space Mono',monospace;font-size:11px;color:var(--text3)}
+  .promo-card{background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-bottom:10px;display:flex;align-items:center;justify-content:space-between}
+  .promo-code{font-family:'Space Mono',monospace;font-size:15px;font-weight:700;color:var(--accent2);letter-spacing:2px}
+  .promo-info{font-size:12px;color:var(--text3);margin-top:3px}
+  .modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:1000;align-items:center;justify-content:center}
+  .modal-overlay.open{display:flex}
+  .modal{background:var(--bg2);border:1px solid var(--border);border-radius:16px;width:480px;max-width:90vw;box-shadow:0 25px 80px rgba(0,0,0,.5);animation:mIn .2s ease}
+  @keyframes mIn{from{opacity:0;transform:scale(.95) translateY(10px)}to{opacity:1;transform:scale(1) translateY(0)}}
+  .modal-header{padding:20px 24px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
+  .modal-title{font-size:17px;font-weight:800}
+  .modal-close{background:none;border:none;color:var(--text3);cursor:pointer;font-size:20px;line-height:1}
+  .modal-body{padding:20px 24px}
+  .modal-footer{padding:16px 24px;border-top:1px solid var(--border);display:flex;gap:10px;justify-content:flex-end}
+  .form-group{margin-bottom:16px}
+  .form-label{display:block;font-size:12px;font-weight:700;color:var(--text2);margin-bottom:6px;font-family:'Space Mono',monospace;letter-spacing:1px;text-transform:uppercase}
+  .form-input{width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:10px 14px;color:var(--text);font-family:'Syne',sans-serif;font-size:14px;outline:none;transition:border-color .2s}
+  .form-input:focus{border-color:var(--accent)}
+  .form-row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .form-select{width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:10px 14px;color:var(--text);font-family:'Syne',sans-serif;font-size:14px;outline:none;cursor:pointer}
+  .action-btns{display:flex;gap:6px}
+  .divider{height:1px;background:var(--border);margin:20px 0}
+  .text-muted{color:var(--text3);font-size:13px}
+  .text-mono{font-family:'Space Mono',monospace}
+  .empty-state{text-align:center;padding:40px;color:var(--text3);font-size:14px}
+  .empty-state .icon{font-size:40px;margin-bottom:12px}
+  .loading{text-align:center;padding:40px;color:var(--text3)}
+  .notif{position:fixed;bottom:24px;right:24px;background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px;box-shadow:0 8px 32px rgba(0,0,0,.4);transform:translateX(120%);transition:transform .3s;z-index:9999;max-width:300px}
+  .notif.show{transform:translateX(0)}
+  .notif.success{border-color:var(--green)}
+  .notif.error{border-color:var(--red)}
+  .progress-row{display:flex;align-items:center;gap:12px;margin-bottom:12px}
+  .progress-label{font-size:13px;color:var(--text2);min-width:130px}
+  .progress-bar{flex:1;height:6px;background:var(--bg3);border-radius:3px;overflow:hidden}
+  .progress-fill{height:100%;border-radius:3px;background:linear-gradient(90deg,var(--accent),var(--accent2))}
+  .progress-val{font-family:'Space Mono',monospace;font-size:12px;color:var(--text3);min-width:30px;text-align:right}
+  @media(max-width:1200px){.stats-grid{grid-template-columns:repeat(2,1fr)}}
+</style>
+</head>
+<body>
+
+<aside class="sidebar">
+  <div class="logo"><h1>TuVPN</h1><div><span>Admin Panel v1.0</span></div></div>
+  <nav class="nav">
+    <div class="nav-section">Главная</div>
+    <div class="nav-item active" onclick="showPage('dashboard',this)"><span>📊</span> Дашборд</div>
+    <div class="nav-section">Пользователи</div>
+    <div class="nav-item" onclick="showPage('users',this)"><span>👥</span> Все пользователи</div>
+    <div class="nav-item" onclick="showPage('subscribers',this)"><span>✅</span> Подписчики</div>
+    <div class="nav-item" onclick="showPage('referrals',this)"><span>🤝</span> Рефералы</div>
+    <div class="nav-section">Финансы</div>
+    <div class="nav-item" onclick="showPage('payments',this)"><span>💳</span> Платежи</div>
+    <div class="nav-item" onclick="showPage('promos',this)"><span>🎁</span> Промокоды</div>
+    <div class="nav-section">Система</div>
+    <div class="nav-item" onclick="showPage('server',this)"><span>🖥</span> Сервер</div>
+    <div class="nav-item" onclick="showPage('activity',this)"><span>📋</span> Активность</div>
+    <div class="nav-item" onclick="showPage('settings',this)"><span>⚙️</span> Настройки</div>
+  </nav>
+  <div class="sidebar-footer">
+    <div class="admin-badge">
+      <div class="admin-avatar">MA</div>
+      <div><div class="admin-name">Maxim & Artem</div><div class="admin-role">superadmin</div></div>
+    </div>
+  </div>
+</aside>
+
+<main class="main">
+  <div class="topbar">
+    <div class="page-title" id="pageTitle">Дашборд</div>
+    <div class="topbar-right">
+      <span class="text-muted text-mono" id="currentTime"></span>
+      <button class="btn btn-ghost btn-sm" onclick="loadData()">🔄 Обновить</button>
+      <button class="btn btn-primary" onclick="openModal('addSubModal')">+ Выдать подписку</button>
+    </div>
+  </div>
+  <div class="content">
+
+    <!-- DASHBOARD -->
+    <div class="page active" id="page-dashboard">
+      <div class="stats-grid">
+        <div class="stat-card blue"><div class="stat-icon">👥</div><div class="stat-label">Всего в боте</div><div class="stat-value blue" id="st-total">—</div><div class="stat-sub">пользователей</div></div>
+        <div class="stat-card green"><div class="stat-icon">✅</div><div class="stat-label">Активных подписок</div><div class="stat-value green" id="st-active">—</div><div class="stat-sub" id="st-pct">конверсия —%</div></div>
+        <div class="stat-card purple"><div class="stat-icon">👁</div><div class="stat-label">Без подписки</div><div class="stat-value purple" id="st-nosub">—</div><div class="stat-sub">не оплатили</div></div>
+        <div class="stat-card yellow"><div class="stat-icon">💰</div><div class="stat-label">Выручка</div><div class="stat-value yellow">0 ₽</div><div class="stat-sub">платёжка не подключена</div></div>
+      </div>
+      <div class="grid-3">
+        <div class="card">
+          <div class="card-header"><div class="card-title">Регистрации за 7 дней</div><span class="text-muted text-mono" style="font-size:11px;">реальные данные</span></div>
+          <div class="card-body">
+            <div id="regChart" style="display:flex;align-items:flex-end;gap:6px;height:80px;"></div>
+            <div id="regLabels" style="display:flex;justify-content:space-between;margin-top:6px;"></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header"><div class="card-title">Подписки по устройствам</div></div>
+          <div class="card-body" id="subByDevices"><div class="loading">Загрузка...</div></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-header"><div class="card-title">Последние пользователи</div><button class="btn btn-ghost btn-sm" onclick="showPage('users',document.querySelectorAll('.nav-item')[1])">Все →</button></div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Пользователь</th><th>ID</th><th>Статус</th><th>Подписка до</th><th>Зарегистрирован</th></tr></thead>
+          <tbody id="dashTable"><tr><td colspan="5"><div class="loading">Загрузка...</div></td></tr></tbody>
+        </table></div>
+      </div>
+    </div>
+
+    <!-- USERS -->
+    <div class="page" id="page-users">
+      <div class="toolbar">
+        <input class="search-input" placeholder="🔍 Поиск по имени или ID..." oninput="filterUsers(this.value)">
+        <select class="filter" onchange="filterByStatus(this.value)">
+          <option value="all">Все</option>
+          <option value="active">С подпиской</option>
+          <option value="inactive">Без подписки</option>
+        </select>
+        <button class="btn btn-primary" onclick="openModal('addSubModal')">+ Выдать подписку</button>
+      </div>
+      <div class="card">
+        <div class="card-header"><div class="card-title">Все пользователи</div><span class="text-mono text-muted" id="userCount" style="font-size:12px;"></span></div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Пользователь</th><th>Telegram ID</th><th>Статус</th><th>Подписка до</th><th>Устройств</th><th>Дата регистрации</th><th>Действия</th></tr></thead>
+          <tbody id="usersTable"><tr><td colspan="7"><div class="loading">Загрузка...</div></td></tr></tbody>
+        </table></div>
+      </div>
+    </div>
+
+    <!-- SUBSCRIBERS -->
+    <div class="page" id="page-subscribers">
+      <div class="card">
+        <div class="card-header"><div class="card-title">Активные подписчики</div><button class="btn btn-primary" onclick="openModal('addSubModal')">+ Выдать</button></div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Пользователь</th><th>Устройств</th><th>Активна до</th><th>Осталось дней</th><th>Действия</th></tr></thead>
+          <tbody id="subsTable"><tr><td colspan="5"><div class="loading">Загрузка...</div></td></tr></tbody>
+        </table></div>
+      </div>
+    </div>
+
+    <!-- REFERRALS -->
+    <div class="page" id="page-referrals">
+      <div class="stats-grid" style="grid-template-columns:repeat(3,1fr)">
+        <div class="stat-card blue"><div class="stat-label">Всего рефералов</div><div class="stat-value blue" id="ref-total">—</div></div>
+        <div class="stat-card green"><div class="stat-label">Купили подписку</div><div class="stat-value green" id="ref-conv">—</div></div>
+        <div class="stat-card purple"><div class="stat-label">Конверсия</div><div class="stat-value purple" id="ref-pct">—</div></div>
+      </div>
+      <div class="card">
+        <div class="card-header"><div class="card-title">Реферальные связи</div></div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Кто пригласил</th><th>Кого пригласил</th><th>Дата</th><th>Купил подписку</th></tr></thead>
+          <tbody id="refTable"><tr><td colspan="4"><div class="loading">Загрузка...</div></td></tr></tbody>
+        </table></div>
+      </div>
+    </div>
+
+    <!-- PAYMENTS -->
+    <div class="page" id="page-payments">
+      <div class="stats-grid" style="grid-template-columns:repeat(3,1fr)">
+        <div class="stat-card green"><div class="stat-label">Выручка всего</div><div class="stat-value green" id="pay-total">0 ₽</div></div>
+        <div class="stat-card blue"><div class="stat-label">Платежей</div><div class="stat-value blue" id="pay-count">0</div></div>
+        <div class="stat-card yellow"><div class="stat-label">Средний чек</div><div class="stat-value yellow" id="pay-avg">0 ₽</div></div>
+      </div>
+      <div class="card">
+        <div class="card-header"><div class="card-title">История платежей</div></div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Пользователь</th><th>Сумма</th><th>Тариф</th><th>Метод</th><th>Статус</th><th>Дата</th></tr></thead>
+          <tbody id="payTable"><tr><td colspan="6"><div class="empty-state"><div class="icon">💳</div>Платежей пока нет — подключите платёжную систему</div></td></tr></tbody>
+        </table></div>
+      </div>
+    </div>
+
+    <!-- PROMOS -->
+    <div class="page" id="page-promos">
+      <div class="toolbar"><button class="btn btn-primary" onclick="openModal('addPromoModal')">+ Создать промокод</button></div>
+      <div class="grid-2">
+        <div class="card"><div class="card-header"><div class="card-title">Промокоды</div></div><div class="card-body" id="promoList"><div class="empty-state"><div class="icon">🎁</div>Нет промокодов</div></div></div>
+        <div class="card"><div class="card-header"><div class="card-title">Использование</div></div><div class="card-body" id="promoStats"><div class="empty-state"><div class="icon">📊</div>Статистика после подключения оплаты</div></div></div>
+      </div>
+    </div>
+
+    <!-- SERVER -->
+    <div class="page" id="page-server">
+      <div class="stats-grid" style="grid-template-columns:repeat(3,1fr)">
+        <div class="stat-card green"><div class="stat-label">Статус</div><div class="stat-value green" style="font-size:18px;">🟢 Online</div><div class="stat-sub">Финляндия</div></div>
+        <div class="stat-card blue"><div class="stat-label">IP адрес</div><div class="stat-value blue" style="font-size:18px;font-family:'Space Mono'">89.125.53.210</div></div>
+        <div class="stat-card purple"><div class="stat-label">Протокол</div><div class="stat-value purple" style="font-size:16px;">VLESS Reality</div></div>
+      </div>
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-header"><div class="card-title">Конфигурация</div></div>
+          <div class="card-body">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+              <div><div class="text-muted" style="font-size:11px;font-family:'Space Mono';margin-bottom:4px;">OS</div><div style="font-weight:700;">Ubuntu 22.04</div></div>
+              <div><div class="text-muted" style="font-size:11px;font-family:'Space Mono';margin-bottom:4px;">ПАНЕЛЬ</div><div style="font-weight:700;">3X-UI v2.9.3</div></div>
+              <div><div class="text-muted" style="font-size:11px;font-family:'Space Mono';margin-bottom:4px;">ПОРТ VPN</div><div style="font-weight:700;font-family:'Space Mono'">443</div></div>
+              <div><div class="text-muted" style="font-size:11px;font-family:'Space Mono';margin-bottom:4px;">БД</div><div style="font-weight:700;">Supabase PostgreSQL</div></div>
+              <div><div class="text-muted" style="font-size:11px;font-family:'Space Mono';margin-bottom:4px;">БОТ</div><div style="font-weight:700;">@MaxArtVPN_bot</div></div>
+              <div><div class="text-muted" style="font-size:11px;font-family:'Space Mono';margin-bottom:4px;">ХОСТИНГ</div><div style="font-weight:700;">AdminVPS.ru</div></div>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header"><div class="card-title">Быстрые ссылки</div></div>
+          <div class="card-body" style="display:flex;flex-direction:column;gap:10px;">
+            <a href="https://89.125.53.210:17627/I4z8tB7MLF8wPjpKDW" target="_blank" class="btn btn-ghost">🖥 3X-UI панель</a>
+            <a href="https://supabase.com/dashboard/project/avjvojscvmsdzllaeise" target="_blank" class="btn btn-ghost">🗄 Supabase БД</a>
+            <a href="https://t.me/MaxArtVPN_bot" target="_blank" class="btn btn-ghost">🤖 Telegram бот</a>
+            <a href="https://github.com/effect110419/tuvpn-bot" target="_blank" class="btn btn-ghost">💻 GitHub</a>
+            <a href="https://my.adminvps.ru" target="_blank" class="btn btn-ghost">🖱 AdminVPS</a>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ACTIVITY -->
+    <div class="page" id="page-activity">
+      <div class="card">
+        <div class="card-header"><div class="card-title">Лог активности</div><span class="text-muted text-mono" style="font-size:11px;">реальные данные из БД</span></div>
+        <div class="card-body" id="activityLog"><div class="loading">Загрузка...</div></div>
+      </div>
+    </div>
+
+    <!-- SETTINGS -->
+    <div class="page" id="page-settings">
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-header"><div class="card-title">Тарифы (₽)</div></div>
+          <div class="card-body">
+            <div style="font-size:13px;color:var(--text3);margin-bottom:16px;">Изменение тарифов здесь не влияет на бота — нужно обновить bot.py</div>
+            <div class="form-group"><label class="form-label">1 уст / 1 мес</label><input class="form-input" value="149" type="number"></div>
+            <div class="form-group"><label class="form-label">1 уст / 3 мес</label><input class="form-input" value="399" type="number"></div>
+            <div class="form-group"><label class="form-label">1 уст / 12 мес</label><input class="form-input" value="1399" type="number"></div>
+            <div class="form-group"><label class="form-label">2 уст / 1 мес</label><input class="form-input" value="249" type="number"></div>
+            <div class="form-group"><label class="form-label">5 уст / 1 мес</label><input class="form-input" value="599" type="number"></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header"><div class="card-title">Безопасность</div></div>
+          <div class="card-body">
+            <div class="form-group"><label class="form-label">Текущий пароль</label><input class="form-input" type="password" id="oldPass"></div>
+            <div class="form-group"><label class="form-label">Новый пароль</label><input class="form-input" type="password" id="newPass"></div>
+            <button class="btn btn-primary" onclick="changePass()">Сменить пароль</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</main>
+
+<!-- MODAL: Выдать подписку -->
+<div class="modal-overlay" id="addSubModal">
+  <div class="modal">
+    <div class="modal-header"><div class="modal-title">✅ Выдать / продлить подписку</div><button class="modal-close" onclick="closeModal('addSubModal')">×</button></div>
+    <div class="modal-body">
+      <div class="form-group"><label class="form-label">Telegram ID</label><input class="form-input" id="subUserId" placeholder="784871620"></div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Устройств</label>
+          <select class="form-select" id="subDevices"><option value="1">1 устройство</option><option value="2">2 устройства</option><option value="5">5 устройств</option></select>
+        </div>
+        <div class="form-group"><label class="form-label">Период</label>
+          <select class="form-select" id="subPeriod"><option value="30">1 месяц</option><option value="90">3 месяца</option><option value="180">6 месяцев</option><option value="365">1 год</option></select>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('addSubModal')">Отмена</button>
+      <button class="btn btn-success" onclick="grantSubscription()">✅ Выдать</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL: Промокод -->
+<div class="modal-overlay" id="addPromoModal">
+  <div class="modal">
+    <div class="modal-header"><div class="modal-title">🎁 Создать промокод</div><button class="modal-close" onclick="closeModal('addPromoModal')">×</button></div>
+    <div class="modal-body">
+      <div class="form-group"><label class="form-label">Код</label>
+        <div style="display:flex;gap:8px;"><input class="form-input" id="promoCode" placeholder="TUVPN2026"><button class="btn btn-ghost" onclick="genPromo()">🎲</button></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Тип</label>
+          <select class="form-select" id="promoType"><option value="percent">Процент %</option><option value="fixed">Сумма ₽</option><option value="days">Бесплатные дни</option></select>
+        </div>
+        <div class="form-group"><label class="form-label">Размер</label><input class="form-input" id="promoValue" placeholder="20" type="number"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Макс. использований</label><input class="form-input" id="promoMax" placeholder="∞" type="number"></div>
+        <div class="form-group"><label class="form-label">Действует до</label><input class="form-input" id="promoExpiry" type="date"></div>
+      </div>
+      <div class="form-group"><label class="form-label">Описание</label><input class="form-input" id="promoDesc" placeholder="Промо для запуска"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('addPromoModal')">Отмена</button>
+      <button class="btn btn-primary" onclick="createPromo()">🎁 Создать</button>
+    </div>
+  </div>
+</div>
+
+<div class="notif" id="notif"></div>
+
+<script>
+(function(){
+  const P='110419';
+  if(localStorage.getItem('tuvpn_auth')!==P){
+    document.body.style.display='none';
+    const i=prompt('🔐 TuVPN Admin — введите пароль:');
+    if(i!==P){document.body.innerHTML='<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;background:#0a0e1a;color:#ef4444;font-family:monospace;gap:16px"><div style="font-size:48px">🚫</div><div style="font-size:20px">Доступ запрещён</div></div>';document.body.style.display='flex';}
+    else{localStorage.setItem('tuvpn_auth',P);document.body.style.display='flex';}
+  }
+})();
+
+const SB='https://avjvojscvmsdzllaeise.supabase.co';
+const KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF2anZvanNjdm1zZHpsbGFlaXNlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc5OTMyODYsImV4cCI6MjA5MzU2OTI4Nn0.vgXKUWmLOj4XRltygxtBjWvUD4pVRd8C1nQtagzJAV0';
+const H={'apikey':KEY,'Authorization':'Bearer '+KEY,'Content-Type':'application/json'};
+
+let users=[],subs=[],refs=[];
+let promos=JSON.parse(localStorage.getItem('tuvpn_promos')||'[]');
+let fq='',fst='all';
+
+async function api(t,p=''){const r=await fetch(SB+'/rest/v1/'+t+p,{headers:H});return r.json();}
+async function apiPost(t,d){const r=await fetch(SB+'/rest/v1/'+t,{method:'POST',headers:{...H,'Prefer':'return=representation'},body:JSON.stringify(d)});return r.json();}
+async function apiPatch(t,f,d){await fetch(SB+'/rest/v1/'+t+'?'+f,{method:'PATCH',headers:H,body:JSON.stringify(d)});}
+
+async function loadData(){
+  notify('Загрузка...','');
+  try{
+    [users,subs,refs]=await Promise.all([
+      api('users','?select=*&order=created_at.desc'),
+      api('subscriptions','?select=*&order=created_at.desc'),
+      api('referrals','?select=*&order=created_at.desc')
+    ]);
+    renderAll();
+    notify('✅ Обновлено','success');
+  }catch(e){notify('❌ Ошибка','error');}
+}
+
+function renderAll(){rDash();rUsers();rSubs();rRefs();rActivity();rPromos();}
+
+function getSub(uid){return subs.find(s=>s.user_id==uid&&s.status==='active');}
+function fmt(d){if(!d)return'—';return new Date(d).toLocaleDateString('ru-RU');}
+function fmtDt(d){if(!d)return'—';return new Date(d).toLocaleString('ru-RU');}
+function days(d){if(!d)return 0;return Math.max(0,Math.ceil((new Date(d)-new Date())/86400000));}
+function bgColor(n){const c=['#3b82f6','#8b5cf6','#10b981','#f59e0b','#ef4444','#06b6d4','#ec4899'];return c[(n||'x').charCodeAt(0)%c.length];}
+function dname(u){if(u.username)return'@'+u.username;if(u.first_name)return u.first_name+(u.last_name?' '+u.last_name:'');return'ID:'+u.user_id;}
+function inits(u){return dname(u).replace('@','').slice(0,2).toUpperCase();}
+function ava(u){return`<div class="user-ava" style="background:${bgColor(dname(u))}">${inits(u)}</div>`;}
+
+function rDash(){
+  const act=subs.filter(s=>s.status==='active');
+  const tot=users.length,actN=act.length,noS=tot-actN,pct=tot?Math.round(actN/tot*100):0;
+  document.getElementById('st-total').textContent=tot;
+  document.getElementById('st-active').textContent=actN;
+  document.getElementById('st-pct').textContent='конверсия '+pct+'%';
+  document.getElementById('st-nosub').textContent=noS;
+
+  // Chart
+  const ds=[];
+  for(let i=6;i>=0;i--){const d=new Date();d.setDate(d.getDate()-i);ds.push(d);}
+  const counts=ds.map(d=>{const s=d.toISOString().slice(0,10);return users.filter(u=>u.created_at&&u.created_at.slice(0,10)===s).length;});
+  const mx=Math.max(...counts,1);
+  document.getElementById('regChart').innerHTML=counts.map((c,i)=>`<div style="flex:1;height:${Math.max(4,Math.round(c/mx*80))}px;background:${i===6?'var(--accent)':'rgba(59,130,246,.3)'};border-radius:3px 3px 0 0;" title="${c} пользователей"></div>`).join('');
+  document.getElementById('regLabels').innerHTML=ds.map(d=>`<span class="text-muted text-mono" style="font-size:10px;">${d.toLocaleDateString('ru-RU',{weekday:'short'})}</span>`).join('');
+
+  // By devices
+  const el=document.getElementById('subByDevices');
+  if(!act.length){el.innerHTML='<div class="empty-state"><div class="icon">📊</div>Нет активных подписок</div>';return;}
+  const devs=[1,2,5];
+  el.innerHTML=devs.map(d=>{const c=act.filter(s=>s.devices===d).length;const p=act.length?Math.round(c/act.length*100):0;return`<div class="progress-row"><span class="progress-label">${d} уст.</span><div class="progress-bar"><div class="progress-fill" style="width:${p}%"></div></div><span class="progress-val">${c}</span></div>`;}).join('');
+
+  // Last users
+  const tb=document.getElementById('dashTable');
+  if(!users.length){tb.innerHTML='<tr><td colspan="5"><div class="empty-state"><div class="icon">👥</div>Нет пользователей</div></td></tr>';return;}
+  tb.innerHTML=users.slice(0,5).map(u=>{const s=getSub(u.user_id);return`<tr><td><div class="user-cell">${ava(u)}<div><div class="user-name">${dname(u)}</div></div></div></td><td><span class="text-mono" style="font-size:12px;color:var(--text3)">${u.user_id}</span></td><td>${s?'<span class="badge badge-green">активна</span>':'<span class="badge badge-red">нет</span>'}</td><td>${s?fmt(s.expires_at):'—'}</td><td><span class="text-mono" style="font-size:11px;color:var(--text3)">${fmt(u.created_at)}</span></td></tr>`;}).join('');
+}
+
+function applyFilter(){
+  let f=users.filter(u=>{
+    const n=dname(u).toLowerCase(),id=String(u.user_id);
+    const m=n.includes(fq)||id.includes(fq);
+    const s=getSub(u.user_id);
+    const st=fst==='all'||(fst==='active'&&s)||(fst==='inactive'&&!s);
+    return m&&st;
+  });
+  document.getElementById('userCount').textContent=f.length+' из '+users.length;
+  const tb=document.getElementById('usersTable');
+  if(!f.length){tb.innerHTML='<tr><td colspan="7"><div class="empty-state"><div class="icon">🔍</div>Ничего не найдено</div></td></tr>';return;}
+  tb.innerHTML=f.map(u=>{
+    const s=getSub(u.user_id);const dl=s?days(s.expires_at):0;
+    const dc=dl<5?'var(--red)':dl<14?'var(--yellow)':'var(--green)';
+    return`<tr><td><div class="user-cell">${ava(u)}<div><div class="user-name">${dname(u)}</div><div class="user-id">${u.first_name||''} ${u.last_name||''}</div></div></div></td><td><span class="text-mono" style="font-size:12px;color:var(--text3)">${u.user_id}</span></td><td>${s?'<span class="badge badge-green">активна</span>':'<span class="badge badge-red">нет</span>'}</td><td>${s?`${fmt(s.expires_at)} <span style="color:${dc};font-size:11px;font-family:'Space Mono'">(${dl}д)</span>`:'—'}</td><td>${s?s.devices:'—'}</td><td><span class="text-mono" style="font-size:11px;color:var(--text3)">${fmt(u.created_at)}</span></td><td><div class="action-btns"><button class="btn btn-ghost btn-sm" onclick="quickGrant(${u.user_id})">📅 Выдать</button></div></td></tr>`;
+  }).join('');
+}
+function rUsers(){applyFilter();}
+function filterUsers(q){fq=q.toLowerCase();applyFilter();}
+function filterByStatus(s){fst=s;applyFilter();}
+
+function rSubs(){
+  const act=subs.filter(s=>s.status==='active');
+  const tb=document.getElementById('subsTable');
+  if(!act.length){tb.innerHTML='<tr><td colspan="5"><div class="empty-state"><div class="icon">✅</div>Нет активных подписок</div></td></tr>';return;}
+  tb.innerHTML=act.map(s=>{
+    const u=users.find(u=>u.user_id==s.user_id)||{user_id:s.user_id};
+    const dl=days(s.expires_at);const dc=dl<5?'var(--red)':dl<14?'var(--yellow)':'var(--green)';
+    return`<tr><td><div class="user-cell">${ava(u)}<div class="user-name">${dname(u)}</div></div></td><td><span class="badge badge-blue">${s.devices} уст.</span></td><td>${fmt(s.expires_at)}</td><td><span style="color:${dc};font-weight:700;font-family:'Space Mono'">${dl} дней</span></td><td><div class="action-btns"><button class="btn btn-ghost btn-sm" onclick="quickGrant(${s.user_id})">📅 Продлить</button><button class="btn btn-danger btn-sm" onclick="revokeSub(${s.id})">✕</button></div></td></tr>`;
+  }).join('');
+}
+
+function rRefs(){
+  const tot=refs.length;
+  const conv=refs.filter(r=>subs.some(s=>s.user_id==r.referred_id&&s.status==='active')).length;
+  const pct=tot?Math.round(conv/tot*100):0;
+  document.getElementById('ref-total').textContent=tot;
+  document.getElementById('ref-conv').textContent=conv;
+  document.getElementById('ref-pct').textContent=pct+'%';
+  const tb=document.getElementById('refTable');
+  if(!refs.length){tb.innerHTML='<tr><td colspan="4"><div class="empty-state"><div class="icon">🤝</div>Рефералов пока нет</div></td></tr>';return;}
+  tb.innerHTML=refs.map(r=>{
+    const rr=users.find(u=>u.user_id==r.referrer_id);
+    const rd=users.find(u=>u.user_id==r.referred_id);
+    const hs=subs.some(s=>s.user_id==r.referred_id&&s.status==='active');
+    return`<tr><td>${rr?dname(rr):r.referrer_id}</td><td>${rd?dname(rd):r.referred_id}</td><td>${fmt(r.created_at)}</td><td>${hs?'<span class="badge badge-green">да</span>':'<span class="badge badge-red">нет</span>'}</td></tr>`;
+  }).join('');
+}
+
+function rActivity(){
+  const el=document.getElementById('activityLog');if(!el)return;
+  const ev=[];
+  users.forEach(u=>ev.push({t:new Date(u.created_at),c:'var(--green)',txt:`Новый пользователь <b>${dname(u)}</b> (${u.user_id}) запустил бота`,b:'<span class="badge badge-green">регистрация</span>'}));
+  subs.forEach(s=>{const u=users.find(u=>u.user_id==s.user_id);const n=u?dname(u):s.user_id;ev.push({t:new Date(s.created_at),c:'var(--yellow)',txt:`Подписка выдана <b>${n}</b> — ${s.devices} уст. до ${fmt(s.expires_at)}`,b:`<span class="badge badge-yellow">${s.status==='active'?'активна':'истекла'}</span>`});});
+  refs.forEach(r=>{const rr=users.find(u=>u.user_id==r.referrer_id);const rd=users.find(u=>u.user_id==r.referred_id);ev.push({t:new Date(r.created_at),c:'var(--accent3)',txt:`<b>${rr?dname(rr):r.referrer_id}</b> пригласил <b>${rd?dname(rd):r.referred_id}</b>`,b:'<span class="badge badge-purple">реферал</span>'});});
+  ev.sort((a,b)=>b.t-a.t);
+  if(!ev.length){el.innerHTML='<div class="empty-state"><div class="icon">📋</div>Нет событий</div>';return;}
+  el.innerHTML=ev.map(e=>`<div class="activity-item"><div class="activity-dot" style="background:${e.c}"></div><div style="flex:1"><div class="activity-text">${e.txt}</div><div class="activity-time">${fmtDt(e.t)}</div></div>${e.b}</div>`).join('');
+}
+
+function rPromos(){
+  const list=document.getElementById('promoList');if(!list)return;
+  if(!promos.length){list.innerHTML='<div class="empty-state"><div class="icon">🎁</div>Нет промокодов</div>';return;}
+  list.innerHTML=promos.map((p,i)=>{
+    const tl=p.type==='percent'?p.value+'% скидка':p.type==='fixed'?p.value+' ₽':''+p.value+' дней бесплатно';
+    return`<div class="promo-card"><div><div class="promo-code">${p.code}</div><div class="promo-info">${tl} · макс. ${p.max||'∞'} · до ${p.expiry||'∞'}</div>${p.desc?'<div class="promo-info">'+p.desc+'</div>':''}</div><div style="display:flex;gap:6px;align-items:center;"><span class="badge badge-green">активен</span><button class="btn btn-ghost btn-sm" onclick="copyP('${p.code}')">📋</button><button class="btn btn-danger btn-sm" onclick="delP(${i})">✕</button></div></div>`;
+  }).join('');
+}
+
+async function grantSubscription(){
+  const uid=document.getElementById('subUserId').value.trim();
+  const dev=parseInt(document.getElementById('subDevices').value);
+  const d=parseInt(document.getElementById('subPeriod').value);
+  if(!uid){notify('Введите Telegram ID','error');return;}
+
+  notify('⏳ Создаём ключ...','');
+
+  try{
+    const r=await fetch('https://89.125.53.210:8443/admin-api/grant',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({user_id:parseInt(uid),devices:dev,days:d})
+    });
+    const data=await r.json();
+
+    if(data.success){
+      // Деактивируем старые подписки
+      const old=subs.filter(s=>s.user_id==uid&&s.status==='active');
+      for(const s of old)await apiPatch('subscriptions','id=eq.'+s.id,{status:'inactive'});
+      // Создаём новую с уникальной ссылкой
+      const exp=new Date(Date.now()+d*86400000).toISOString();
+      await apiPost('subscriptions',{user_id:parseInt(uid),devices:dev,status:'active',
+        sub_url:data.sub_url,started_at:new Date().toISOString(),expires_at:exp});
+      // Сохраняем uuid в users
+      await fetch(SB+'/rest/v1/users?user_id=eq.'+uid,{method:'PATCH',
+        headers:{...H,'Prefer':'return=minimal'},
+        body:JSON.stringify({client_uuid:data.uuid})});
+      closeModal('addSubModal');
+      document.getElementById('subUserId').value='';
+      notify('✅ Уникальный ключ создан: '+data.sub_url.split('/').pop().slice(0,8)+'...','success');
+      await loadData();
+    }else{
+      notify('❌ Ошибка: '+data.error,'error');
+    }
+  }catch(e){
+    notify('❌ Ошибка соединения с proxy','error');
+    console.error(e);
+  }
+}
+function quickGrant(uid){document.getElementById('subUserId').value=uid;openModal('addSubModal');}
+async function revokeSub(id){if(!confirm('Отозвать?'))return;await apiPatch('subscriptions','id=eq.'+id,{status:'inactive'});notify('Подписка отозвана','success');await loadData();}
+
+function createPromo(){
+  const code=document.getElementById('promoCode').value.trim().toUpperCase();
+  const type=document.getElementById('promoType').value;
+  const value=document.getElementById('promoValue').value;
+  const max=document.getElementById('promoMax').value;
+  const expiry=document.getElementById('promoExpiry').value;
+  const desc=document.getElementById('promoDesc').value;
+  if(!code||!value){notify('Заполните код и размер','error');return;}
+  if(promos.find(p=>p.code===code)){notify('Такой код уже есть','error');return;}
+  promos.push({code,type,value,max,expiry,desc,used:0});
+  localStorage.setItem('tuvpn_promos',JSON.stringify(promos));
+  closeModal('addPromoModal');notify('🎁 Промокод '+code+' создан','success');
+  document.getElementById('promoCode').value='';document.getElementById('promoValue').value='';
+  rPromos();
+}
+function delP(i){if(!confirm('Удалить?'))return;promos.splice(i,1);localStorage.setItem('tuvpn_promos',JSON.stringify(promos));rPromos();notify('Удалено','success');}
+function genPromo(){const c='ABCDEFGHJKLMNPQRSTUVWXYZ23456789';let s='TU';for(let i=0;i<6;i++)s+=c[Math.floor(Math.random()*c.length)];document.getElementById('promoCode').value=s;}
+function copyP(c){navigator.clipboard.writeText(c);notify('Скопировано: '+c,'success');}
+
+function changePass(){
+  const o=document.getElementById('oldPass').value;
+  const n=document.getElementById('newPass').value;
+  if(o!==localStorage.getItem('tuvpn_auth')){notify('Неверный пароль','error');return;}
+  if(!n){notify('Введите новый пароль','error');return;}
+  localStorage.setItem('tuvpn_auth',n);notify('✅ Пароль изменён','success');
+}
+
+const titles={dashboard:'Дашборд',users:'Все пользователи',subscribers:'Активные подписчики',referrals:'Рефералы',payments:'Платежи',promos:'Промокоды',server:'Сервер',activity:'Лог активности',settings:'Настройки'};
+function showPage(id,el){
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
+  document.getElementById('page-'+id)?.classList.add('active');
+  el?.classList.add('active');
+  document.getElementById('pageTitle').textContent=titles[id]||id;
+}
+function openModal(id){document.getElementById(id).classList.add('open');}
+function closeModal(id){document.getElementById(id).classList.remove('open');}
+document.querySelectorAll('.modal-overlay').forEach(m=>m.addEventListener('click',e=>{if(e.target===m)m.classList.remove('open');}));
+
+function notify(msg,type){
+  const n=document.getElementById('notif');n.textContent=msg;n.className='notif '+(type||'')+' show';
+  clearTimeout(n._t);n._t=setTimeout(()=>n.classList.remove('show'),3000);
+}
+
+setInterval(()=>{document.getElementById('currentTime').textContent=new Date().toLocaleTimeString('ru-RU');},1000);
+loadData();
+</script>
+</body>
+</html>
