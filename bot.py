@@ -118,7 +118,7 @@ async def xui_add_client(user_id, devices, days):
         data = await resp.json()
         await session.close()
         if data.get("success"):
-            sub_url = f"https://{SERVER_IP}:8443/sub/{client_uuid}"
+            sub_url = f"{SUB_BASE_URL}/sub/{client_uuid}"
             return client_uuid, sub_url
         logging.error(f"xui_add_client error: {data}")
     except Exception as e:
@@ -283,7 +283,7 @@ async def connect(callback: types.CallbackQuery):
             f"👤 ID: {callback.from_user.id}\n"
             f"📊 Статус: активна\n"
             f"📱 Устройств: {sub['devices']}\n\n"
-            f"Ваша ссылка подписки:\n`{sub['sub_url']}`\n\n"
+            f"Ваша ссылка подписки:\n{sub['sub_url']}\n\n"
             f"🛠 Поддержка: @TuVPNSupport_bot\n\n"
             f"Нажмите Подключить VPN и следуйте инструкции"
         )
@@ -511,20 +511,32 @@ async def referral(callback: types.CallbackQuery):
 async def howto(callback: types.CallbackQuery):
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="back")]])
     await callback.message.answer(
-        "📋 Как подключиться к TuVPN\n\n"
-        "🍏 iPhone:\n"
-        "1. Скачай Happ Plus — App Store\n"
-        "2. Зайди в бота → нажми Подключиться\n"
-        "3. Скопируй ссылку подписки\n"
-        "4. В Happ Plus: + → Добавить по URL\n"
-        "5. Вставь ссылку → готово!\n\n"
-        "🤖 Android:\n"
-        "1. Скачай v2rayTun — Play Store\n"
-        "2. Зайди в бота → нажми Подключиться\n"
-        "3. Скопируй ссылку подписки\n"
-        "4. В v2rayTun: + → Импорт по ссылке\n"
-        "5. Вставь ссылку → готово!\n\n"
-        "🆘 Не выходит? Пиши — поможем!\n@TuVPNSupport_bot",
+        "📲 <b>Как подключиться к TuVPN</b>\n\n"
+        "Подключение занимает 2 минуты.\n"
+        "Выберите своё устройство и следуйте инструкции:\n\n"
+        "━━━━━━━━━━━━━━━━━━━\n"
+        "🍏 <b>iPhone / iPad</b>\n"
+        "━━━━━━━━━━━━━━━━━━━\n\n"
+        "1️⃣ Установите приложение <b>Happ</b>\n"
+        "👉 <a href=\"https://apps.apple.com/app/happ-proxy-utility-plus/id6747821703\">Открыть в App Store</a>\n\n"
+        "2️⃣ Вернитесь в бот → нажмите <b>«🔌 Подключиться»</b>\n\n"
+        "3️⃣ Скопируйте ссылку подписки (она появится в сообщении)\n\n"
+        "4️⃣ Откройте Happ → нажмите <b>➕</b> в правом верхнем углу\n\n"
+        "5️⃣ Выберите <b>«Добавить из буфера обмена»</b>\n\n"
+        "6️⃣ Нажмите большую круглую кнопку для подключения 🟢\n\n"
+        "━━━━━━━━━━━━━━━━━━━\n"
+        "🤖 <b>Android</b>\n"
+        "━━━━━━━━━━━━━━━━━━━\n\n"
+        "1️⃣ Установите приложение <b>v2RayTun</b>\n"
+        "👉 <a href=\"https://play.google.com/store/apps/details?id=com.v2raytun.android\">Открыть в Google Play</a>\n\n"
+        "2️⃣ Вернитесь в бот → нажмите <b>«🔌 Подключиться»</b>\n\n"
+        "3️⃣ Скопируйте ссылку подписки\n\n"
+        "4️⃣ Откройте v2RayTun → нажмите <b>➕</b>\n\n"
+        "5️⃣ Выберите <b>«Импорт из буфера обмена»</b>\n\n"
+        "6️⃣ Нажмите кнопку подключения 🟢\n\n"
+        "━━━━━━━━━━━━━━━━━━━\n\n"
+        "❓ <b>Что-то пошло не так?</b>\n"
+        "Напишите нам в @TuVPNSupport_bot — поможем разобраться 🙌",
         reply_markup=kb
     )
     await callback.answer()
