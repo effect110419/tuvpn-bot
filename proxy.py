@@ -3,7 +3,7 @@ sys.path.insert(0, '/root')
 from flask import Flask, request, jsonify, Response
 import requests, json, uuid, base64
 from datetime import datetime, timedelta
-from config import PANEL_URL, PANEL_USER, PANEL_PASS, INBOUND_ID, SERVER_IP
+from config import PANEL_URL, PANEL_USER, PANEL_PASS, INBOUND_ID, SERVER_IP, SUB_BASE_URL
 from supabase import create_client
 from config import SUPABASE_URL, SUPABASE_KEY
 import urllib3
@@ -108,7 +108,7 @@ def grant():
             r = s.post(f"{PANEL_URL}/panel/api/inbounds/updateClient/{existing_uuid}", json=payload)
             result = r.json()
             if result.get("success"):
-                sub_url = f"https://{SERVER_IP}:8443/sub/{existing_uuid}"
+                sub_url = f"{SUB_BASE_URL}/sub/{existing_uuid}"
                 # Обновляем запись в Supabase
                 sb.table("subscriptions").update({
                     "devices": devices,
@@ -137,7 +137,7 @@ def grant():
             r = s.post(f"{PANEL_URL}/panel/api/inbounds/addClient", json=payload)
             result = r.json()
             if result.get("success"):
-                sub_url = f"https://{SERVER_IP}:8443/sub/{client_uuid}"
+                sub_url = f"{SUB_BASE_URL}/sub/{client_uuid}"
                 # Деактивируем старые подписки
                 sb.table("subscriptions").update({"status": "inactive"}).eq("user_id", uid).eq("status", "active").execute()
                 # Создаём новую запись

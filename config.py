@@ -13,3 +13,7 @@ XUI_API = "/panel/api/inbounds"
 SUPPORT_BOT_TOKEN = "8638589479:AAEgW6VlnCDMGCJeeRe1H-N_cl4aAxHrVcs"
 MAIN_BOT_USERNAME = "MaxArtVPN_bot"
 FALLBACK_ADMIN_IDS = [784871620, 1027228622]
+
+# --- Новый базовый URL для ссылок подписок (через nginx + SSL) ---
+SUB_BASE_URL = "https://sub.tuvpn.ru"
+
