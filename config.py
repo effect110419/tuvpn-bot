@@ -8,3 +8,8 @@ SUPABASE_URL = "https://avjvojscvmsdzllaeise.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF2anZvanNjdm1zZHpsbGFlaXNlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc5OTMyODYsImV4cCI6MjA5MzU2OTI4Nn0.vgXKUWmLOj4XRltygxtBjWvUD4pVRd8C1nQtagzJAV0"
 SUB_URL = "https://89.125.53.210:8443/sub.txt"
 XUI_API = "/panel/api/inbounds"
+
+# --- Support Bot ---
+SUPPORT_BOT_TOKEN = "8638589479:AAEgW6VlnCDMGCJeeRe1H-N_cl4aAxHrVcs"
+MAIN_BOT_USERNAME = "MaxArtVPN_bot"
+FALLBACK_ADMIN_IDS = [784871620, 1027228622]
