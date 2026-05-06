@@ -4,28 +4,48 @@ from flask import Flask, request, jsonify, Response
 import requests, json, uuid, base64
 from datetime import datetime, timedelta
 from config import PANEL_URL, PANEL_USER, PANEL_PASS, INBOUND_ID, SERVER_IP
+from supabase import create_client
+from config import SUPABASE_URL, SUPABASE_KEY
 import urllib3
 urllib3.disable_warnings()
 
 app = Flask(__name__)
 PUBLIC_KEY = "9q2JxVMnpr1nvhK407R0ymy5k-W_tyE_iEvSLJTXWg8"
 SHORT_ID = "d1a247d5a8"
+sb = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+def xui_session():
+    s = requests.Session()
+    s.verify = False
+    s.post(f"{PANEL_URL}/login", json={"username": PANEL_USER, "password": PANEL_PASS})
+    return s
 
 def get_client_expire(client_uuid):
     try:
-        s = requests.Session()
-        s.verify = False
-        s.post(f"{PANEL_URL}/login", json={"username": PANEL_USER, "password": PANEL_PASS})
+        s = xui_session()
         r = s.get(f"{PANEL_URL}/xui/API/inbounds/list")
         data = r.json()
-        inbound = data["obj"][0]
-        settings = json.loads(inbound["settings"])
+        settings = json.loads(data["obj"][0]["settings"])
         for client in settings.get("clients", []):
             if client.get("id") == client_uuid:
                 return client.get("expiryTime", 0) // 1000
     except:
         pass
     return 0
+
+def get_existing_client(uid):
+    """Получаем активную подписку пользователя из Supabase"""
+    try:
+        r = sb.table("subscriptions").select("*").eq("user_id", uid).eq("status", "active").execute()
+        if r.data:
+            sub = r.data[0]
+            # Извлекаем UUID из sub_url
+            if "/sub/" in sub["sub_url"]:
+                existing_uuid = sub["sub_url"].split("/sub/")[-1]
+                return sub["id"], existing_uuid, sub["devices"]
+    except:
+        pass
+    return None, None, None
 
 @app.route('/sub/<client_uuid>')
 def subscription(client_uuid):
@@ -40,9 +60,7 @@ def subscription(client_uuid):
     )
     encoded = base64.b64encode(vless.encode()).decode()
     expire_ts = get_client_expire(client_uuid)
-
     announcement_b64 = "4pqg77iPINCd0LUg0YDQsNCx0L7RgtCw0LXRgj8g0J3QsNC20LzQuCDwn5SEINC4INCy0YvQsdC10YDQuCDQtNGA0YPQs9GD0Y4g0LvQvtC60LDRhtC40Y4uIPCfk4Ug0J/RgNC+0LTQu9C10LLQsNC5INC30LDRgNCw0L3QtdC1IOKAlCBUZWxlZ3JhbSDQt9Cw0LzQtdC00LvRj9GO0YIh"
-
     headers = {
         "Content-Type": "text/plain; charset=utf-8",
         "profile-title": "TuVPN",
@@ -63,34 +81,76 @@ def grant():
         return resp
     try:
         data = request.json
-        uid = data['user_id']
+        uid = int(data['user_id'])
         devices = data['devices']
         days = data['days']
-        s = requests.Session()
-        s.verify = False
-        s.post(f"{PANEL_URL}/login", json={"username": PANEL_USER, "password": PANEL_PASS})
-        client_uuid = str(uuid.uuid4())
         expire_ms = int((datetime.now() + timedelta(days=days)).timestamp() * 1000)
         ts = int(datetime.now().timestamp())
-        payload = {
-            "id": INBOUND_ID,
-            "settings": json.dumps({"clients": [{
-                "id": client_uuid,
-                "email": f"user_{uid}_{ts}",
-                "limitIp": devices,
-                "totalGB": 0,
-                "expiryTime": expire_ms,
-                "enable": True,
-                "flow": "xtls-rprx-vision"
-            }]})
-        }
-        r = s.post(f"{PANEL_URL}/panel/api/inbounds/addClient", json=payload)
-        result = r.json()
-        if result.get("success"):
-            sub_url = f"https://{SERVER_IP}:8443/sub/{client_uuid}"
-            resp = jsonify({"success": True, "uuid": client_uuid, "sub_url": sub_url})
+        s = xui_session()
+
+        # Проверяем есть ли уже активная подписка
+        sub_id, existing_uuid, existing_devices = get_existing_client(uid)
+
+        if existing_uuid:
+            # Обновляем существующего клиента в 3X-UI
+            payload = {
+                "id": INBOUND_ID,
+                "settings": json.dumps({"clients": [{
+                    "id": existing_uuid,
+                    "email": f"user_{uid}_{ts}",
+                    "limitIp": devices,
+                    "totalGB": 0,
+                    "expiryTime": expire_ms,
+                    "enable": True,
+                    "flow": "xtls-rprx-vision"
+                }]})
+            }
+            r = s.post(f"{PANEL_URL}/panel/api/inbounds/updateClient/{existing_uuid}", json=payload)
+            result = r.json()
+            if result.get("success"):
+                sub_url = f"https://{SERVER_IP}:8443/sub/{existing_uuid}"
+                # Обновляем запись в Supabase
+                sb.table("subscriptions").update({
+                    "devices": devices,
+                    "expires_at": (datetime.now() + timedelta(days=days)).isoformat(),
+                    "sub_url": sub_url,
+                    "status": "active"
+                }).eq("id", sub_id).execute()
+                resp = jsonify({"success": True, "uuid": existing_uuid, "sub_url": sub_url, "action": "updated"})
+            else:
+                resp = jsonify({"success": False, "error": str(result)})
         else:
-            resp = jsonify({"success": False, "error": str(result)})
+            # Создаём нового клиента
+            client_uuid = str(uuid.uuid4())
+            payload = {
+                "id": INBOUND_ID,
+                "settings": json.dumps({"clients": [{
+                    "id": client_uuid,
+                    "email": f"user_{uid}_{ts}",
+                    "limitIp": devices,
+                    "totalGB": 0,
+                    "expiryTime": expire_ms,
+                    "enable": True,
+                    "flow": "xtls-rprx-vision"
+                }]})
+            }
+            r = s.post(f"{PANEL_URL}/panel/api/inbounds/addClient", json=payload)
+            result = r.json()
+            if result.get("success"):
+                sub_url = f"https://{SERVER_IP}:8443/sub/{client_uuid}"
+                # Деактивируем старые подписки
+                sb.table("subscriptions").update({"status": "inactive"}).eq("user_id", uid).eq("status", "active").execute()
+                # Создаём новую запись
+                sb.table("subscriptions").insert({
+                    "user_id": uid, "devices": devices, "status": "active",
+                    "sub_url": sub_url, "started_at": datetime.now().isoformat(),
+                    "expires_at": (datetime.now() + timedelta(days=days)).isoformat()
+                }).execute()
+                sb.table("users").update({"client_uuid": client_uuid}).eq("user_id", uid).execute()
+                resp = jsonify({"success": True, "uuid": client_uuid, "sub_url": sub_url, "action": "created"})
+            else:
+                resp = jsonify({"success": False, "error": str(result)})
+
         resp.headers['Access-Control-Allow-Origin'] = '*'
         return resp
     except Exception as e:
