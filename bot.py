@@ -273,7 +273,7 @@ async def connect(callback: types.CallbackQuery):
             f"📊 Статус: активна\n"
             f"📱 Устройств: {sub['devices']}\n\n"
             f"Ваша ссылка подписки:\n`{sub['sub_url']}`\n\n"
-            f"🛠 Поддержка: @TuVPN_support\n\n"
+            f"🛠 Поддержка: @TuVPNSupport_bot\n\n"
             f"Нажмите Подключить VPN и следуйте инструкции"
         )
     else:
@@ -282,7 +282,7 @@ async def connect(callback: types.CallbackQuery):
             f"📊 Статус: не активна\n\n"
             f"У вас нет активной подписки.\n"
             f"Оформите подписку чтобы получить доступ!\n\n"
-            f"🛠 Поддержка: @TuVPN_support"
+            f"🛠 Поддержка: @TuVPNSupport_bot"
         )
     await callback.message.answer(text, reply_markup=kb)
     await callback.answer()
@@ -350,7 +350,7 @@ async def choose_payment(callback: types.CallbackQuery):
 @dp.callback_query(lambda c: c.data.startswith("pay_card_"))
 async def pay_card(callback: types.CallbackQuery):
     await callback.answer(
-        "⏳ Оплата картой скоро будет доступна!\nПока напишите: @TuVPN_support",
+        "⏳ Оплата картой скоро будет доступна!\nПока напишите: @TuVPNSupport_bot",
         show_alert=True
     )
 
@@ -421,7 +421,7 @@ async def howto(callback: types.CallbackQuery):
         "3. Скопируй ссылку подписки\n"
         "4. В v2rayTun: + → Импорт по ссылке\n"
         "5. Вставь ссылку → готово!\n\n"
-        "🆘 Не выходит? Пиши — поможем!\n@TuVPN_support",
+        "🆘 Не выходит? Пиши — поможем!\n@TuVPNSupport_bot",
         reply_markup=kb
     )
     await callback.answer()
@@ -429,7 +429,7 @@ async def howto(callback: types.CallbackQuery):
 @dp.callback_query(lambda c: c.data == "support")
 async def support(callback: types.CallbackQuery):
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✉️ Написать в поддержку", url="https://t.me/TuVPN_support")],
+        [InlineKeyboardButton(text="✉️ Написать в поддержку", url="https://t.me/TuVPNSupport_bot")],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="back")],
     ])
     await callback.message.answer(
@@ -437,7 +437,7 @@ async def support(callback: types.CallbackQuery):
         "На связи и готовы решить любой вопрос!\n\n"
         "✉️ Пиши — отвечаем быстро\n"
         "⏱ Среднее время ответа: до 1 часа\n\n"
-        "👉 @TuVPN_support",
+        "👉 @TuVPNSupport_bot",
         reply_markup=kb
     )
     await callback.answer()
