@@ -314,8 +314,19 @@ async def cmd_start(message: Message, state: FSMContext):
 @router.callback_query(F.data == "back_to_menu")
 async def cb_back_to_menu(call: CallbackQuery, state: FSMContext):
     await state.clear()
-    await call.message.edit_text("Главное меню. Чем можем помочь?", reply_markup=main_menu_kb())
+    try:
+        await call.message.edit_text("Главное меню. Чем можем помочь?", reply_markup=main_menu_kb())
+    except Exception:
+        await call.message.answer("Главное меню. Чем можем помочь?", reply_markup=main_menu_kb())
     await call.answer()
+
+
+@router.message(Command("menu"))
+async def cmd_menu(message: Message, state: FSMContext):
+    if await is_admin(message.from_user.id):
+        return
+    await state.clear()
+    await message.answer("Главное меню. Чем можем помочь?", reply_markup=main_menu_kb())
 
 
 # ============================================================
@@ -349,8 +360,10 @@ async def cb_new_ticket(call: CallbackQuery, state: FSMContext):
         await state.update_data(ticket_id=existing["id"])
         await call.message.edit_text(
             f"📨 У вас уже есть активное обращение #{existing['id']}.\n"
-            f"Просто напишите сообщение — оно попадёт в поддержку.\n\n"
-            f"Чтобы вернуться в меню — /start",
+            f"Просто напишите сообщение — оно попадёт в поддержку.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_to_menu")]
+            ])
         )
         await call.answer()
         return
@@ -394,8 +407,10 @@ async def first_ticket_message(message: Message, state: FSMContext):
     await message.answer(
         f"✅ Обращение <b>#{ticket_id}</b> создано.\n\n"
         f"Мы получили ваше сообщение и скоро ответим. "
-        f"Можете продолжать писать сюда — все сообщения попадут в это же обращение.\n\n"
-        f"Команда /start — главное меню."
+        f"Можете продолжать писать сюда — все сообщения попадут в это же обращение.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_to_menu")]
+        ])
     )
 
     user_info = format_user_info(user)
@@ -420,16 +435,64 @@ async def continue_ticket_message(message: Message, state: FSMContext):
     data = await state.get_data()
     ticket_id = data.get("ticket_id")
 
-    if not ticket_id:
-        ticket = await get_open_ticket_for_user(message.from_user.id)
-        if ticket:
-            ticket_id = ticket["id"]
-            await state.update_data(ticket_id=ticket_id)
-        else:
+    # Проверяем актуальное состояние тикета в БД
+    if ticket_id:
+        ticket = await get_ticket(ticket_id)
+        if not ticket or ticket["status"] == "closed":
+            # Тикет закрыт админом — сбрасываем состояние и создаём НОВЫЙ тикет
             await state.clear()
-            await message.answer("Активного обращения нет. Откройте новое через /start.")
-            return
+            ticket_id = None
 
+    if not ticket_id:
+        # Создаём новый тикет от первого сообщения
+        user_dict = {
+            "id": message.from_user.id,
+            "username": message.from_user.username,
+            "first_name": message.from_user.first_name,
+            "last_name": message.from_user.last_name,
+        }
+        text = message.text or message.caption or "(без текста / медиа)"
+        new_ticket = await create_ticket(user_dict, text)
+        ticket_id = new_ticket["id"]
+
+        await add_message(
+            ticket_id=ticket_id,
+            sender_type="user",
+            sender_id=user_dict["id"],
+            sender_name=user_dict.get("first_name") or user_dict.get("username") or str(user_dict["id"]),
+            text=text,
+            tg_message_id=message.message_id,
+        )
+
+        await state.set_state(UserStates.chatting)
+        await state.update_data(ticket_id=ticket_id)
+
+        await message.answer(
+            f"✅ Новое обращение <b>#{ticket_id}</b> создано.\n\n"
+            f"Мы получили ваше сообщение и скоро ответим.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_to_menu")]
+            ])
+        )
+
+        user_info = format_user_info(user_dict)
+        notification = (
+            f"🆕 <b>Новый тикет #{ticket_id}</b>\n\n"
+            f"От: {user_info}\n\n"
+            f"<i>Сообщение:</i>\n{html.escape(text)}"
+        )
+        await notify_admins(notification, ticket_id=ticket_id, ticket_status="open")
+
+        if message.photo or message.document or message.video or message.voice:
+            admins = await get_admins(active_only=True)
+            for admin in admins:
+                try:
+                    await message.forward(admin["user_id"])
+                except Exception:
+                    pass
+        return
+
+    # Тикет открыт — продолжаем диалог в нём
     text = message.text or message.caption or "(без текста / медиа)"
     user = message.from_user
 
@@ -441,10 +504,6 @@ async def continue_ticket_message(message: Message, state: FSMContext):
         text=text,
         tg_message_id=message.message_id,
     )
-
-    ticket = await get_ticket(ticket_id)
-    if ticket and ticket["status"] == "closed":
-        await update_ticket_status(ticket_id, "open")
 
     user_info = format_user_info({
         "id": user.id,
@@ -468,7 +527,12 @@ async def continue_ticket_message(message: Message, state: FSMContext):
             except Exception:
                 pass
 
-    await message.answer("✉️ Передано в поддержку.")
+    await message.answer(
+        "✉️ Передано в поддержку.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_to_menu")]
+        ])
+    )
 
 
 # ============================================================
@@ -808,9 +872,14 @@ async def admin_reply_handler(message: Message, state: FSMContext):
 # ЗАПУСК
 # ============================================================
 async def main():
+    from aiogram.types import BotCommand
     log.info("Support bot starting...")
     me = await bot.get_me()
     log.info(f"Bot: @{me.username} (id={me.id})")
+    await bot.set_my_commands([
+        BotCommand(command="start", description="🏠 Главное меню"),
+        BotCommand(command="menu", description="🏠 Меню"),
+    ])
     await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 
 
