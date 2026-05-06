@@ -7,10 +7,21 @@ from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
 from supabase import create_client
 from config import *
+import yookassa_client
+import re
 
-bot = Bot(token=BOT_TOKEN)
+
+class BuyStates(StatesGroup):
+    waiting_email = State()
+
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 
@@ -174,7 +185,7 @@ async def give_new_user_bonus(user_id, days=7):
             create_db_subscription(user_id, 1, days, client_uuid, sub_url)
             await bot.send_message(user_id,
                 f"🎁 Вам начислено {days} дней бесплатного доступа!\n\n"
-                f"Ваша ссылка подписки:\n`{sub_url}`\n\n"
+                f"Ваша ссылка подписки:\n{sub_url}\n\n"
                 f"Нажмите /start для подключения!"
             )
     except Exception as e:
@@ -348,10 +359,102 @@ async def choose_payment(callback: types.CallbackQuery):
     await callback.answer()
 
 @dp.callback_query(lambda c: c.data.startswith("pay_card_"))
-async def pay_card(callback: types.CallbackQuery):
-    await callback.answer(
-        "⏳ Оплата картой скоро будет доступна!\nПока напишите: @TuVPNSupport_bot",
-        show_alert=True
+async def pay_card(callback: types.CallbackQuery, state: FSMContext):
+    parts = callback.data.split("_")
+    devices = int(parts[2])
+    months = parts[3]
+    price = PRICES[devices][months]
+    months_label = {"1": "1 месяц", "3": "3 месяца", "12": "1 год"}[months]
+
+    # Запоминаем выбор пользователя в state
+    await state.set_state(BuyStates.waiting_email)
+    await state.update_data(devices=devices, months=months, price=price, months_label=months_label)
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Отменить", callback_data="cancel_buy")],
+    ])
+    await callback.message.answer(
+        f"📧 Введите ваш email для отправки чека\n\n"
+        f"📦 {months_label} / {devices} уст. / {price} ₽\n\n"
+        f"Чек будет отправлен на указанный email.",
+        reply_markup=kb,
+    )
+    await callback.answer()
+
+
+@dp.callback_query(lambda c: c.data == "cancel_buy")
+async def cancel_buy(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.answer("Покупка отменена. Главное меню — /start")
+    await callback.answer()
+
+
+@dp.message(BuyStates.waiting_email)
+async def process_email(message: types.Message, state: FSMContext):
+    email = (message.text or "").strip()
+
+    # Простая валидация email
+    if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+        await message.answer("❌ Это не похоже на email. Попробуйте ещё раз или нажмите «Отменить».")
+        return
+
+    data = await state.get_data()
+    devices = data["devices"]
+    months = data["months"]
+    price = data["price"]
+    months_label = data["months_label"]
+
+    user_id = message.from_user.id
+    description = f"TuVPN: {months_label}, {devices} уст."
+
+    try:
+        payment = yookassa_client.create_payment(
+            amount=price,
+            description=description,
+            user_id=user_id,
+            devices=devices,
+            months=int(months),
+            email=email,
+        )
+    except Exception as e:
+        logging.error(f"Ошибка создания платежа: {e}")
+        await message.answer(
+            f"⚠️ Не удалось создать платёж. Попробуйте позже или напишите в поддержку @TuVPNSupport_bot"
+        )
+        await state.clear()
+        return
+
+    # Записываем платёж в Supabase в статусе pending
+    try:
+        sb.table("payments").insert({
+            "provider": "yookassa",
+            "provider_payment_id": payment["payment_id"],
+            "user_id": user_id,
+            "amount": price,
+            "currency": "RUB",
+            "status": payment["status"],
+            "email": email,
+            "devices": devices,
+            "months": int(months),
+            "description": description,
+            "confirmation_url": payment["confirmation_url"],
+        }).execute()
+    except Exception as e:
+        logging.error(f"Не удалось записать платёж в БД: {e}")
+
+    await state.clear()
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💳 Оплатить", url=payment["confirmation_url"])],
+    ])
+    await message.answer(
+        f"✅ Платёж создан!\n\n"
+        f"📦 {months_label} / {devices} уст.\n"
+        f"💰 Сумма: {price} ₽\n"
+        f"📧 Email для чека: {email}\n\n"
+        f"Нажмите кнопку ниже, чтобы оплатить.\n"
+        f"После успешной оплаты ссылка для подключения появится в боте в разделе «🔌 Подключиться».",
+        reply_markup=kb,
     )
 
 @dp.callback_query(lambda c: c.data == "channel")

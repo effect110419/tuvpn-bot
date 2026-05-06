@@ -17,3 +17,9 @@ FALLBACK_ADMIN_IDS = [784871620, 1027228622]
 # --- Новый базовый URL для ссылок подписок (через nginx + SSL) ---
 SUB_BASE_URL = "https://sub.tuvpn.ru"
 
+
+# --- ЮКасса ---
+YOOKASSA_SHOP_ID = "1349955"
+YOOKASSA_SECRET_KEY = "live_CObfJWFHfBYxxkDbDRV3a8yms8JqAw1DR5ZI6gH1ZN0"
+YOOKASSA_RETURN_URL = "https://t.me/MaxArtVPN_bot"
+YOOKASSA_WEBHOOK_PATH = "/yookassa/webhook"
