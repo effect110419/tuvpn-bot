@@ -448,7 +448,12 @@ async def back(callback: types.CallbackQuery):
     await callback.answer()
 
 async def main():
+    from aiogram.types import BotCommand
     logging.basicConfig(level=logging.INFO)
+    await bot.set_my_commands([
+        BotCommand(command="start", description="🏠 Главное меню"),
+        BotCommand(command="menu", description="📋 Меню"),
+    ])
     asyncio.create_task(check_expired())
     await dp.start_polling(bot)
 
