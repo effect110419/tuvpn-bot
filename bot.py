@@ -518,7 +518,7 @@ async def howto(callback: types.CallbackQuery):
         "🍏 <b>iPhone / iPad</b>\n"
         "━━━━━━━━━━━━━━━━━━━\n\n"
         "1️⃣ Установите приложение <b>Happ</b>\n"
-        "👉 <a href=\"https://apps.apple.com/app/happ-proxy-utility-plus/id6747821703\">Открыть в App Store</a>\n\n"
+        "👉 <a href=\"https://apps.apple.com/app/happ-proxy-utility/id6504287215\">Открыть в App Store</a>\n\n"
         "2️⃣ Вернитесь в бот → нажмите <b>«🔌 Подключиться»</b>\n\n"
         "3️⃣ Скопируйте ссылку подписки (она появится в сообщении)\n\n"
         "4️⃣ Откройте Happ → нажмите <b>➕</b> в правом верхнем углу\n\n"
@@ -537,7 +537,8 @@ async def howto(callback: types.CallbackQuery):
         "━━━━━━━━━━━━━━━━━━━\n\n"
         "❓ <b>Что-то пошло не так?</b>\n"
         "Напишите нам в @TuVPNSupport_bot — поможем разобраться 🙌",
-        reply_markup=kb
+        reply_markup=kb,
+        disable_web_page_preview=True
     )
     await callback.answer()
 
