@@ -280,6 +280,31 @@ def format_user_info(user: dict) -> str:
     return " · ".join(parts)
 
 
+async def format_ticket_status(ticket: dict) -> str:
+    """Форматирует статус тикета с указанием кто взял в работу."""
+    status = ticket.get("status", "open")
+    if status == "open":
+        return "🟢 Открыт (не назначен)"
+    if status == "closed":
+        return "✅ Закрыт"
+    if status == "in_progress":
+        admin_id = ticket.get("assigned_admin_id")
+        admin_name = "—"
+        if admin_id:
+            try:
+                admins = await get_admins(active_only=False)
+                for a in admins:
+                    if a["user_id"] == admin_id:
+                        admin_name = a.get("full_name") or a.get("username") or str(admin_id)
+                        break
+                else:
+                    admin_name = str(admin_id)
+            except Exception:
+                admin_name = str(admin_id)
+        return f"🟡 В работе у <b>{html.escape(admin_name)}</b>"
+    return status
+
+
 # ============================================================
 # /start
 # ============================================================
@@ -414,8 +439,11 @@ async def first_ticket_message(message: Message, state: FSMContext):
     )
 
     user_info = format_user_info(user)
+    fresh_ticket = await get_ticket(ticket_id)
+    status_line = await format_ticket_status(fresh_ticket) if fresh_ticket else "🟢 Открыт"
     notification = (
-        f"🆕 <b>Новый тикет #{ticket_id}</b>\n\n"
+        f"🆕 <b>Новый тикет #{ticket_id}</b>\n"
+        f"📌 Статус: {status_line}\n\n"
         f"От: {user_info}\n\n"
         f"<i>Сообщение:</i>\n{html.escape(text)}"
     )
@@ -512,12 +540,15 @@ async def continue_ticket_message(message: Message, state: FSMContext):
         "last_name": user.last_name,
     })
 
+    fresh_ticket = await get_ticket(ticket_id)
+    status_line = await format_ticket_status(fresh_ticket) if fresh_ticket else "🟢 Открыт"
     forward_text = (
         f"💬 <b>Тикет #{ticket_id}</b> — новое сообщение\n"
+        f"📌 Статус: {status_line}\n\n"
         f"От: {user_info}\n\n"
         f"{html.escape(text)}"
     )
-    await notify_admins(forward_text, ticket_id=ticket_id, ticket_status=ticket["status"] if ticket else "open")
+    await notify_admins(forward_text, ticket_id=ticket_id, ticket_status=fresh_ticket["status"] if fresh_ticket else "open")
 
     if message.photo or message.document or message.video or message.voice:
         admins = await get_admins(active_only=True)
@@ -624,10 +655,10 @@ async def cmd_ticket_info(message: Message, command: CommandObject):
         "last_name": ticket.get("last_name"),
     })
 
-    status_ru = {"open": "🟢 Открыт", "in_progress": "🟡 В работе", "closed": "✅ Закрыт"}
+    status_line = await format_ticket_status(ticket)
     header = (
         f"<b>Тикет #{ticket_id}</b>\n"
-        f"Статус: {status_ru.get(ticket['status'], ticket['status'])}\n"
+        f"Статус: {status_line}\n"
         f"Создан: {ticket['created_at'][:16]}\n"
         f"Пользователь: {user_info}\n"
         f"━━━━━━━━━━━━━━━━━━"
