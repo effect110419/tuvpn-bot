@@ -246,21 +246,68 @@ def main_menu():
 async def start(message: types.Message):
     args = message.text.split()
     referrer_id = int(args[1]) if len(args) > 1 and args[1].isdigit() else None
-    is_new = register_user(message.from_user.id, message.from_user.username,
-                           message.from_user.first_name, message.from_user.last_name, referrer_id)
-    if is_new and referrer_id and referrer_id != message.from_user.id:
+    user_id = message.from_user.id
+    first_name = message.from_user.first_name or ""
+
+    is_new = register_user(user_id, message.from_user.username,
+                           first_name, message.from_user.last_name, referrer_id)
+
+    if is_new and referrer_id and referrer_id != user_id:
         try:
-            sb.table("referrals").insert({"referrer_id": referrer_id, "referred_id": message.from_user.id}).execute()
-            await give_new_user_bonus(message.from_user.id, 7)
+            sb.table("referrals").insert({"referrer_id": referrer_id, "referred_id": user_id}).execute()
+            await give_new_user_bonus(user_id, 7)
             await give_referral_bonus(referrer_id, 3, "Друг перешёл по вашей ссылке")
         except Exception as e:
             logging.error(f"referral processing: {e}")
+
+        await message.answer(
+            f"🎁 <b>Добро пожаловать{', ' + first_name if first_name else ''}!</b>\n\n"
+            f"Ваш друг пригласил вас в <b>TuVPN</b> — мы дарим вам "
+            f"<b>7 дней бесплатного доступа</b> 🚀\n\n"
+            f"✅ Подписка уже активна\n"
+            f"📱 Доступно: 1 устройство\n\n"
+            f"Чтобы начать — нажмите <b>«🔌 Подключиться»</b> в меню ниже.",
+            reply_markup=main_menu()
+        )
+        return
+
+    sub = get_subscription(user_id)
+    if sub:
+        try:
+            from datetime import datetime as _dt
+            exp = _dt.fromisoformat(sub["expires_at"].replace("Z", "+00:00"))
+            if exp.tzinfo is not None:
+                exp = exp.replace(tzinfo=None)
+            days_left = max(0, (exp - _dt.now()).days)
+        except Exception:
+            days_left = 0
+
+        greeting = f"С возвращением{', ' + first_name if first_name else ''}! 👋"
+        if days_left > 0:
+            text = (
+                f"{greeting}\n\n"
+                f"✅ Ваша подписка активна\n"
+                f"📅 До: <b>{exp.strftime('%d.%m.%Y')}</b> (осталось {days_left} дн.)\n"
+                f"📱 Устройств: <b>{sub['devices']}</b>\n\n"
+                f"Откройте «🔌 Подключиться» — там ссылка и инструкция."
+            )
+        else:
+            text = (
+                f"{greeting}\n\n"
+                f"⚠️ Ваша подписка <b>истекла</b>\n\n"
+                f"Продлите её — нажмите «🛒 Оформить подписку»."
+            )
+        await message.answer(text, reply_markup=main_menu())
+        return
+
     await message.answer(
-        "Привет! 🖐\n\n"
-        "🌊 TuVPN — просто включи и пользуйся.\n\n"
-        "⚡️ Работает сразу после оплаты\n"
-        "💰 Честные цены без переплат\n"
-        "🎬 Instagram, YouTube, Telegram — всё открыто",
+        f"Привет{', ' + first_name if first_name else ''}! 👋\n\n"
+        f"🌊 <b>TuVPN</b> — просто включи и пользуйся.\n\n"
+        f"⚡️ Подписка активна сразу после оплаты\n"
+        f"💰 Честные цены без переплат\n"
+        f"🎬 Instagram, YouTube, Telegram — всё открыто\n"
+        f"🔒 VLESS+Reality — современный незаметный протокол\n\n"
+        f"Нажмите «🛒 Оформить подписку» чтобы начать.",
         reply_markup=main_menu()
     )
 
@@ -270,47 +317,58 @@ async def menu(message: types.Message):
 
 @dp.callback_query(lambda c: c.data == "connect")
 async def connect(callback: types.CallbackQuery):
-    sub = get_subscription(callback.from_user.id)
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🚀 Подключить VPN", callback_data="howto")],
-        [InlineKeyboardButton(text="🛒 Продлить / Купить подписку", callback_data="buy")],
-        [InlineKeyboardButton(text="📱 Мои устройства", callback_data="my_devices")],
-        [InlineKeyboardButton(text="🏠 На старт", callback_data="back")],
-    ])
+    user_id = callback.from_user.id
+    sub = get_subscription(user_id)
+
     if sub:
-        expires = datetime.fromisoformat(sub["expires_at"]).strftime("%d.%m.%Y")
-        text = (
-            f"Подписка активна до: {expires}\n\n"
-            f"👤 ID: {callback.from_user.id}\n"
-            f"📊 Статус: активна\n"
-            f"📱 Устройств: {sub['devices']}\n\n"
-            f"Ваша ссылка подписки:\n{sub['sub_url']}\n\n"
-            f"🛠 Поддержка: @TuVPNSupport_bot\n\n"
-            f"Нажмите Подключить VPN и следуйте инструкции"
-        )
+        try:
+            from datetime import datetime as _dt
+            exp = _dt.fromisoformat(sub["expires_at"].replace("Z", "+00:00"))
+            if exp.tzinfo is not None:
+                exp = exp.replace(tzinfo=None)
+            days_left = max(0, (exp - _dt.now()).days)
+        except Exception:
+            days_left = 0
+
+        if days_left > 0:
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="📲 Как настроить", callback_data="howto")],
+                [InlineKeyboardButton(text="🔄 Продлить / изменить тариф", callback_data="buy")],
+                [InlineKeyboardButton(text="◀️ Назад", callback_data="back")],
+            ])
+            text = (
+                f"🔌 <b>Подключение к TuVPN</b>\n\n"
+                f"✅ Подписка активна\n"
+                f"📅 До: <b>{exp.strftime('%d.%m.%Y')}</b> (осталось {days_left} дн.)\n"
+                f"📱 Тариф: <b>{sub['devices']} устр.</b>\n\n"
+                f"🔗 <b>Ваша ссылка для подключения:</b>\n"
+                f"<code>{sub['sub_url']}</code>\n\n"
+                f"👆 Нажмите на ссылку чтобы скопировать.\n\n"
+                f"📲 Если впервые подключаетесь — нажмите «Как настроить»."
+            )
+        else:
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔄 Продлить подписку", callback_data="buy")],
+                [InlineKeyboardButton(text="◀️ Назад", callback_data="back")],
+            ])
+            text = (
+                f"🔌 <b>Подключение к TuVPN</b>\n\n"
+                f"⚠️ Ваша подписка <b>истекла</b> {exp.strftime('%d.%m.%Y')}\n\n"
+                f"Продлите её — и сразу сможете пользоваться."
+            )
     else:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🛒 Оформить подписку", callback_data="buy")],
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="back")],
+        ])
         text = (
-            f"👤 ID: {callback.from_user.id}\n"
-            f"📊 Статус: не активна\n\n"
-            f"У вас нет активной подписки.\n"
-            f"Оформите подписку чтобы получить доступ!\n\n"
-            f"🛠 Поддержка: @TuVPNSupport_bot"
+            f"🔌 <b>Подключение к TuVPN</b>\n\n"
+            f"❌ У вас пока нет активной подписки\n\n"
+            f"Чтобы пользоваться TuVPN — оформите подписку. Это займёт 1 минуту, а после оплаты ссылка появится прямо здесь."
         )
-    await callback.message.answer(text, reply_markup=kb)
+    await callback.message.answer(text, reply_markup=kb, disable_web_page_preview=True)
     await callback.answer()
 
-@dp.callback_query(lambda c: c.data == "my_devices")
-async def my_devices(callback: types.CallbackQuery):
-    sub = get_subscription(callback.from_user.id)
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ Добавить устройства", callback_data="buy")],
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="connect")],
-    ])
-    await callback.message.answer(
-        f"📱 Ваши устройства\n\nПодключено устройств: {sub['devices'] if sub else 0}\n\nХотите больше?",
-        reply_markup=kb
-    )
-    await callback.answer()
 
 @dp.callback_query(lambda c: c.data == "buy")
 async def buy(callback: types.CallbackQuery):
@@ -327,14 +385,31 @@ async def buy(callback: types.CallbackQuery):
 async def choose_period(callback: types.CallbackQuery):
     devices = int(callback.data.split("_")[1])
     p = PRICES[devices]
+    # Считаем скидки относительно цены за месяц при покупке на 1 мес
+    price_per_month_1 = p["1"]
+    price_per_month_3 = p["3"] / 3
+    price_per_month_12 = p["12"] / 12
+    discount_3 = round((1 - price_per_month_3 / price_per_month_1) * 100)
+    discount_12 = round((1 - price_per_month_12 / price_per_month_1) * 100)
+
+    label_3 = f"📆 3 месяца — {p['3']} ₽"
+    if discount_3 > 0:
+        label_3 += f" (−{discount_3}%)"
+
+    label_12 = f"🏆 1 год — {p['12']} ₽"
+    if discount_12 > 0:
+        label_12 += f" 🔥 −{discount_12}%"
+
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"🗓 1 месяц / {devices} уст. — {p['1']} ₽", callback_data=f"period_{devices}_1")],
-        [InlineKeyboardButton(text=f"📆 3 месяца / {devices} уст. — {p['3']} ₽", callback_data=f"period_{devices}_3")],
-        [InlineKeyboardButton(text=f"🏆 1 год / {devices} уст. — {p['12']} ₽", callback_data=f"period_{devices}_12")],
+        [InlineKeyboardButton(text=f"🗓 1 месяц — {p['1']} ₽", callback_data=f"period_{devices}_1")],
+        [InlineKeyboardButton(text=label_3, callback_data=f"period_{devices}_3")],
+        [InlineKeyboardButton(text=label_12, callback_data=f"period_{devices}_12")],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="buy")],
     ])
     await callback.message.answer(
-        f"🌊 Оформление подписки TuVPN\n\n🔹 Устройств: {devices}\nВыберите период:",
+        f"🌊 <b>Оформление подписки TuVPN</b>\n\n"
+        f"🔹 Устройств: <b>{devices}</b>\n"
+        f"Выберите период — чем дольше, тем выгоднее:",
         reply_markup=kb
     )
     await callback.answer()
@@ -511,7 +586,10 @@ async def _ask_email(message, state: FSMContext):
 @dp.callback_query(lambda c: c.data == "cancel_buy")
 async def cancel_buy(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
-    await callback.message.answer("Покупка отменена. Главное меню — /start")
+    await callback.message.answer(
+        "Покупка отменена. Что дальше?",
+        reply_markup=main_menu()
+    )
     await callback.answer()
 
 
@@ -602,14 +680,16 @@ async def process_email(message: types.Message, state: FSMContext):
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💳 Оплатить", url=payment["confirmation_url"])],
+        [InlineKeyboardButton(text="◀️ Главное меню", callback_data="back")],
     ])
     await message.answer(
         f"✅ <b>Платёж создан!</b>\n\n"
         f"📦 {months_label} / {devices} уст.{promo_line}\n"
         f"💰 К оплате: <b>{final_price} ₽</b>\n"
         f"📧 Email для чека: {email}\n\n"
-        f"Нажмите кнопку ниже, чтобы оплатить.\n"
-        f"После успешной оплаты ссылка для подключения появится в боте в разделе «🔌 Подключиться».",
+        f"Нажмите «💳 Оплатить» чтобы перейти к оплате.\n"
+        f"После успешной оплаты ссылка для подключения появится в боте в разделе «🔌 Подключиться».\n\n"
+        f"💡 Если передумали — просто закройте этот экран, платёж не пройдёт без оплаты в течение 30 минут.",
         reply_markup=kb,
     )
 
@@ -626,7 +706,7 @@ async def about(callback: types.CallbackQuery):
         "━━━━━━━━━━━━━━━━\n\n"
         "💎 ПОЧЕМУ TUVPN:\n"
         "🏎 Скорость → Без тормозов и просадок\n"
-        "🌍 Серверы → Европа, стабильный пинг\n"
+        "🌍 Серверы: Финляндия 🇫🇮\n"
         "👁 Без логов → Мы не следим за тобой\n"
         "📲 Устройства → Android, iPhone, ПК\n"
         "🎬 Контент → YouTube, Instagram без ограничений\n"
@@ -648,18 +728,52 @@ async def about(callback: types.CallbackQuery):
 async def referral(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     ref_link = f"https://t.me/MaxArtVPN_bot?start={user_id}"
+
+    # Личная статистика пользователя
+    invited_total = 0
+    invited_paid = 0
+    bonus_days_balance = 0
+    try:
+        # Кого пригласил
+        invited = sb.table("users").select("user_id").eq("referrer_id", user_id).execute()
+        invited_total = len(invited.data or [])
+        if invited.data:
+            invited_ids = [u["user_id"] for u in invited.data]
+            # Из них кто оплатил (есть успешный платёж)
+            paid_check = sb.table("payments").select("user_id").in_("user_id", invited_ids).eq("status", "succeeded").execute()
+            invited_paid = len(set(p["user_id"] for p in (paid_check.data or [])))
+        # Bonus_days в копилке
+        u_row = sb.table("users").select("bonus_days").eq("user_id", user_id).limit(1).execute()
+        bonus_days_balance = (u_row.data[0].get("bonus_days") or 0) if u_row.data else 0
+    except Exception as e:
+        logging.error(f"referral stats error: {e}")
+
+    stats_block = ""
+    if invited_total > 0 or bonus_days_balance > 0:
+        stats_block = (
+            f"📊 <b>Ваша статистика:</b>\n"
+            f"👥 Приглашено: <b>{invited_total}</b>"
+        )
+        if invited_total > 0:
+            stats_block += f" (из них оплатили: {invited_paid})"
+        stats_block += f"\n🎁 В копилке: <b>{bonus_days_balance} дн.</b>\n\n"
+
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📤 Поделиться ссылкой", switch_inline_query=ref_link)],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="back")],
     ])
     await callback.message.answer(
-        "🤝 Позови друга — получи дни в подарок!\n\n"
-        "Твой друг получит 7 дней TuVPN бесплатно 🎁\n\n"
-        "А ты получишь:\n"
-        "➕ 3 дня — за переход друга по ссылке\n"
-        "➕ 7 дней — за каждую оплату подписки другом\n\n"
-        f"🔗 Твоя ссылка:\n`{ref_link}`",
-        reply_markup=kb
+        f"🤝 <b>Позови друга — получи дни в подарок!</b>\n\n"
+        f"{stats_block}"
+        f"Твой друг получит <b>7 дней TuVPN бесплатно</b> 🎁\n\n"
+        f"А ты получишь:\n"
+        f"➕ <b>3 дня</b> — за переход друга по ссылке\n"
+        f"➕ <b>7 дней</b> — за каждую оплату подписки другом\n\n"
+        f"🔗 <b>Твоя ссылка:</b>\n"
+        f"<code>{ref_link}</code>\n\n"
+        f"👆 Нажмите чтобы скопировать",
+        reply_markup=kb,
+        disable_web_page_preview=True
     )
     await callback.answer()
 
@@ -674,7 +788,7 @@ async def howto(callback: types.CallbackQuery):
         "🍏 <b>iPhone / iPad</b>\n"
         "━━━━━━━━━━━━━━━━━━━\n\n"
         "1️⃣ Установите приложение <b>Happ</b>\n"
-        "👉 <a href=\"https://apps.apple.com/app/happ-proxy-utility/id6504287215\">Открыть в App Store</a>\n\n"
+        "👉 <a href=\"https://apps.apple.com/ru/app/happ-proxy-utility-plus/id6746188973\">Открыть в App Store</a>\n\n"
         "2️⃣ Вернитесь в бот → нажмите <b>«🔌 Подключиться»</b>\n\n"
         "3️⃣ Скопируйте ссылку подписки (она появится в сообщении)\n\n"
         "4️⃣ Откройте Happ → нажмите <b>➕</b> в правом верхнем углу\n\n"
@@ -705,10 +819,9 @@ async def support(callback: types.CallbackQuery):
         [InlineKeyboardButton(text="◀️ Назад", callback_data="back")],
     ])
     await callback.message.answer(
-        "🛠 Помощь TuVPN\n\n"
-        "На связи и готовы решить любой вопрос!\n\n"
-        "✉️ Пиши — отвечаем быстро\n"
-        "⏱ Среднее время ответа: до 1 часа\n\n"
+        "🛠 <b>Помощь TuVPN</b>\n\n"
+        "На связи и готовы решить любой вопрос — будь то проблемы с подключением, оплатой или просто совет.\n\n"
+        "✉️ Напишите нам — ответим как можно скорее.\n\n"
         "👉 @TuVPNSupport_bot",
         reply_markup=kb
     )
@@ -741,7 +854,7 @@ async def have_promo(callback: types.CallbackQuery, state: FSMContext):
     ])
     await callback.message.answer(
         "✍️ <b>Введите промокод</b>\n\n"
-        "Промокоды чувствительны к регистру. Например: <code>TEST20</code>",
+        "Введите код в сообщение ниже. Регистр не важен — мы приведём к верхнему автоматически.",
         reply_markup=kb,
     )
     await callback.answer()
