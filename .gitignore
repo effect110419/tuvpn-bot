@@ -3,3 +3,8 @@ tuvpn.db
 __pycache__/
 *.pyc
 .env
+
+# Backup files
+*.backup
+*.backup*
+backup_*
