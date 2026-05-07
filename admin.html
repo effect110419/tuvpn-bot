@@ -265,7 +265,7 @@
     <div class="page" id="page-server">
       <div class="stats-grid" style="grid-template-columns:repeat(3,1fr)">
         <div class="stat-card green"><div class="stat-label">Статус</div><div class="stat-value green" style="font-size:18px;">🟢 Online</div><div class="stat-sub">Финляндия</div></div>
-        <div class="stat-card blue"><div class="stat-label">IP адрес</div><div class="stat-value blue" style="font-size:18px;font-family:'Space Mono'">89.125.53.210</div></div>
+        <div class="stat-card blue"><div class="stat-label">IP адрес</div><div class="stat-value blue" style="font-size:18px;font-family:'Space Mono'">tuvpn.ru</div></div>
         <div class="stat-card purple"><div class="stat-label">Протокол</div><div class="stat-value purple" style="font-size:16px;">VLESS Reality</div></div>
       </div>
       <div class="grid-2">
@@ -535,7 +535,7 @@ async function grantSubscription(){
   notify('⏳ Создаём ключ...','');
 
   try{
-    const r=await fetch('https://89.125.53.210:8443/admin-api/grant',{
+    const r=await fetch('https://admin.tuvpn.ru/admin-api/grant',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
       body:JSON.stringify({user_id:parseInt(uid),devices:dev,days:d})
@@ -543,13 +543,8 @@ async function grantSubscription(){
     const data=await r.json();
 
     if(data.success){
-      // Деактивируем старые подписки
-      const old=subs.filter(s=>s.user_id==uid&&s.status==='active');
-      for(const s of old)await apiPatch('subscriptions','id=eq.'+s.id,{status:'inactive'});
-      // Создаём новую с уникальной ссылкой
-      const exp=new Date(Date.now()+d*86400000).toISOString();
-      await apiPost('subscriptions',{user_id:parseInt(uid),devices:dev,status:'active',
-        sub_url:data.sub_url,started_at:new Date().toISOString(),expires_at:exp});
+      // Прокси уже сам обновил БД (продлил или создал подписку).
+      // Админка только сохраняет client_uuid в users.
       // Сохраняем uuid в users
       await fetch(SB+'/rest/v1/users?user_id=eq.'+uid,{method:'PATCH',
         headers:{...H,'Prefer':'return=minimal'},

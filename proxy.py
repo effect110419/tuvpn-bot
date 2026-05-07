@@ -72,15 +72,51 @@ def subscription(client_uuid):
     return Response(encoded, headers=headers)
 
 def issue_subscription(uid: int, devices: int, days: int) -> dict:
-    """Создаёт или обновляет подписку в 3X-UI и Supabase."""
+    """
+    Создаёт или обновляет подписку в 3X-UI и Supabase.
+    Если у пользователя уже есть активная неистёкшая подписка — продлевает её
+    от текущего expires_at, а не перезаписывает срок.
+    """
     from datetime import datetime, timedelta
     import json, uuid
-    expire_ms = int((datetime.now() + timedelta(days=days)).timestamp() * 1000)
     ts = int(datetime.now().timestamp())
     s = xui_session()
     sub_id, existing_uuid, existing_devices = get_existing_client(uid)
 
     if existing_uuid:
+        # Получаем текущий expires_at из БД для этой подписки
+        sub_row = sb.table("subscriptions").select("expires_at").eq("id", sub_id).limit(1).execute()
+        now = datetime.now()
+        base_expires = now
+        if sub_row.data and sub_row.data[0].get("expires_at"):
+            try:
+                current_exp = datetime.fromisoformat(sub_row.data[0]["expires_at"].replace("Z", "+00:00"))
+                # Если работаем с aware datetime — приводим к naive для сравнения
+                if current_exp.tzinfo is not None:
+                    current_exp = current_exp.replace(tzinfo=None)
+                # Продлеваем от current_exp если он в будущем, иначе от сейчас
+                if current_exp > now:
+                    base_expires = current_exp
+            except Exception as e:
+                app.logger.warning(f"Не удалось распарсить expires_at: {e}")
+
+        # Учитываем накопленные бонусные дни пользователя
+        bonus_days = 0
+        try:
+            user_row = sb.table("users").select("bonus_days").eq("user_id", uid).limit(1).execute()
+            bonus_days = (user_row.data[0].get("bonus_days") or 0) if user_row.data else 0
+        except Exception:
+            pass
+        total_days = days + bonus_days
+        new_expires = base_expires + timedelta(days=total_days)
+        expire_ms = int(new_expires.timestamp() * 1000)
+        if bonus_days > 0:
+            try:
+                sb.table("users").update({"bonus_days": 0}).eq("user_id", uid).execute()
+                app.logger.info(f"Применены {bonus_days} бонусных дней для user_id={uid}")
+            except Exception as e:
+                app.logger.error(f"Не удалось обнулить bonus_days: {e}")
+
         payload = {
             "id": INBOUND_ID,
             "settings": json.dumps({"clients": [{
@@ -99,13 +135,30 @@ def issue_subscription(uid: int, devices: int, days: int) -> dict:
             sub_url = f"{SUB_BASE_URL}/sub/{existing_uuid}"
             sb.table("subscriptions").update({
                 "devices": devices,
-                "expires_at": (datetime.now() + timedelta(days=days)).isoformat(),
+                "expires_at": new_expires.isoformat(),
                 "sub_url": sub_url,
                 "status": "active"
             }).eq("id", sub_id).execute()
-            return {"success": True, "uuid": existing_uuid, "sub_url": sub_url, "action": "updated"}
+            app.logger.info(f"Подписка продлена user_id={uid}: было до {base_expires}, стало до {new_expires}")
+            return {"success": True, "uuid": existing_uuid, "sub_url": sub_url, "action": "extended"}
         return {"success": False, "error": str(result)}
     else:
+        # Применяем накопленные бонусные дни и для нового клиента
+        bonus_days = 0
+        try:
+            user_row = sb.table("users").select("bonus_days").eq("user_id", uid).limit(1).execute()
+            bonus_days = (user_row.data[0].get("bonus_days") or 0) if user_row.data else 0
+        except Exception:
+            pass
+        total_days = days + bonus_days
+        new_expires = datetime.now() + timedelta(days=total_days)
+        expire_ms = int(new_expires.timestamp() * 1000)
+        if bonus_days > 0:
+            try:
+                sb.table("users").update({"bonus_days": 0}).eq("user_id", uid).execute()
+                app.logger.info(f"Применены {bonus_days} бонусных дней для нового клиента user_id={uid}")
+            except Exception:
+                pass
         client_uuid = str(uuid.uuid4())
         payload = {
             "id": INBOUND_ID,
@@ -127,11 +180,84 @@ def issue_subscription(uid: int, devices: int, days: int) -> dict:
             sb.table("subscriptions").insert({
                 "user_id": uid, "devices": devices, "status": "active",
                 "sub_url": sub_url, "started_at": datetime.now().isoformat(),
-                "expires_at": (datetime.now() + timedelta(days=days)).isoformat()
+                "expires_at": new_expires.isoformat()
             }).execute()
             sb.table("users").update({"client_uuid": client_uuid}).eq("user_id", uid).execute()
             return {"success": True, "uuid": client_uuid, "sub_url": sub_url, "action": "created"}
         return {"success": False, "error": str(result)}
+
+
+def apply_referral_bonus(user_id: int, days: int, reason: str):
+    """
+    Начисляет бонусные дни пользователю.
+    - Если есть активная подписка (не истёкшая) — продлевает её на days дней.
+    - Если подписки нет или истекла — копит в users.bonus_days,
+      эти дни будут добавлены при следующей покупке/выдаче ключа.
+    """
+    from datetime import datetime, timedelta
+    import json
+    now = datetime.now()
+    # Ищем активную неистёкшую подписку
+    subs = sb.table("subscriptions").select("*").eq("user_id", user_id).eq("status", "active").order("expires_at", desc=True).limit(1).execute()
+    has_active = False
+    if subs.data:
+        sub = subs.data[0]
+        try:
+            exp = datetime.fromisoformat(sub["expires_at"].replace("Z", "+00:00"))
+            if exp.tzinfo is not None:
+                exp = exp.replace(tzinfo=None)
+            if exp > now:
+                has_active = True
+        except Exception:
+            pass
+
+    if has_active:
+        # Продлеваем активную подписку
+        sub = subs.data[0]
+        try:
+            exp = datetime.fromisoformat(sub["expires_at"].replace("Z", "+00:00"))
+            if exp.tzinfo is not None:
+                exp = exp.replace(tzinfo=None)
+        except Exception:
+            exp = now
+        new_exp = exp + timedelta(days=days)
+        sb.table("subscriptions").update({"expires_at": new_exp.isoformat()}).eq("id", sub["id"]).execute()
+
+        # Обновляем в 3X-UI
+        try:
+            client_uuid = sub.get("sub_url", "").rsplit("/", 1)[-1]
+            if client_uuid and "-" in client_uuid:
+                s = xui_session()
+                ts_now = int(now.timestamp())
+                payload = {
+                    "id": INBOUND_ID,
+                    "settings": json.dumps({"clients": [{
+                        "id": client_uuid,
+                        "email": f"user_{user_id}_{ts_now}",
+                        "limitIp": sub.get("devices", 1),
+                        "totalGB": 0,
+                        "expiryTime": int(new_exp.timestamp() * 1000),
+                        "enable": True,
+                        "flow": "xtls-rprx-vision"
+                    }]})
+                }
+                s.post(f"{PANEL_URL}/panel/api/inbounds/updateClient/{client_uuid}", json=payload)
+        except Exception as e:
+            app.logger.error(f"Не удалось обновить срок в 3X-UI для бонуса: {e}")
+
+        notify_user(user_id, f"🎁 <b>Бонус +{days} дней!</b>\n{reason}\n\nВаша подписка продлена.")
+    else:
+        # Копим в bonus_days
+        try:
+            user_row = sb.table("users").select("bonus_days").eq("user_id", user_id).limit(1).execute()
+            current_bonus = (user_row.data[0].get("bonus_days") or 0) if user_row.data else 0
+            new_bonus = current_bonus + days
+            sb.table("users").update({"bonus_days": new_bonus}).eq("user_id", user_id).execute()
+            notify_user(user_id, f"🎁 <b>Бонус +{days} дней!</b>\n{reason}\n\nДни сохранены и будут добавлены при следующей оплате подписки. Сейчас на счету: <b>{new_bonus}</b> дн.")
+        except Exception as e:
+            app.logger.error(f"Не удалось сохранить bonus_days: {e}")
+
+
 
 
 def notify_user(user_id: int, text: str) -> bool:
@@ -235,6 +361,16 @@ def yookassa_webhook():
 
             result = issue_subscription(uid, devices, days)
             app.logger.info(f"Выдача подписки по платежу {payment_id}: {result}")
+
+            # Реферальный бонус — рефереру +7 дней за оплату другом
+            try:
+                user_row = sb.table("users").select("referrer_id").eq("user_id", uid).limit(1).execute()
+                referrer_id = (user_row.data[0].get("referrer_id") if user_row.data else None)
+                if referrer_id and referrer_id != uid:
+                    apply_referral_bonus(referrer_id, 7, f"Друг оплатил подписку")
+                    app.logger.info(f"Реф.бонус 7 дней начислен реферу {referrer_id} за оплату user_id={uid}")
+            except Exception as e:
+                app.logger.error(f"Ошибка начисления реф.бонуса: {e}")
 
             if result.get("success"):
                 # Короткое уведомление пользователю — без ссылки, она в боте
