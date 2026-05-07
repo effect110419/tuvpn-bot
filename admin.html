@@ -4,612 +4,2073 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>TuVPN — Admin Panel</title>
-<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <style>
-  :root{--bg:#0a0e1a;--bg2:#0f1526;--bg3:#161d35;--border:#1e2a4a;--accent:#3b82f6;--accent2:#06b6d4;--accent3:#8b5cf6;--green:#10b981;--red:#ef4444;--yellow:#f59e0b;--text:#e2e8f0;--text2:#94a3b8;--text3:#475569;--glow:0 0 40px rgba(59,130,246,0.08)}
-  *{margin:0;padding:0;box-sizing:border-box}
-  body{font-family:'Syne',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;display:flex}
-  .sidebar{width:240px;min-height:100vh;background:var(--bg2);border-right:1px solid var(--border);display:flex;flex-direction:column;position:fixed;left:0;top:0;bottom:0;z-index:100}
-  .logo{padding:28px 24px 20px;border-bottom:1px solid var(--border)}
-  .logo h1{font-size:22px;font-weight:800;background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
-  .logo span{font-family:'Space Mono',monospace;font-size:10px;color:var(--text3);letter-spacing:2px;text-transform:uppercase}
-  .nav{padding:16px 12px;flex:1}
-  .nav-section{font-family:'Space Mono',monospace;font-size:9px;color:var(--text3);letter-spacing:3px;text-transform:uppercase;padding:16px 12px 8px}
-  .nav-item{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:8px;cursor:pointer;color:var(--text2);font-size:14px;font-weight:600;transition:all .2s;margin-bottom:2px}
+  /* ====================================================
+     DESIGN TOKENS — preserved from v1, refined
+     ==================================================== */
+  :root{
+    --bg:#0a0e1a;
+    --bg2:#0f1526;
+    --bg3:#161d35;
+    --bg4:#1c2545;
+    --border:#1e2a4a;
+    --border-strong:#2a3a64;
+    --accent:#3b82f6;
+    --accent-2:#06b6d4;
+    --accent-3:#8b5cf6;
+    --green:#10b981;
+    --red:#ef4444;
+    --yellow:#f59e0b;
+    --orange:#fb923c;
+    --pink:#ec4899;
+    --text:#e2e8f0;
+    --text-2:#94a3b8;
+    --text-3:#64748b;
+    --text-4:#475569;
+    --glow:0 0 60px rgba(59,130,246,.06);
+    --glow-strong:0 0 80px rgba(59,130,246,.12);
+    --shadow-sm:0 2px 8px rgba(0,0,0,.2);
+    --shadow:0 8px 32px rgba(0,0,0,.35);
+    --shadow-lg:0 25px 80px rgba(0,0,0,.5);
+    --r-sm:6px;
+    --r-md:10px;
+    --r-lg:14px;
+    --r-xl:18px;
+    --t-fast:.12s ease;
+    --t-base:.2s ease;
+    --t-slow:.4s cubic-bezier(.22,.61,.36,1);
+    --font-display:'Syne',sans-serif;
+    --font-mono:'Space Mono',ui-monospace,Consolas,monospace;
+  }
+
+  *,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    font-family:var(--font-display);
+    background:var(--bg);
+    color:var(--text);
+    overflow-x:hidden;
+    -webkit-font-smoothing:antialiased;
+    -moz-osx-font-smoothing:grayscale;
+  }
+  /* Subtle ambient grid, bright top-right glow */
+  body::before{
+    content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
+    background:
+      radial-gradient(900px 600px at 100% -10%, rgba(59,130,246,.08), transparent 60%),
+      radial-gradient(700px 500px at -10% 110%, rgba(139,92,246,.05), transparent 60%);
+  }
+  body::after{
+    content:'';position:fixed;inset:0;z-index:0;pointer-events:none;opacity:.025;
+    background-image:
+      linear-gradient(rgba(255,255,255,.4) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,.4) 1px, transparent 1px);
+    background-size:64px 64px;
+    mask-image:radial-gradient(circle at center, black 0%, transparent 70%);
+  }
+
+  ::-webkit-scrollbar{width:10px;height:10px}
+  ::-webkit-scrollbar-track{background:var(--bg2)}
+  ::-webkit-scrollbar-thumb{background:var(--border-strong);border-radius:10px}
+  ::-webkit-scrollbar-thumb:hover{background:var(--accent)}
+
+  /* ====================================================
+     LAYOUT
+     ==================================================== */
+  .app{display:flex;min-height:100vh;position:relative;z-index:1}
+  .sidebar{
+    width:248px;flex-shrink:0;background:var(--bg2);border-right:1px solid var(--border);
+    display:flex;flex-direction:column;position:sticky;top:0;height:100vh;
+  }
+  .logo{padding:26px 22px 22px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px}
+  .logo-mark{
+    width:38px;height:38px;border-radius:11px;flex-shrink:0;position:relative;
+    background:conic-gradient(from 220deg, var(--accent), var(--accent-3), var(--accent-2), var(--accent));
+    box-shadow:0 8px 24px rgba(59,130,246,.4), inset 0 0 0 1px rgba(255,255,255,.08);
+  }
+  .logo-mark::after{
+    content:'T';position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+    color:#fff;font-weight:800;font-size:20px;text-shadow:0 1px 2px rgba(0,0,0,.4);
+  }
+  .logo-text h1{
+    font-size:22px;font-weight:800;letter-spacing:-.02em;line-height:1;
+    background:linear-gradient(135deg,#fff,var(--accent-2) 60%,var(--accent));
+    -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;
+  }
+  .logo-text span{font-family:var(--font-mono);font-size:9px;color:var(--text-3);letter-spacing:2.6px;text-transform:uppercase;display:block;margin-top:4px}
+
+  .nav{padding:14px 10px;flex:1;overflow-y:auto}
+  .nav-section{font-family:var(--font-mono);font-size:9px;color:var(--text-4);letter-spacing:3px;text-transform:uppercase;padding:14px 12px 8px;margin-top:8px}
+  .nav-section:first-child{margin-top:0}
+  .nav-item{
+    display:flex;align-items:center;gap:11px;padding:9px 12px;border-radius:9px;cursor:pointer;
+    color:var(--text-2);font-size:14px;font-weight:600;transition:background var(--t-base), color var(--t-base);
+    margin-bottom:1px;position:relative;
+  }
   .nav-item:hover{background:var(--bg3);color:var(--text)}
-  .nav-item.active{background:rgba(59,130,246,.15);color:var(--accent)}
-  .sidebar-footer{padding:16px 24px;border-top:1px solid var(--border)}
-  .admin-badge{display:flex;align-items:center;gap:10px}
-  .admin-avatar{width:32px;height:32px;background:linear-gradient(135deg,var(--accent),var(--accent3));border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:800}
-  .admin-name{font-size:13px;font-weight:700}
-  .admin-role{font-size:11px;color:var(--text3);font-family:'Space Mono',monospace}
-  .main{margin-left:240px;flex:1;min-height:100vh}
-  .topbar{background:var(--bg2);border-bottom:1px solid var(--border);padding:16px 32px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:50}
-  .page-title{font-size:20px;font-weight:800}
-  .topbar-right{display:flex;align-items:center;gap:12px}
-  .btn{padding:8px 16px;border-radius:8px;border:none;cursor:pointer;font-family:'Syne',sans-serif;font-weight:700;font-size:13px;transition:all .2s;text-decoration:none;display:inline-block;text-align:center}
-  .btn-primary{background:var(--accent);color:white}
-  .btn-primary:hover{background:#2563eb;transform:translateY(-1px)}
-  .btn-ghost{background:transparent;color:var(--text2);border:1px solid var(--border)}
-  .btn-ghost:hover{background:var(--bg3);color:var(--text)}
-  .btn-danger{background:var(--red);color:white}
-  .btn-success{background:var(--green);color:white}
-  .btn-sm{padding:5px 10px;font-size:12px}
-  .content{padding:32px}
-  .page{display:none}
+  .nav-item.active{background:rgba(59,130,246,.13);color:var(--accent)}
+  .nav-item.active::before{
+    content:'';position:absolute;left:-10px;top:8px;bottom:8px;width:3px;
+    background:var(--accent);border-radius:0 3px 3px 0;
+  }
+  .nav-item .ico{width:18px;height:18px;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0}
+  .nav-item .badge-count{
+    margin-left:auto;background:var(--bg4);color:var(--text-2);
+    font-size:10px;font-family:var(--font-mono);padding:1px 6px;border-radius:10px;font-weight:700;
+  }
+  .nav-item.active .badge-count{background:rgba(59,130,246,.25);color:var(--accent)}
+
+  .sidebar-footer{padding:14px 18px;border-top:1px solid var(--border);display:flex;align-items:center;gap:10px}
+  .admin-ava{
+    width:34px;height:34px;border-radius:10px;flex-shrink:0;
+    background:linear-gradient(135deg, var(--accent), var(--accent-3));
+    display:flex;align-items:center;justify-content:center;font-weight:800;font-size:14px;color:#fff;
+    box-shadow:0 4px 12px rgba(59,130,246,.3);
+  }
+  .admin-meta{flex:1;min-width:0}
+  .admin-name{font-size:13px;font-weight:700;line-height:1.2}
+  .admin-role{font-size:10px;color:var(--text-3);font-family:var(--font-mono);letter-spacing:1px}
+  .icon-btn{
+    width:30px;height:30px;border-radius:8px;background:transparent;border:1px solid transparent;
+    color:var(--text-3);cursor:pointer;display:flex;align-items:center;justify-content:center;
+    transition:background var(--t-base), color var(--t-base), border-color var(--t-base);
+  }
+  .icon-btn:hover{background:var(--bg3);color:var(--text);border-color:var(--border)}
+
+  .main{flex:1;min-width:0;display:flex;flex-direction:column}
+  .topbar{
+    background:rgba(15,21,38,.7);backdrop-filter:blur(20px);
+    border-bottom:1px solid var(--border);padding:14px 32px;
+    display:flex;align-items:center;justify-content:space-between;
+    position:sticky;top:0;z-index:50;
+  }
+  .topbar-left{display:flex;align-items:center;gap:14px}
+  .page-title{font-size:20px;font-weight:800;letter-spacing:-.01em}
+  .page-sub{font-size:12px;color:var(--text-3);font-family:var(--font-mono);letter-spacing:1px}
+  .topbar-right{display:flex;align-items:center;gap:10px}
+
+  .content{padding:24px 32px 48px;flex:1}
+  .page{display:none;animation:fadeUp .4s var(--t-slow) both}
   .page.active{display:block}
-  .stats-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:24px}
-  .stat-card{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:20px;position:relative;overflow:hidden;box-shadow:var(--glow);transition:transform .2s}
-  .stat-card:hover{transform:translateY(-2px)}
-  .stat-card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px}
-  .stat-card.blue::before{background:linear-gradient(90deg,var(--accent),var(--accent2))}
-  .stat-card.green::before{background:linear-gradient(90deg,var(--green),#34d399)}
-  .stat-card.purple::before{background:linear-gradient(90deg,var(--accent3),#a78bfa)}
-  .stat-card.yellow::before{background:linear-gradient(90deg,var(--yellow),#fbbf24)}
-  .stat-label{font-family:'Space Mono',monospace;font-size:10px;color:var(--text3);letter-spacing:2px;text-transform:uppercase;margin-bottom:8px}
-  .stat-value{font-size:32px;font-weight:800;line-height:1;margin-bottom:6px}
-  .stat-value.blue{color:var(--accent)}.stat-value.green{color:var(--green)}.stat-value.purple{color:var(--accent3)}.stat-value.yellow{color:var(--yellow)}
-  .stat-sub{font-size:12px;color:var(--text3)}
-  .stat-icon{position:absolute;right:16px;top:16px;font-size:28px;opacity:.15}
-  .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:24px}
-  .grid-3{display:grid;grid-template-columns:2fr 1fr;gap:16px;margin-bottom:24px}
-  .card{background:var(--bg2);border:1px solid var(--border);border-radius:12px;overflow:hidden;box-shadow:var(--glow);margin-bottom:16px}
-  .card-header{padding:16px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
-  .card-title{font-size:15px;font-weight:700}
-  .card-body{padding:20px}
+  @keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+
+  /* ====================================================
+     PRIMITIVES — buttons, inputs, badges
+     ==================================================== */
+  .btn{
+    padding:9px 16px;border-radius:9px;border:1px solid transparent;cursor:pointer;
+    font-family:var(--font-display);font-weight:700;font-size:13px;
+    transition:transform var(--t-fast), background var(--t-base), border-color var(--t-base), color var(--t-base);
+    text-decoration:none;display:inline-flex;align-items:center;gap:7px;
+    white-space:nowrap;line-height:1;
+  }
+  .btn:active{transform:translateY(1px)}
+  .btn-primary{background:var(--accent);color:#fff}
+  .btn-primary:hover{background:#2563eb}
+  .btn-ghost{background:transparent;color:var(--text-2);border-color:var(--border)}
+  .btn-ghost:hover{background:var(--bg3);color:var(--text);border-color:var(--border-strong)}
+  .btn-danger{background:var(--red);color:#fff}
+  .btn-danger:hover{background:#dc2626}
+  .btn-success{background:var(--green);color:#fff}
+  .btn-success:hover{background:#059669}
+  .btn-sm{padding:6px 10px;font-size:12px;border-radius:7px}
+  .btn-icon{width:32px;height:32px;padding:0;justify-content:center}
+  .btn:disabled{opacity:.5;cursor:not-allowed;transform:none}
+
+  .form-group{margin-bottom:14px}
+  .form-label{
+    display:block;font-size:10px;font-weight:700;color:var(--text-2);
+    margin-bottom:6px;font-family:var(--font-mono);letter-spacing:1.5px;text-transform:uppercase;
+  }
+  .form-input,.form-select,textarea.form-input{
+    width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:9px;
+    padding:10px 13px;color:var(--text);font-family:var(--font-display);font-size:14px;
+    outline:none;transition:border-color var(--t-base), background var(--t-base);
+  }
+  .form-input:focus,.form-select:focus,textarea.form-input:focus{border-color:var(--accent);background:var(--bg4)}
+  .form-input::placeholder{color:var(--text-4)}
+  .form-row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .form-help{font-size:11px;color:var(--text-3);margin-top:4px;font-family:var(--font-mono)}
+  textarea.form-input{resize:vertical;min-height:72px;font-family:var(--font-display)}
+
+  .search-input{
+    background:var(--bg3);border:1px solid var(--border);border-radius:9px;
+    padding:9px 13px 9px 36px;color:var(--text);font-family:var(--font-display);font-size:13.5px;
+    outline:none;transition:border-color var(--t-base);width:280px;
+    background-image:url("data:image/svg+xml,%3Csvg width='14' height='14' viewBox='0 0 24 24' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Ccircle cx='11' cy='11' r='7' stroke='%2364748b' stroke-width='2'/%3E%3Cpath d='M21 21l-4.35-4.35' stroke='%2364748b' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E");
+    background-repeat:no-repeat;background-position:12px center;
+  }
+  .search-input:focus{border-color:var(--accent)}
+  .search-input::placeholder{color:var(--text-4)}
+
+  select.filter,.filter{
+    background:var(--bg3);border:1px solid var(--border);border-radius:9px;
+    padding:9px 30px 9px 13px;color:var(--text);font-family:var(--font-display);font-size:13.5px;
+    outline:none;cursor:pointer;appearance:none;
+    background-image:url("data:image/svg+xml,%3Csvg width='10' height='6' viewBox='0 0 10 6' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%2394a3b8' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat:no-repeat;background-position:right 12px center;
+  }
+
+  .badge{
+    display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:20px;
+    font-size:10.5px;font-weight:700;font-family:var(--font-mono);letter-spacing:.5px;text-transform:uppercase;
+    border:1px solid transparent;
+  }
+  .badge::before{content:'●';font-size:7px;line-height:1}
+  .badge-green{background:rgba(16,185,129,.12);color:var(--green);border-color:rgba(16,185,129,.25)}
+  .badge-red{background:rgba(239,68,68,.12);color:var(--red);border-color:rgba(239,68,68,.25)}
+  .badge-blue{background:rgba(59,130,246,.12);color:var(--accent);border-color:rgba(59,130,246,.25)}
+  .badge-cyan{background:rgba(6,182,212,.12);color:var(--accent-2);border-color:rgba(6,182,212,.25)}
+  .badge-yellow{background:rgba(245,158,11,.12);color:var(--yellow);border-color:rgba(245,158,11,.25)}
+  .badge-purple{background:rgba(139,92,246,.12);color:var(--accent-3);border-color:rgba(139,92,246,.25)}
+  .badge-gray{background:rgba(148,163,184,.1);color:var(--text-2);border-color:rgba(148,163,184,.2)}
+  .badge-orange{background:rgba(251,146,60,.12);color:var(--orange);border-color:rgba(251,146,60,.25)}
+
+  /* ====================================================
+     CARDS, GRIDS, TABLES
+     ==================================================== */
+  .card{
+    background:var(--bg2);border:1px solid var(--border);border-radius:var(--r-lg);
+    box-shadow:var(--shadow-sm);overflow:hidden;
+  }
+  .card-header{
+    padding:16px 20px;border-bottom:1px solid var(--border);
+    display:flex;align-items:center;justify-content:space-between;gap:12px;
+  }
+  .card-title{font-size:14.5px;font-weight:700;letter-spacing:-.005em;display:flex;align-items:center;gap:8px}
+  .card-title-sub{font-size:11px;color:var(--text-3);font-family:var(--font-mono);letter-spacing:1px;font-weight:400}
+  .card-body{padding:18px 20px}
+  .card-body.flush{padding:0}
+
+  .toolbar{display:flex;align-items:center;gap:10px;margin-bottom:18px;flex-wrap:wrap}
+  .toolbar-spacer{flex:1}
+
+  .stats-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:20px}
+  .stat-card{
+    background:var(--bg2);border:1px solid var(--border);border-radius:var(--r-lg);
+    padding:18px 18px 16px;position:relative;overflow:hidden;
+    transition:transform var(--t-base), border-color var(--t-base);
+  }
+  .stat-card:hover{transform:translateY(-2px);border-color:var(--border-strong)}
+  .stat-card .accent-bar{position:absolute;top:0;left:0;right:0;height:2px}
+  .stat-card.blue .accent-bar{background:linear-gradient(90deg,var(--accent),var(--accent-2))}
+  .stat-card.green .accent-bar{background:linear-gradient(90deg,var(--green),#34d399)}
+  .stat-card.purple .accent-bar{background:linear-gradient(90deg,var(--accent-3),#a78bfa)}
+  .stat-card.yellow .accent-bar{background:linear-gradient(90deg,var(--yellow),#fbbf24)}
+  .stat-card.pink .accent-bar{background:linear-gradient(90deg,var(--pink),#f472b6)}
+  .stat-label{font-family:var(--font-mono);font-size:9.5px;color:var(--text-3);letter-spacing:2.4px;text-transform:uppercase;margin-bottom:10px;font-weight:700}
+  .stat-value{font-size:30px;font-weight:800;line-height:1;letter-spacing:-.025em;font-feature-settings:"tnum"}
+  .stat-value.blue{color:#fff}
+  .stat-value.muted{color:var(--text-3)}
+  .stat-trend{
+    display:inline-flex;align-items:center;gap:4px;margin-top:8px;
+    font-size:11.5px;font-family:var(--font-mono);font-weight:700;
+  }
+  .stat-trend.up{color:var(--green)}
+  .stat-trend.down{color:var(--red)}
+  .stat-trend.flat{color:var(--text-3)}
+  .stat-icon{position:absolute;right:14px;top:14px;font-size:24px;opacity:.13}
+
+  .grid-2-1{display:grid;grid-template-columns:2fr 1fr;gap:16px;margin-bottom:18px}
+  .grid-1-1{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:18px}
+  @media(max-width:1100px){.stats-grid{grid-template-columns:repeat(2,1fr)} .grid-2-1,.grid-1-1{grid-template-columns:1fr}}
+
   .table-wrap{overflow-x:auto}
   table{width:100%;border-collapse:collapse}
-  th{font-family:'Space Mono',monospace;font-size:10px;color:var(--text3);letter-spacing:2px;text-transform:uppercase;padding:10px 16px;text-align:left;border-bottom:1px solid var(--border)}
-  td{padding:12px 16px;font-size:14px;border-bottom:1px solid rgba(30,42,74,.5)}
+  th{
+    font-family:var(--font-mono);font-size:9.5px;color:var(--text-3);letter-spacing:2px;text-transform:uppercase;
+    padding:12px 18px;text-align:left;border-bottom:1px solid var(--border);
+    background:rgba(15,21,38,.5);font-weight:700;
+  }
+  td{padding:13px 18px;font-size:13.5px;border-bottom:1px solid rgba(30,42,74,.5);vertical-align:middle}
   tr:last-child td{border-bottom:none}
-  tr:hover td{background:rgba(255,255,255,.02)}
+  tbody tr{cursor:default;transition:background var(--t-fast)}
+  tbody tr.clickable{cursor:pointer}
+  tbody tr:hover td{background:rgba(255,255,255,.015)}
+  tbody tr.clickable:hover td{background:rgba(59,130,246,.05)}
+
   .user-cell{display:flex;align-items:center;gap:10px}
-  .user-ava{width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:13px;flex-shrink:0}
-  .user-name{font-weight:700;font-size:14px}
-  .user-id{font-family:'Space Mono',monospace;font-size:11px;color:var(--text3)}
-  .badge{display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border-radius:20px;font-size:11px;font-weight:700;font-family:'Space Mono',monospace}
-  .badge::before{content:'●';font-size:8px}
-  .badge-green{background:rgba(16,185,129,.15);color:var(--green)}
-  .badge-red{background:rgba(239,68,68,.15);color:var(--red)}
-  .badge-blue{background:rgba(59,130,246,.15);color:var(--accent)}
-  .badge-yellow{background:rgba(245,158,11,.15);color:var(--yellow)}
-  .badge-purple{background:rgba(139,92,246,.15);color:var(--accent3)}
-  .toolbar{display:flex;align-items:center;gap:12px;margin-bottom:16px}
-  .search-input{background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:9px 14px;color:var(--text);font-family:'Syne',sans-serif;font-size:14px;width:280px;outline:none;transition:border-color .2s}
-  .search-input:focus{border-color:var(--accent)}
-  .search-input::placeholder{color:var(--text3)}
-  select.filter{background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:9px 14px;color:var(--text);font-family:'Syne',sans-serif;font-size:14px;outline:none;cursor:pointer}
-  .activity-item{display:flex;align-items:flex-start;gap:12px;padding:12px 0;border-bottom:1px solid rgba(30,42,74,.5)}
-  .activity-item:last-child{border-bottom:none}
-  .activity-dot{width:8px;height:8px;border-radius:50%;margin-top:5px;flex-shrink:0}
-  .activity-text{font-size:13px;line-height:1.5}
-  .activity-time{font-family:'Space Mono',monospace;font-size:11px;color:var(--text3)}
-  .promo-card{background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-bottom:10px;display:flex;align-items:center;justify-content:space-between}
-  .promo-code{font-family:'Space Mono',monospace;font-size:15px;font-weight:700;color:var(--accent2);letter-spacing:2px}
-  .promo-info{font-size:12px;color:var(--text3);margin-top:3px}
-  .modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:1000;align-items:center;justify-content:center}
+  .user-ava-sm{
+    width:30px;height:30px;border-radius:8px;display:flex;align-items:center;justify-content:center;
+    font-weight:800;font-size:12px;flex-shrink:0;color:#fff;
+  }
+  .user-name{font-weight:700;font-size:13.5px;line-height:1.2}
+  .user-id-mono{font-family:var(--font-mono);font-size:11px;color:var(--text-3)}
+  .text-mono{font-family:var(--font-mono);font-size:12px;color:var(--text-2)}
+  .text-muted{color:var(--text-3);font-size:13px}
+  .num{font-feature-settings:"tnum";font-variant-numeric:tabular-nums}
+
+  .action-btns{display:flex;gap:5px;justify-content:flex-end}
+
+  .empty{padding:48px 20px;text-align:center;color:var(--text-3)}
+  .empty .ico{font-size:38px;display:block;margin-bottom:10px;opacity:.5}
+  .empty .title{font-weight:700;font-size:14px;color:var(--text-2);margin-bottom:4px}
+  .empty .sub{font-size:12.5px}
+
+  /* ====================================================
+     CHART AREA
+     ==================================================== */
+  .chart-card .card-body{padding:14px 14px 8px}
+  .chart-wrap{height:240px;position:relative}
+  .chart-tabs{display:flex;gap:4px;background:var(--bg3);padding:3px;border-radius:8px}
+  .chart-tab{
+    padding:5px 12px;font-size:11.5px;font-weight:700;font-family:var(--font-mono);letter-spacing:1px;text-transform:uppercase;
+    color:var(--text-3);cursor:pointer;border-radius:6px;border:none;background:transparent;
+    transition:background var(--t-base), color var(--t-base);
+  }
+  .chart-tab.active{background:var(--bg4);color:var(--text)}
+
+  /* ====================================================
+     LIST ITEMS (recent payments / expiring subs etc)
+     ==================================================== */
+  .list-row{
+    display:flex;align-items:center;gap:12px;padding:10px 14px;
+    border-radius:var(--r-md);transition:background var(--t-fast);
+  }
+  .list-row:hover{background:var(--bg3)}
+  .list-row + .list-row{margin-top:2px}
+  .list-icon{
+    width:36px;height:36px;border-radius:9px;flex-shrink:0;display:flex;align-items:center;justify-content:center;
+    font-size:16px;
+  }
+  .list-icon.green{background:rgba(16,185,129,.12);color:var(--green)}
+  .list-icon.blue{background:rgba(59,130,246,.12);color:var(--accent)}
+  .list-icon.yellow{background:rgba(245,158,11,.12);color:var(--yellow)}
+  .list-icon.red{background:rgba(239,68,68,.12);color:var(--red)}
+  .list-icon.purple{background:rgba(139,92,246,.12);color:var(--accent-3)}
+  .list-main{flex:1;min-width:0}
+  .list-title{font-size:13.5px;font-weight:600;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .list-sub{font-size:11.5px;color:var(--text-3);font-family:var(--font-mono);letter-spacing:.5px}
+  .list-end{text-align:right;flex-shrink:0}
+  .list-end .num{font-weight:700;font-size:14px}
+
+  /* ====================================================
+     MODAL
+     ==================================================== */
+  .modal-overlay{
+    position:fixed;inset:0;background:rgba(5,8,16,.75);backdrop-filter:blur(6px);
+    display:none;align-items:center;justify-content:center;z-index:1000;
+    animation:overlayIn var(--t-base);
+  }
   .modal-overlay.open{display:flex}
-  .modal{background:var(--bg2);border:1px solid var(--border);border-radius:16px;width:480px;max-width:90vw;box-shadow:0 25px 80px rgba(0,0,0,.5);animation:mIn .2s ease}
-  @keyframes mIn{from{opacity:0;transform:scale(.95) translateY(10px)}to{opacity:1;transform:scale(1) translateY(0)}}
-  .modal-header{padding:20px 24px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
-  .modal-title{font-size:17px;font-weight:800}
-  .modal-close{background:none;border:none;color:var(--text3);cursor:pointer;font-size:20px;line-height:1}
-  .modal-body{padding:20px 24px}
-  .modal-footer{padding:16px 24px;border-top:1px solid var(--border);display:flex;gap:10px;justify-content:flex-end}
-  .form-group{margin-bottom:16px}
-  .form-label{display:block;font-size:12px;font-weight:700;color:var(--text2);margin-bottom:6px;font-family:'Space Mono',monospace;letter-spacing:1px;text-transform:uppercase}
-  .form-input{width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:10px 14px;color:var(--text);font-family:'Syne',sans-serif;font-size:14px;outline:none;transition:border-color .2s}
-  .form-input:focus{border-color:var(--accent)}
-  .form-row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-  .form-select{width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:10px 14px;color:var(--text);font-family:'Syne',sans-serif;font-size:14px;outline:none;cursor:pointer}
-  .action-btns{display:flex;gap:6px}
-  .divider{height:1px;background:var(--border);margin:20px 0}
-  .text-muted{color:var(--text3);font-size:13px}
-  .text-mono{font-family:'Space Mono',monospace}
-  .empty-state{text-align:center;padding:40px;color:var(--text3);font-size:14px}
-  .empty-state .icon{font-size:40px;margin-bottom:12px}
-  .loading{text-align:center;padding:40px;color:var(--text3)}
-  .notif{position:fixed;bottom:24px;right:24px;background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px;box-shadow:0 8px 32px rgba(0,0,0,.4);transform:translateX(120%);transition:transform .3s;z-index:9999;max-width:300px}
-  .notif.show{transform:translateX(0)}
-  .notif.success{border-color:var(--green)}
-  .notif.error{border-color:var(--red)}
-  .progress-row{display:flex;align-items:center;gap:12px;margin-bottom:12px}
-  .progress-label{font-size:13px;color:var(--text2);min-width:130px}
-  .progress-bar{flex:1;height:6px;background:var(--bg3);border-radius:3px;overflow:hidden}
-  .progress-fill{height:100%;border-radius:3px;background:linear-gradient(90deg,var(--accent),var(--accent2))}
-  .progress-val{font-family:'Space Mono',monospace;font-size:12px;color:var(--text3);min-width:30px;text-align:right}
-  @media(max-width:1200px){.stats-grid{grid-template-columns:repeat(2,1fr)}}
+  @keyframes overlayIn{from{opacity:0}to{opacity:1}}
+  .modal{
+    background:var(--bg2);border:1px solid var(--border);border-radius:var(--r-xl);
+    width:520px;max-width:92vw;max-height:90vh;display:flex;flex-direction:column;
+    box-shadow:var(--shadow-lg);
+    animation:modalIn var(--t-slow);
+  }
+  @keyframes modalIn{from{opacity:0;transform:scale(.96) translateY(12px)}to{opacity:1;transform:scale(1) translateY(0)}}
+  .modal.lg{width:680px}
+  .modal-header{padding:18px 22px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
+  .modal-title{font-size:16px;font-weight:800;letter-spacing:-.01em}
+  .modal-body{padding:20px 22px;overflow-y:auto;flex:1}
+  .modal-footer{padding:14px 22px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end}
+
+  /* ====================================================
+     SLIDE-OVER (user detail panel)
+     ==================================================== */
+  .sheet-overlay{
+    position:fixed;inset:0;background:rgba(5,8,16,.65);backdrop-filter:blur(4px);
+    display:none;z-index:900;animation:overlayIn var(--t-base);
+  }
+  .sheet-overlay.open{display:block}
+  .sheet{
+    position:fixed;top:0;right:0;bottom:0;width:560px;max-width:92vw;
+    background:var(--bg2);border-left:1px solid var(--border);
+    z-index:901;display:none;flex-direction:column;
+    box-shadow:-20px 0 60px rgba(0,0,0,.4);
+    transform:translateX(100%);transition:transform var(--t-slow);
+  }
+  .sheet.open{display:flex;transform:translateX(0)}
+  .sheet-header{padding:20px 22px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:12px}
+  .sheet-body{padding:18px 22px;overflow-y:auto;flex:1}
+  .sheet-section{margin-bottom:22px}
+  .sheet-section-title{
+    font-family:var(--font-mono);font-size:10px;color:var(--text-3);
+    letter-spacing:2.5px;text-transform:uppercase;font-weight:700;margin-bottom:10px;
+  }
+  .info-row{display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid rgba(30,42,74,.4);font-size:13px}
+  .info-row:last-child{border-bottom:none}
+  .info-label{color:var(--text-3);font-family:var(--font-mono);font-size:11.5px;letter-spacing:.5px}
+  .info-value{color:var(--text);font-weight:600;text-align:right}
+
+  /* ====================================================
+     TOAST (notify)
+     ==================================================== */
+  .toast{
+    position:fixed;bottom:22px;right:22px;background:var(--bg2);border:1px solid var(--border);
+    border-radius:var(--r-md);padding:13px 18px 13px 14px;font-size:13.5px;
+    box-shadow:var(--shadow);max-width:340px;z-index:9999;
+    transform:translateX(120%);transition:transform var(--t-slow);
+    display:flex;align-items:center;gap:10px;
+  }
+  .toast.show{transform:translateX(0)}
+  .toast.success{border-color:var(--green)}
+  .toast.error{border-color:var(--red)}
+  .toast.warning{border-color:var(--yellow)}
+  .toast .toast-ico{font-size:18px;flex-shrink:0}
+
+  /* ====================================================
+     LOGIN
+     ==================================================== */
+  #loginScreen{
+    position:fixed;inset:0;display:none;align-items:center;justify-content:center;z-index:9000;
+    background:radial-gradient(ellipse at center, var(--bg2) 0%, var(--bg) 70%);
+  }
+  #loginScreen.show{display:flex}
+  .login-box{
+    background:var(--bg2);border:1px solid var(--border);border-radius:var(--r-xl);
+    padding:36px 32px;width:380px;max-width:90vw;text-align:center;box-shadow:var(--shadow-lg);
+  }
+  .login-box .logo-mark{margin:0 auto 16px;width:56px;height:56px;border-radius:14px}
+  .login-box .logo-mark::after{font-size:28px}
+  .login-box h2{font-size:22px;font-weight:800;margin-bottom:6px;letter-spacing:-.01em}
+  .login-box p{color:var(--text-3);font-size:13px;margin-bottom:20px}
+  .login-box .form-input{text-align:center;font-family:var(--font-mono);letter-spacing:6px;font-size:18px}
+
+  /* ====================================================
+     MISC
+     ==================================================== */
+  .skel{display:inline-block;height:14px;background:linear-gradient(90deg,var(--bg3),var(--bg4),var(--bg3));background-size:200% 100%;animation:skel 1.4s ease infinite;border-radius:4px}
+  @keyframes skel{0%{background-position:0 0}100%{background-position:-200% 0}}
+  .dot-status{width:8px;height:8px;border-radius:50%;display:inline-block;flex-shrink:0}
+  .dot-status.up{background:var(--green);box-shadow:0 0 8px rgba(16,185,129,.5)}
+  .dot-status.down{background:var(--red)}
+  .pulse{animation:pulse 2s ease-in-out infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.55}}
+
+  .quick-link{
+    display:flex;align-items:center;gap:10px;padding:11px 14px;border-radius:var(--r-md);
+    background:var(--bg3);border:1px solid var(--border);text-decoration:none;color:var(--text);
+    font-size:13.5px;font-weight:600;transition:background var(--t-base), border-color var(--t-base), transform var(--t-fast);
+  }
+  .quick-link:hover{background:var(--bg4);border-color:var(--border-strong);transform:translateY(-1px)}
+  .quick-link .ico{width:28px;height:28px;border-radius:7px;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:14px}
+
+  .tag-row{display:flex;flex-wrap:wrap;gap:6px}
+
+  /* checkbox-as-toggle */
+  .toggle{position:relative;display:inline-block;width:38px;height:22px;flex-shrink:0}
+  .toggle input{opacity:0;width:0;height:0}
+  .toggle-slider{
+    position:absolute;cursor:pointer;inset:0;background:var(--bg4);border:1px solid var(--border);
+    transition:background var(--t-base);border-radius:22px;
+  }
+  .toggle-slider::before{
+    content:'';position:absolute;height:14px;width:14px;left:3px;top:3px;
+    background:var(--text-2);transition:transform var(--t-base), background var(--t-base);border-radius:50%;
+  }
+  .toggle input:checked + .toggle-slider{background:rgba(16,185,129,.25);border-color:var(--green)}
+  .toggle input:checked + .toggle-slider::before{transform:translateX(16px);background:var(--green)}
 </style>
 </head>
 <body>
 
-<aside class="sidebar">
-  <div class="logo"><h1>TuVPN</h1><div><span>Admin Panel v1.0</span></div></div>
-  <nav class="nav">
-    <div class="nav-section">Главная</div>
-    <div class="nav-item active" onclick="showPage('dashboard',this)"><span>📊</span> Дашборд</div>
-    <div class="nav-section">Пользователи</div>
-    <div class="nav-item" onclick="showPage('users',this)"><span>👥</span> Все пользователи</div>
-    <div class="nav-item" onclick="showPage('subscribers',this)"><span>✅</span> Подписчики</div>
-    <div class="nav-item" onclick="showPage('referrals',this)"><span>🤝</span> Рефералы</div>
-    <div class="nav-section">Финансы</div>
-    <div class="nav-item" onclick="showPage('payments',this)"><span>💳</span> Платежи</div>
-    <div class="nav-item" onclick="showPage('promos',this)"><span>🎁</span> Промокоды</div>
-    <div class="nav-section">Система</div>
-    <div class="nav-item" onclick="showPage('server',this)"><span>🖥</span> Сервер</div>
-    <div class="nav-item" onclick="showPage('activity',this)"><span>📋</span> Активность</div>
-    <div class="nav-item" onclick="showPage('settings',this)"><span>⚙️</span> Настройки</div>
-  </nav>
-  <div class="sidebar-footer">
-    <div class="admin-badge">
-      <div class="admin-avatar">MA</div>
-      <div><div class="admin-name">Maxim & Artem</div><div class="admin-role">superadmin</div></div>
+<!-- ============================================================
+     LOGIN
+     ============================================================ -->
+<div id="loginScreen">
+  <div class="login-box">
+    <div class="logo-mark"></div>
+    <h2>TuVPN Admin</h2>
+    <p>Введите пароль для доступа</p>
+    <div class="form-group">
+      <input id="loginInput" type="password" class="form-input" placeholder="••••••" autocomplete="off">
     </div>
+    <button class="btn btn-primary" style="width:100%;justify-content:center" onclick="doLogin()">Войти</button>
   </div>
-</aside>
+</div>
 
-<main class="main">
-  <div class="topbar">
-    <div class="page-title" id="pageTitle">Дашборд</div>
-    <div class="topbar-right">
-      <span class="text-muted text-mono" id="currentTime"></span>
-      <button class="btn btn-ghost btn-sm" onclick="loadData()">🔄 Обновить</button>
-      <button class="btn btn-primary" onclick="openModal('addSubModal')">+ Выдать подписку</button>
-    </div>
-  </div>
-  <div class="content">
+<!-- ============================================================
+     APP
+     ============================================================ -->
+<div class="app" id="app" style="display:none">
 
-    <!-- DASHBOARD -->
-    <div class="page active" id="page-dashboard">
-      <div class="stats-grid">
-        <div class="stat-card blue"><div class="stat-icon">👥</div><div class="stat-label">Всего в боте</div><div class="stat-value blue" id="st-total">—</div><div class="stat-sub">пользователей</div></div>
-        <div class="stat-card green"><div class="stat-icon">✅</div><div class="stat-label">Активных подписок</div><div class="stat-value green" id="st-active">—</div><div class="stat-sub" id="st-pct">конверсия —%</div></div>
-        <div class="stat-card purple"><div class="stat-icon">👁</div><div class="stat-label">Без подписки</div><div class="stat-value purple" id="st-nosub">—</div><div class="stat-sub">не оплатили</div></div>
-        <div class="stat-card yellow"><div class="stat-icon">💰</div><div class="stat-label">Выручка</div><div class="stat-value yellow">0 ₽</div><div class="stat-sub">платёжка не подключена</div></div>
+  <!-- SIDEBAR -->
+  <aside class="sidebar">
+    <div class="logo">
+      <div class="logo-mark"></div>
+      <div class="logo-text">
+        <h1>TuVPN</h1>
+        <span>Admin · v2.0</span>
       </div>
-      <div class="grid-3">
-        <div class="card">
-          <div class="card-header"><div class="card-title">Регистрации за 7 дней</div><span class="text-muted text-mono" style="font-size:11px;">реальные данные</span></div>
-          <div class="card-body">
-            <div id="regChart" style="display:flex;align-items:flex-end;gap:6px;height:80px;"></div>
-            <div id="regLabels" style="display:flex;justify-content:space-between;margin-top:6px;"></div>
+    </div>
+    <nav class="nav">
+      <div class="nav-section">Главное</div>
+      <div class="nav-item active" data-page="dashboard"><span class="ico">📊</span>Дашборд</div>
+      <div class="nav-item" data-page="users"><span class="ico">👥</span>Пользователи<span class="badge-count" id="navUsersCount">—</span></div>
+      <div class="nav-item" data-page="subs"><span class="ico">📅</span>Подписки<span class="badge-count" id="navSubsCount">—</span></div>
+      <div class="nav-item" data-page="payments"><span class="ico">💳</span>Платежи<span class="badge-count" id="navPaymentsCount">—</span></div>
+
+      <div class="nav-section">Маркетинг</div>
+      <div class="nav-item" data-page="promos"><span class="ico">🎁</span>Промокоды<span class="badge-count" id="navPromosCount">—</span></div>
+      <div class="nav-item" data-page="referrals"><span class="ico">🤝</span>Рефералы<span class="badge-count" id="navRefsCount">—</span></div>
+
+      <div class="nav-section">Поддержка</div>
+      <div class="nav-item" data-page="support"><span class="ico">💬</span>Тикеты<span class="badge-count" id="navTicketsCount">—</span></div>
+
+      <div class="nav-section">Система</div>
+      <div class="nav-item" data-page="server"><span class="ico">🖥</span>Сервер</div>
+      <div class="nav-item" data-page="settings"><span class="ico">⚙️</span>Настройки</div>
+    </nav>
+    <div class="sidebar-footer">
+      <div class="admin-ava">A</div>
+      <div class="admin-meta">
+        <div class="admin-name">Admin</div>
+        <div class="admin-role">root · online</div>
+      </div>
+      <button class="icon-btn" title="Выйти" onclick="doLogout()">⏻</button>
+    </div>
+  </aside>
+
+  <!-- MAIN -->
+  <div class="main">
+
+    <!-- TOPBAR -->
+    <div class="topbar">
+      <div class="topbar-left">
+        <div>
+          <div class="page-title" id="topTitle">Дашборд</div>
+          <div class="page-sub" id="topSub">Обзор · обновлено только что</div>
+        </div>
+      </div>
+      <div class="topbar-right">
+        <span id="liveDot" class="dot-status up pulse" title="Соединение активно"></span>
+        <button class="btn btn-ghost btn-sm" onclick="loadAll()">↻ Обновить</button>
+        <button class="btn btn-primary btn-sm" onclick="openModal('grantModal')">+ Выдать подписку</button>
+      </div>
+    </div>
+
+    <!-- CONTENT -->
+    <div class="content">
+
+      <!-- =========================== DASHBOARD =========================== -->
+      <div class="page active" id="page-dashboard">
+        <div class="stats-grid">
+          <div class="stat-card blue">
+            <div class="accent-bar"></div>
+            <div class="stat-icon">👥</div>
+            <div class="stat-label">Пользователей</div>
+            <div class="stat-value blue num" id="kpiUsers">—</div>
+            <div class="stat-trend flat" id="kpiUsersTrend">всего в системе</div>
+          </div>
+          <div class="stat-card green">
+            <div class="accent-bar"></div>
+            <div class="stat-icon">✅</div>
+            <div class="stat-label">Активных подписок</div>
+            <div class="stat-value blue num" id="kpiActive">—</div>
+            <div class="stat-trend flat" id="kpiActiveTrend">сейчас платят</div>
+          </div>
+          <div class="stat-card purple">
+            <div class="accent-bar"></div>
+            <div class="stat-icon">💰</div>
+            <div class="stat-label">Доход за 30 дней</div>
+            <div class="stat-value blue num" id="kpiRevenue">—</div>
+            <div class="stat-trend flat" id="kpiRevenueTrend">только успешные</div>
+          </div>
+          <div class="stat-card yellow">
+            <div class="accent-bar"></div>
+            <div class="stat-icon">📋</div>
+            <div class="stat-label">Чеков ждёт</div>
+            <div class="stat-value blue num" id="kpiReceipts">—</div>
+            <div class="stat-trend flat" id="kpiReceiptsTrend">сформировать в Мой Налог</div>
           </div>
         </div>
-        <div class="card">
-          <div class="card-header"><div class="card-title">Подписки по устройствам</div></div>
-          <div class="card-body" id="subByDevices"><div class="loading">Загрузка...</div></div>
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-header"><div class="card-title">Последние пользователи</div><button class="btn btn-ghost btn-sm" onclick="showPage('users',document.querySelectorAll('.nav-item')[1])">Все →</button></div>
-        <div class="table-wrap"><table>
-          <thead><tr><th>Пользователь</th><th>ID</th><th>Статус</th><th>Подписка до</th><th>Зарегистрирован</th></tr></thead>
-          <tbody id="dashTable"><tr><td colspan="5"><div class="loading">Загрузка...</div></td></tr></tbody>
-        </table></div>
-      </div>
-    </div>
 
-    <!-- USERS -->
-    <div class="page" id="page-users">
-      <div class="toolbar">
-        <input class="search-input" placeholder="🔍 Поиск по имени или ID..." oninput="filterUsers(this.value)">
-        <select class="filter" onchange="filterByStatus(this.value)">
-          <option value="all">Все</option>
-          <option value="active">С подпиской</option>
-          <option value="inactive">Без подписки</option>
-        </select>
-        <button class="btn btn-primary" onclick="openModal('addSubModal')">+ Выдать подписку</button>
-      </div>
-      <div class="card">
-        <div class="card-header"><div class="card-title">Все пользователи</div><span class="text-mono text-muted" id="userCount" style="font-size:12px;"></span></div>
-        <div class="table-wrap"><table>
-          <thead><tr><th>Пользователь</th><th>Telegram ID</th><th>Статус</th><th>Подписка до</th><th>Устройств</th><th>Дата регистрации</th><th>Действия</th></tr></thead>
-          <tbody id="usersTable"><tr><td colspan="7"><div class="loading">Загрузка...</div></td></tr></tbody>
-        </table></div>
-      </div>
-    </div>
+        <div class="grid-2-1">
+          <div class="card chart-card">
+            <div class="card-header">
+              <div>
+                <div class="card-title">Доход за 30 дней</div>
+                <div class="card-title-sub" id="chartSubtitle">— ₽ итого</div>
+              </div>
+              <div class="chart-tabs">
+                <button class="chart-tab active" data-chart="revenue">Доход</button>
+                <button class="chart-tab" data-chart="payments">Платежи</button>
+                <button class="chart-tab" data-chart="users">Регистрации</button>
+              </div>
+            </div>
+            <div class="card-body">
+              <div class="chart-wrap"><canvas id="mainChart"></canvas></div>
+            </div>
+          </div>
 
-    <!-- SUBSCRIBERS -->
-    <div class="page" id="page-subscribers">
-      <div class="card">
-        <div class="card-header"><div class="card-title">Активные подписчики</div><button class="btn btn-primary" onclick="openModal('addSubModal')">+ Выдать</button></div>
-        <div class="table-wrap"><table>
-          <thead><tr><th>Пользователь</th><th>Устройств</th><th>Активна до</th><th>Осталось дней</th><th>Действия</th></tr></thead>
-          <tbody id="subsTable"><tr><td colspan="5"><div class="loading">Загрузка...</div></td></tr></tbody>
-        </table></div>
-      </div>
-    </div>
-
-    <!-- REFERRALS -->
-    <div class="page" id="page-referrals">
-      <div class="stats-grid" style="grid-template-columns:repeat(3,1fr)">
-        <div class="stat-card blue"><div class="stat-label">Всего рефералов</div><div class="stat-value blue" id="ref-total">—</div></div>
-        <div class="stat-card green"><div class="stat-label">Купили подписку</div><div class="stat-value green" id="ref-conv">—</div></div>
-        <div class="stat-card purple"><div class="stat-label">Конверсия</div><div class="stat-value purple" id="ref-pct">—</div></div>
-      </div>
-      <div class="card">
-        <div class="card-header"><div class="card-title">Реферальные связи</div></div>
-        <div class="table-wrap"><table>
-          <thead><tr><th>Кто пригласил</th><th>Кого пригласил</th><th>Дата</th><th>Купил подписку</th></tr></thead>
-          <tbody id="refTable"><tr><td colspan="4"><div class="loading">Загрузка...</div></td></tr></tbody>
-        </table></div>
-      </div>
-    </div>
-
-    <!-- PAYMENTS -->
-    <div class="page" id="page-payments">
-      <div class="stats-grid" style="grid-template-columns:repeat(3,1fr)">
-        <div class="stat-card green"><div class="stat-label">Выручка всего</div><div class="stat-value green" id="pay-total">0 ₽</div></div>
-        <div class="stat-card blue"><div class="stat-label">Платежей</div><div class="stat-value blue" id="pay-count">0</div></div>
-        <div class="stat-card yellow"><div class="stat-label">Средний чек</div><div class="stat-value yellow" id="pay-avg">0 ₽</div></div>
-      </div>
-      <div class="card">
-        <div class="card-header"><div class="card-title">История платежей</div></div>
-        <div class="table-wrap"><table>
-          <thead><tr><th>Пользователь</th><th>Сумма</th><th>Тариф</th><th>Метод</th><th>Статус</th><th>Дата</th></tr></thead>
-          <tbody id="payTable"><tr><td colspan="6"><div class="empty-state"><div class="icon">💳</div>Платежей пока нет — подключите платёжную систему</div></td></tr></tbody>
-        </table></div>
-      </div>
-    </div>
-
-    <!-- PROMOS -->
-    <div class="page" id="page-promos">
-      <div class="toolbar"><button class="btn btn-primary" onclick="openModal('addPromoModal')">+ Создать промокод</button></div>
-      <div class="grid-2">
-        <div class="card"><div class="card-header"><div class="card-title">Промокоды</div></div><div class="card-body" id="promoList"><div class="empty-state"><div class="icon">🎁</div>Нет промокодов</div></div></div>
-        <div class="card"><div class="card-header"><div class="card-title">Использование</div></div><div class="card-body" id="promoStats"><div class="empty-state"><div class="icon">📊</div>Статистика после подключения оплаты</div></div></div>
-      </div>
-    </div>
-
-    <!-- SERVER -->
-    <div class="page" id="page-server">
-      <div class="stats-grid" style="grid-template-columns:repeat(3,1fr)">
-        <div class="stat-card green"><div class="stat-label">Статус</div><div class="stat-value green" style="font-size:18px;">🟢 Online</div><div class="stat-sub">Финляндия</div></div>
-        <div class="stat-card blue"><div class="stat-label">IP адрес</div><div class="stat-value blue" style="font-size:18px;font-family:'Space Mono'">tuvpn.ru</div></div>
-        <div class="stat-card purple"><div class="stat-label">Протокол</div><div class="stat-value purple" style="font-size:16px;">VLESS Reality</div></div>
-      </div>
-      <div class="grid-2">
-        <div class="card">
-          <div class="card-header"><div class="card-title">Конфигурация</div></div>
-          <div class="card-body">
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
-              <div><div class="text-muted" style="font-size:11px;font-family:'Space Mono';margin-bottom:4px;">OS</div><div style="font-weight:700;">Ubuntu 22.04</div></div>
-              <div><div class="text-muted" style="font-size:11px;font-family:'Space Mono';margin-bottom:4px;">ПАНЕЛЬ</div><div style="font-weight:700;">3X-UI v2.9.3</div></div>
-              <div><div class="text-muted" style="font-size:11px;font-family:'Space Mono';margin-bottom:4px;">ПОРТ VPN</div><div style="font-weight:700;font-family:'Space Mono'">443</div></div>
-              <div><div class="text-muted" style="font-size:11px;font-family:'Space Mono';margin-bottom:4px;">БД</div><div style="font-weight:700;">Supabase PostgreSQL</div></div>
-              <div><div class="text-muted" style="font-size:11px;font-family:'Space Mono';margin-bottom:4px;">БОТ</div><div style="font-weight:700;">@MaxArtVPN_bot</div></div>
-              <div><div class="text-muted" style="font-size:11px;font-family:'Space Mono';margin-bottom:4px;">ХОСТИНГ</div><div style="font-weight:700;">AdminVPS.ru</div></div>
+          <div class="card">
+            <div class="card-header">
+              <div class="card-title">⏰ Истекают за 3 дня</div>
+              <span class="card-title-sub" id="expiringSub">—</span>
+            </div>
+            <div class="card-body" id="expiringList">
+              <div class="empty"><span class="ico">✓</span><div class="title">Никто не истекает</div><div class="sub">Напомним когда что-то изменится</div></div>
             </div>
           </div>
         </div>
-        <div class="card">
-          <div class="card-header"><div class="card-title">Быстрые ссылки</div></div>
-          <div class="card-body" style="display:flex;flex-direction:column;gap:10px;">
-            <a href="https://89.125.53.210:17627/I4z8tB7MLF8wPjpKDW" target="_blank" class="btn btn-ghost">🖥 3X-UI панель</a>
-            <a href="https://supabase.com/dashboard/project/avjvojscvmsdzllaeise" target="_blank" class="btn btn-ghost">🗄 Supabase БД</a>
-            <a href="https://t.me/MaxArtVPN_bot" target="_blank" class="btn btn-ghost">🤖 Telegram бот</a>
-            <a href="https://github.com/effect110419/tuvpn-bot" target="_blank" class="btn btn-ghost">💻 GitHub</a>
-            <a href="https://my.adminvps.ru" target="_blank" class="btn btn-ghost">🖱 AdminVPS</a>
+
+        <div class="grid-1-1">
+          <div class="card">
+            <div class="card-header">
+              <div class="card-title">💳 Последние платежи</div>
+              <button class="btn btn-ghost btn-sm" onclick="goPage('payments')">Все →</button>
+            </div>
+            <div class="card-body" id="recentPayments">
+              <div class="empty"><span class="ico">💸</span><div class="title">Платежей пока нет</div><div class="sub">Когда пройдёт первая оплата — появится здесь</div></div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-header">
+              <div class="card-title">💬 Открытые тикеты</div>
+              <button class="btn btn-ghost btn-sm" onclick="goPage('support')">Все →</button>
+            </div>
+            <div class="card-body" id="openTickets">
+              <div class="empty"><span class="ico">✓</span><div class="title">Открытых тикетов нет</div><div class="sub">Все обращения закрыты</div></div>
+            </div>
           </div>
         </div>
       </div>
-    </div>
 
-    <!-- ACTIVITY -->
-    <div class="page" id="page-activity">
-      <div class="card">
-        <div class="card-header"><div class="card-title">Лог активности</div><span class="text-muted text-mono" style="font-size:11px;">реальные данные из БД</span></div>
-        <div class="card-body" id="activityLog"><div class="loading">Загрузка...</div></div>
-      </div>
-    </div>
-
-    <!-- SETTINGS -->
-    <div class="page" id="page-settings">
-      <div class="grid-2">
-        <div class="card">
-          <div class="card-header"><div class="card-title">Тарифы (₽)</div></div>
-          <div class="card-body">
-            <div style="font-size:13px;color:var(--text3);margin-bottom:16px;">Изменение тарифов здесь не влияет на бота — нужно обновить bot.py</div>
-            <div class="form-group"><label class="form-label">1 уст / 1 мес</label><input class="form-input" value="149" type="number"></div>
-            <div class="form-group"><label class="form-label">1 уст / 3 мес</label><input class="form-input" value="399" type="number"></div>
-            <div class="form-group"><label class="form-label">1 уст / 12 мес</label><input class="form-input" value="1399" type="number"></div>
-            <div class="form-group"><label class="form-label">2 уст / 1 мес</label><input class="form-input" value="249" type="number"></div>
-            <div class="form-group"><label class="form-label">5 уст / 1 мес</label><input class="form-input" value="599" type="number"></div>
-          </div>
+      <!-- =========================== USERS =========================== -->
+      <div class="page" id="page-users">
+        <div class="toolbar">
+          <input class="search-input" id="usersSearch" placeholder="Поиск по имени, username или ID..." oninput="renderUsers()">
+          <select class="filter" id="usersFilter" onchange="renderUsers()">
+            <option value="all">Все пользователи</option>
+            <option value="active">С активной подпиской</option>
+            <option value="none">Без подписки</option>
+            <option value="referred">Пришли по реф.ссылке</option>
+            <option value="bonus">С бонусными днями</option>
+          </select>
+          <div class="toolbar-spacer"></div>
+          <span class="text-muted" id="usersCounter">—</span>
         </div>
         <div class="card">
-          <div class="card-header"><div class="card-title">Безопасность</div></div>
-          <div class="card-body">
-            <div class="form-group"><label class="form-label">Текущий пароль</label><input class="form-input" type="password" id="oldPass"></div>
-            <div class="form-group"><label class="form-label">Новый пароль</label><input class="form-input" type="password" id="newPass"></div>
-            <button class="btn btn-primary" onclick="changePass()">Сменить пароль</button>
+          <div class="card-body flush">
+            <div class="table-wrap"><table id="usersTable">
+              <thead><tr>
+                <th>Пользователь</th><th>Telegram ID</th><th>Подписка</th><th>Истекает</th>
+                <th>Устройств</th><th>Bonus дн.</th><th>Регистрация</th><th></th>
+              </tr></thead>
+              <tbody><tr><td colspan="8"><div class="empty"><div class="title">Загрузка...</div></div></td></tr></tbody>
+            </table></div>
           </div>
         </div>
       </div>
-    </div>
 
-  </div>
-</main>
+      <!-- =========================== SUBSCRIPTIONS =========================== -->
+      <div class="page" id="page-subs">
+        <div class="toolbar">
+          <select class="filter" id="subsFilter" onchange="renderSubs()">
+            <option value="active">Активные</option>
+            <option value="expiring">Истекают за 3 дня</option>
+            <option value="expired">Истёкшие</option>
+            <option value="all">Все</option>
+          </select>
+          <select class="filter" id="subsDevicesFilter" onchange="renderSubs()">
+            <option value="all">Все тарифы</option>
+            <option value="1">1 устройство</option>
+            <option value="2">2 устройства</option>
+            <option value="5">5 устройств</option>
+          </select>
+          <div class="toolbar-spacer"></div>
+          <span class="text-muted" id="subsCounter">—</span>
+        </div>
+        <div class="card">
+          <div class="card-body flush">
+            <div class="table-wrap"><table id="subsTable">
+              <thead><tr>
+                <th>Пользователь</th><th>Тариф</th><th>Старт</th><th>Истекает</th>
+                <th>Осталось</th><th>Статус</th><th></th>
+              </tr></thead>
+              <tbody><tr><td colspan="7"><div class="empty"><div class="title">Загрузка...</div></div></td></tr></tbody>
+            </table></div>
+          </div>
+        </div>
+      </div>
 
-<!-- MODAL: Выдать подписку -->
-<div class="modal-overlay" id="addSubModal">
+      <!-- =========================== PAYMENTS =========================== -->
+      <div class="page" id="page-payments">
+        <div class="stats-grid">
+          <div class="stat-card green">
+            <div class="accent-bar"></div>
+            <div class="stat-label">Успешных</div>
+            <div class="stat-value blue num" id="payKpiSucceeded">—</div>
+            <div class="stat-trend flat" id="payKpiSucceededSum">— ₽</div>
+          </div>
+          <div class="stat-card yellow">
+            <div class="accent-bar"></div>
+            <div class="stat-label">В ожидании</div>
+            <div class="stat-value blue num" id="payKpiPending">—</div>
+            <div class="stat-trend flat">платежи pending</div>
+          </div>
+          <div class="stat-card pink">
+            <div class="accent-bar"></div>
+            <div class="stat-label">Отменены</div>
+            <div class="stat-value blue num" id="payKpiCanceled">—</div>
+            <div class="stat-trend flat">canceled / failed</div>
+          </div>
+          <div class="stat-card blue">
+            <div class="accent-bar"></div>
+            <div class="stat-label">Чеков ждёт</div>
+            <div class="stat-value blue num" id="payKpiReceipt">—</div>
+            <div class="stat-trend flat">оформить в Мой Налог</div>
+          </div>
+        </div>
+        <div class="toolbar">
+          <input class="search-input" id="paymentsSearch" placeholder="Поиск по email, ID платежа..." oninput="renderPayments()">
+          <select class="filter" id="paymentsFilter" onchange="renderPayments()">
+            <option value="all">Все статусы</option>
+            <option value="succeeded">Только успешные</option>
+            <option value="pending">В ожидании</option>
+            <option value="canceled">Отменены</option>
+          </select>
+          <select class="filter" id="paymentsReceiptFilter" onchange="renderPayments()">
+            <option value="all">Все чеки</option>
+            <option value="pending">Чек не оформлен</option>
+            <option value="registered">Чек оформлен</option>
+          </select>
+          <div class="toolbar-spacer"></div>
+          <span class="text-muted" id="paymentsCounter">—</span>
+        </div>
+        <div class="card">
+          <div class="card-body flush">
+            <div class="table-wrap"><table id="paymentsTable">
+              <thead><tr>
+                <th>Дата</th><th>Пользователь</th><th>Сумма</th><th>Тариф</th><th>Email</th>
+                <th>Промо</th><th>Статус</th><th>Чек</th><th></th>
+              </tr></thead>
+              <tbody><tr><td colspan="9"><div class="empty"><div class="title">Загрузка...</div></div></td></tr></tbody>
+            </table></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- =========================== PROMOS =========================== -->
+      <div class="page" id="page-promos">
+        <div class="toolbar">
+          <input class="search-input" id="promosSearch" placeholder="Поиск по коду..." oninput="renderPromos()">
+          <select class="filter" id="promosFilter" onchange="renderPromos()">
+            <option value="all">Все</option>
+            <option value="active">Активные</option>
+            <option value="inactive">Отключены</option>
+            <option value="exhausted">Исчерпаны</option>
+            <option value="expired">Просрочены</option>
+          </select>
+          <div class="toolbar-spacer"></div>
+          <button class="btn btn-primary btn-sm" onclick="openModal('promoModal');resetPromoModal()">+ Создать промокод</button>
+        </div>
+        <div class="card">
+          <div class="card-body flush">
+            <div class="table-wrap"><table id="promosTable">
+              <thead><tr>
+                <th>Код</th><th>Тип</th><th>Значение</th><th>Использовано</th>
+                <th>Действует до</th><th>Статус</th><th></th>
+              </tr></thead>
+              <tbody><tr><td colspan="7"><div class="empty"><div class="title">Загрузка...</div></div></td></tr></tbody>
+            </table></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- =========================== REFERRALS =========================== -->
+      <div class="page" id="page-referrals">
+        <div class="stats-grid">
+          <div class="stat-card purple">
+            <div class="accent-bar"></div>
+            <div class="stat-label">Всего рефералов</div>
+            <div class="stat-value blue num" id="refKpiTotal">—</div>
+            <div class="stat-trend flat">переходов по ссылке</div>
+          </div>
+          <div class="stat-card green">
+            <div class="accent-bar"></div>
+            <div class="stat-label">Привели оплативших</div>
+            <div class="stat-value blue num" id="refKpiPaid">—</div>
+            <div class="stat-trend flat">конверсия в оплату</div>
+          </div>
+          <div class="stat-card blue">
+            <div class="accent-bar"></div>
+            <div class="stat-label">Активных рефереров</div>
+            <div class="stat-value blue num" id="refKpiActive">—</div>
+            <div class="stat-trend flat">человек привели хоть кого-то</div>
+          </div>
+          <div class="stat-card yellow">
+            <div class="accent-bar"></div>
+            <div class="stat-label">Дней начислено</div>
+            <div class="stat-value blue num" id="refKpiDays">—</div>
+            <div class="stat-trend flat">бонусом и рефереру и другу</div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">🏆 Топ рефереров</div>
+            <span class="card-title-sub">по количеству приведённых</span>
+          </div>
+          <div class="card-body flush">
+            <div class="table-wrap"><table id="topRefsTable">
+              <thead><tr>
+                <th>#</th><th>Реферер</th><th>Привёл всего</th><th>Из них оплатили</th><th>Конверсия</th>
+              </tr></thead>
+              <tbody><tr><td colspan="5"><div class="empty"><div class="title">Загрузка...</div></div></td></tr></tbody>
+            </table></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- =========================== SUPPORT =========================== -->
+      <div class="page" id="page-support">
+        <div class="toolbar">
+          <select class="filter" id="ticketsFilter" onchange="renderTickets()">
+            <option value="active">Открытые и в работе</option>
+            <option value="open">Только открытые</option>
+            <option value="in_progress">В работе</option>
+            <option value="closed">Закрытые</option>
+            <option value="all">Все</option>
+          </select>
+          <div class="toolbar-spacer"></div>
+          <span class="text-muted" id="ticketsCounter">—</span>
+        </div>
+        <div class="card">
+          <div class="card-body flush">
+            <div class="table-wrap"><table id="ticketsTable">
+              <thead><tr>
+                <th>#</th><th>Пользователь</th><th>Тема</th><th>Статус</th>
+                <th>Назначен</th><th>Создан</th><th></th>
+              </tr></thead>
+              <tbody><tr><td colspan="7"><div class="empty"><div class="title">Загрузка...</div></div></td></tr></tbody>
+            </table></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- =========================== SERVER =========================== -->
+      <div class="page" id="page-server">
+        <div class="grid-1-1">
+          <div class="card">
+            <div class="card-header"><div class="card-title">🌐 Инфраструктура</div></div>
+            <div class="card-body">
+              <div class="info-row"><span class="info-label">VPN сервер</span><span class="info-value text-mono">89.125.53.210 · FI</span></div>
+              <div class="info-row"><span class="info-label">App сервер</span><span class="info-value text-mono">188.214.107.107 · DE</span></div>
+              <div class="info-row"><span class="info-label">Домен</span><span class="info-value text-mono">tuvpn.ru</span></div>
+              <div class="info-row"><span class="info-label">Подписки</span><span class="info-value text-mono">sub.tuvpn.ru</span></div>
+              <div class="info-row"><span class="info-label">Админка</span><span class="info-value text-mono">admin.tuvpn.ru</span></div>
+              <div class="info-row"><span class="info-label">Протокол</span><span class="info-value">VLESS+Reality</span></div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-header"><div class="card-title">⚡ Быстрый доступ</div></div>
+            <div class="card-body" style="display:grid;gap:8px">
+              <a class="quick-link" href="https://89.125.53.210:17627/I4z8tB7MLF8wPjpKDW" target="_blank">
+                <span class="ico" style="background:rgba(59,130,246,.15);color:var(--accent)">🖥</span>3X-UI панель
+              </a>
+              <a class="quick-link" href="https://supabase.com/dashboard/project/avjvojscvmsdzllaeise" target="_blank">
+                <span class="ico" style="background:rgba(16,185,129,.15);color:var(--green)">🗄</span>Supabase БД
+              </a>
+              <a class="quick-link" href="https://yookassa.ru/my" target="_blank">
+                <span class="ico" style="background:rgba(245,158,11,.15);color:var(--yellow)">💳</span>ЮКасса
+              </a>
+              <a class="quick-link" href="https://t.me/MaxArtVPN_bot" target="_blank">
+                <span class="ico" style="background:rgba(6,182,212,.15);color:var(--accent-2)">🤖</span>Основной бот
+              </a>
+              <a class="quick-link" href="https://t.me/TuVPNSupport_bot" target="_blank">
+                <span class="ico" style="background:rgba(139,92,246,.15);color:var(--accent-3)">💬</span>Бот поддержки
+              </a>
+              <a class="quick-link" href="https://github.com/effect110419/tuvpn-bot" target="_blank">
+                <span class="ico" style="background:rgba(148,163,184,.15);color:var(--text-2)">💻</span>GitHub
+              </a>
+              <a class="quick-link" href="https://my.adminvps.ru" target="_blank">
+                <span class="ico" style="background:rgba(236,72,153,.15);color:var(--pink)">☁️</span>AdminVPS
+              </a>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- =========================== SETTINGS =========================== -->
+      <div class="page" id="page-settings">
+        <div class="grid-1-1">
+          <div class="card">
+            <div class="card-header"><div class="card-title">🔒 Смена пароля</div></div>
+            <div class="card-body">
+              <div class="form-group">
+                <label class="form-label">Текущий пароль</label>
+                <input id="oldPass" type="password" class="form-input" placeholder="Текущий пароль">
+              </div>
+              <div class="form-group">
+                <label class="form-label">Новый пароль</label>
+                <input id="newPass" type="password" class="form-input" placeholder="Новый пароль">
+              </div>
+              <button class="btn btn-primary" onclick="changePass()">Сменить пароль</button>
+              <p class="form-help" style="margin-top:14px">Пароль хранится локально в этом браузере (localStorage). Чтобы войти с другого устройства — пароль нужен будет тот же.</p>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-header"><div class="card-title">📊 Состояние БД</div></div>
+            <div class="card-body" id="dbStatus">
+              <div class="info-row"><span class="info-label">Пользователей</span><span class="info-value num" id="dbStatUsers">—</span></div>
+              <div class="info-row"><span class="info-label">Подписок (всего)</span><span class="info-value num" id="dbStatSubs">—</span></div>
+              <div class="info-row"><span class="info-label">Платежей</span><span class="info-value num" id="dbStatPayments">—</span></div>
+              <div class="info-row"><span class="info-label">Промокодов</span><span class="info-value num" id="dbStatPromos">—</span></div>
+              <div class="info-row"><span class="info-label">Тикетов</span><span class="info-value num" id="dbStatTickets">—</span></div>
+              <div class="info-row"><span class="info-label">Реф.переходов</span><span class="info-value num" id="dbStatRefs">—</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /content -->
+  </div><!-- /main -->
+</div><!-- /app -->
+
+<!-- ============================================================
+     MODAL: Grant subscription
+     ============================================================ -->
+<div class="modal-overlay" id="grantModal">
   <div class="modal">
-    <div class="modal-header"><div class="modal-title">✅ Выдать / продлить подписку</div><button class="modal-close" onclick="closeModal('addSubModal')">×</button></div>
+    <div class="modal-header">
+      <div class="modal-title">📅 Выдать / продлить подписку</div>
+      <button class="icon-btn" onclick="closeModal('grantModal')">×</button>
+    </div>
     <div class="modal-body">
-      <div class="form-group"><label class="form-label">Telegram ID</label><input class="form-input" id="subUserId" placeholder="784871620"></div>
+      <div class="form-group">
+        <label class="form-label">Telegram ID пользователя</label>
+        <input id="grantUid" class="form-input text-mono" placeholder="784871620" inputmode="numeric">
+        <p class="form-help" id="grantUserHint">Пользователь должен сначала запустить бот.</p>
+      </div>
       <div class="form-row">
-        <div class="form-group"><label class="form-label">Устройств</label>
-          <select class="form-select" id="subDevices"><option value="1">1 устройство</option><option value="2">2 устройства</option><option value="5">5 устройств</option></select>
+        <div class="form-group">
+          <label class="form-label">Устройств</label>
+          <select class="form-select" id="grantDevices">
+            <option value="1">1 устройство</option>
+            <option value="2">2 устройства</option>
+            <option value="5">5 устройств</option>
+          </select>
         </div>
-        <div class="form-group"><label class="form-label">Период</label>
-          <select class="form-select" id="subPeriod"><option value="30">1 месяц</option><option value="90">3 месяца</option><option value="180">6 месяцев</option><option value="365">1 год</option></select>
+        <div class="form-group">
+          <label class="form-label">Срок (дней)</label>
+          <select class="form-select" id="grantDays">
+            <option value="7">7 дней (триал)</option>
+            <option value="30" selected>30 дней (1 мес)</option>
+            <option value="90">90 дней (3 мес)</option>
+            <option value="365">365 дней (1 год)</option>
+          </select>
         </div>
       </div>
+      <p class="form-help">Если у пользователя есть активная подписка — срок будет продлён, не перезаписан. Бонусные дни (если накоплены) применятся автоматически.</p>
     </div>
     <div class="modal-footer">
-      <button class="btn btn-ghost" onclick="closeModal('addSubModal')">Отмена</button>
-      <button class="btn btn-success" onclick="grantSubscription()">✅ Выдать</button>
+      <button class="btn btn-ghost" onclick="closeModal('grantModal')">Отмена</button>
+      <button class="btn btn-success" onclick="grantSubscription()" id="grantBtn">✓ Выдать</button>
     </div>
   </div>
 </div>
 
-<!-- MODAL: Промокод -->
-<div class="modal-overlay" id="addPromoModal">
+<!-- ============================================================
+     MODAL: Promo
+     ============================================================ -->
+<div class="modal-overlay" id="promoModal">
   <div class="modal">
-    <div class="modal-header"><div class="modal-title">🎁 Создать промокод</div><button class="modal-close" onclick="closeModal('addPromoModal')">×</button></div>
+    <div class="modal-header">
+      <div class="modal-title" id="promoModalTitle">🎁 Создать промокод</div>
+      <button class="icon-btn" onclick="closeModal('promoModal')">×</button>
+    </div>
     <div class="modal-body">
-      <div class="form-group"><label class="form-label">Код</label>
-        <div style="display:flex;gap:8px;"><input class="form-input" id="promoCode" placeholder="TUVPN2026"><button class="btn btn-ghost" onclick="genPromo()">🎲</button></div>
-      </div>
-      <div class="form-row">
-        <div class="form-group"><label class="form-label">Тип</label>
-          <select class="form-select" id="promoType"><option value="percent">Процент %</option><option value="fixed">Сумма ₽</option><option value="days">Бесплатные дни</option></select>
+      <div class="form-group">
+        <label class="form-label">Код</label>
+        <div style="display:flex;gap:8px">
+          <input id="promoCode" class="form-input text-mono" placeholder="TUVPN20" style="text-transform:uppercase">
+          <button class="btn btn-ghost" onclick="genPromoCode()" type="button">🎲 Сгенерировать</button>
         </div>
-        <div class="form-group"><label class="form-label">Размер</label><input class="form-input" id="promoValue" placeholder="20" type="number"></div>
       </div>
       <div class="form-row">
-        <div class="form-group"><label class="form-label">Макс. использований</label><input class="form-input" id="promoMax" placeholder="∞" type="number"></div>
-        <div class="form-group"><label class="form-label">Действует до</label><input class="form-input" id="promoExpiry" type="date"></div>
+        <div class="form-group">
+          <label class="form-label">Тип</label>
+          <select id="promoType" class="form-select" onchange="updatePromoHelp()">
+            <option value="percent">Скидка (%)</option>
+            <option value="days">Бесплатные дни</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label" id="promoValueLabel">Размер скидки, %</label>
+          <input id="promoValue" type="number" min="1" class="form-input" placeholder="20">
+        </div>
       </div>
-      <div class="form-group"><label class="form-label">Описание</label><input class="form-input" id="promoDesc" placeholder="Промо для запуска"></div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Макс. использований</label>
+          <input id="promoMax" type="number" min="1" class="form-input" placeholder="оставьте пустым = без лимита">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Действует до</label>
+          <input id="promoExpiry" type="date" class="form-input">
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Описание (внутреннее)</label>
+        <input id="promoDesc" class="form-input" placeholder="Например: Запуск проекта">
+      </div>
+      <p class="form-help" id="promoHelp">Скидка снижает итоговую сумму платежа в %. Один пользователь может использовать промокод только один раз.</p>
     </div>
     <div class="modal-footer">
-      <button class="btn btn-ghost" onclick="closeModal('addPromoModal')">Отмена</button>
-      <button class="btn btn-primary" onclick="createPromo()">🎁 Создать</button>
+      <button class="btn btn-ghost" onclick="closeModal('promoModal')">Отмена</button>
+      <button class="btn btn-primary" onclick="savePromo()" id="promoSaveBtn">Создать</button>
     </div>
   </div>
 </div>
 
-<div class="notif" id="notif"></div>
+<!-- ============================================================
+     MODAL: Bonus days
+     ============================================================ -->
+<div class="modal-overlay" id="bonusModal">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title">🎁 Начислить бонусные дни</div>
+      <button class="icon-btn" onclick="closeModal('bonusModal')">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label class="form-label">Пользователь</label>
+        <input id="bonusUser" class="form-input" disabled>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Сколько дней начислить</label>
+        <input id="bonusDays" type="number" min="1" class="form-input" placeholder="7">
+        <p class="form-help">Если у пользователя активная подписка — дни добавятся к ней. Если нет — сохранятся в копилке и применятся при следующей оплате.</p>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('bonusModal')">Отмена</button>
+      <button class="btn btn-success" onclick="grantBonusDays()">✓ Начислить</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================
+     SLIDE: User detail
+     ============================================================ -->
+<div class="sheet-overlay" id="sheetOverlay" onclick="closeSheet()"></div>
+<div class="sheet" id="userSheet">
+  <div class="sheet-header">
+    <div style="display:flex;align-items:center;gap:12px;min-width:0;flex:1">
+      <div class="user-ava-sm" id="sheetAva" style="width:42px;height:42px;font-size:16px">U</div>
+      <div style="min-width:0">
+        <div style="font-size:16px;font-weight:800" id="sheetName">—</div>
+        <div class="text-mono" style="font-size:11px;color:var(--text-3)" id="sheetIdLine">—</div>
+      </div>
+    </div>
+    <button class="icon-btn" onclick="closeSheet()">×</button>
+  </div>
+  <div class="sheet-body" id="sheetBody"></div>
+</div>
+
+<!-- ============================================================
+     TOAST
+     ============================================================ -->
+<div class="toast" id="toast"></div>
 
 <script>
-(function(){
-  const P='110419';
-  if(localStorage.getItem('tuvpn_auth')!==P){
-    document.body.style.display='none';
-    const i=prompt('🔐 TuVPN Admin — введите пароль:');
-    if(i!==P){document.body.innerHTML='<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;background:#0a0e1a;color:#ef4444;font-family:monospace;gap:16px"><div style="font-size:48px">🚫</div><div style="font-size:20px">Доступ запрещён</div></div>';document.body.style.display='flex';}
-    else{localStorage.setItem('tuvpn_auth',P);document.body.style.display='flex';}
-  }
-})();
+/* =================================================================
+   CONFIG
+   ================================================================= */
+const SUPABASE_URL = 'https://avjvojscvmsdzllaeise.supabase.co';
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF2anZvanNjdm1zZHpsbGFlaXNlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc5OTMyODYsImV4cCI6MjA5MzU2OTI4Nn0.vgXKUWmLOj4XRltygxtBjWvUD4pVRd8C1nQtagzJAV0';
+const PROXY_URL = 'https://admin.tuvpn.ru';
+const DEFAULT_PASS = '110419';
 
-const SB='https://avjvojscvmsdzllaeise.supabase.co';
-const KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF2anZvanNjdm1zZHpsbGFlaXNlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc5OTMyODYsImV4cCI6MjA5MzU2OTI4Nn0.vgXKUWmLOj4XRltygxtBjWvUD4pVRd8C1nQtagzJAV0';
-const H={'apikey':KEY,'Authorization':'Bearer '+KEY,'Content-Type':'application/json'};
+const SB_HEADERS = {
+  'apikey': SUPABASE_KEY,
+  'Authorization': 'Bearer ' + SUPABASE_KEY,
+  'Content-Type': 'application/json'
+};
 
-let users=[],subs=[],refs=[];
-let promos=JSON.parse(localStorage.getItem('tuvpn_promos')||'[]');
-let fq='',fst='all';
+/* =================================================================
+   STATE
+   ================================================================= */
+const state = {
+  users: [], subs: [], payments: [], promos: [], promoUses: [],
+  refs: [], tickets: [], supportAdmins: [],
+  currentChart: 'revenue',
+  chartInstance: null,
+  currentUser: null,
+  loaded: false,
+};
 
-async function api(t,p=''){const r=await fetch(SB+'/rest/v1/'+t+p,{headers:H});return r.json();}
-async function apiPost(t,d){const r=await fetch(SB+'/rest/v1/'+t,{method:'POST',headers:{...H,'Prefer':'return=representation'},body:JSON.stringify(d)});return r.json();}
-async function apiPatch(t,f,d){await fetch(SB+'/rest/v1/'+t+'?'+f,{method:'PATCH',headers:H,body:JSON.stringify(d)});}
+/* =================================================================
+   HELPERS
+   ================================================================= */
+const $ = (s, root=document) => root.querySelector(s);
+const $$ = (s, root=document) => Array.from(root.querySelectorAll(s));
+const escapeHtml = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const num = n => (n == null ? '—' : Number(n).toLocaleString('ru-RU'));
+const money = n => (n == null ? '—' : Number(n).toLocaleString('ru-RU', {maximumFractionDigits:2}) + ' ₽');
+const fmtDate = d => {
+  if (!d) return '—';
+  const dt = new Date(d);
+  if (isNaN(dt)) return '—';
+  return dt.toLocaleDateString('ru-RU', {day:'2-digit',month:'short',year:'2-digit'});
+};
+const fmtDateTime = d => {
+  if (!d) return '—';
+  const dt = new Date(d);
+  if (isNaN(dt)) return '—';
+  return dt.toLocaleString('ru-RU', {day:'2-digit',month:'2-digit',year:'2-digit',hour:'2-digit',minute:'2-digit'});
+};
+const fmtRelative = d => {
+  if (!d) return '—';
+  const dt = new Date(d);
+  if (isNaN(dt)) return '—';
+  const diff = (dt - Date.now()) / 1000 / 86400;
+  if (diff > 0) return Math.ceil(diff) + ' дн.';
+  return Math.floor(-diff) + ' дн. назад';
+};
+const daysLeft = d => {
+  if (!d) return 0;
+  return Math.ceil((new Date(d) - Date.now()) / 1000 / 86400);
+};
+const displayName = u => {
+  if (!u) return '—';
+  if (u.username) return '@' + u.username;
+  const fn = [u.first_name, u.last_name].filter(Boolean).join(' ');
+  return fn || ('id:' + (u.user_id || u.id));
+};
+const avaInitial = u => {
+  if (!u) return 'U';
+  const s = u.username || u.first_name || String(u.user_id || u.id || '?');
+  return s.replace('@','').charAt(0).toUpperCase();
+};
+const avaColor = uid => {
+  const palette = [
+    ['#3b82f6','#06b6d4'], ['#8b5cf6','#ec4899'], ['#10b981','#06b6d4'],
+    ['#f59e0b','#fb923c'], ['#ef4444','#ec4899'], ['#06b6d4','#3b82f6'],
+    ['#a855f7','#ec4899'], ['#22c55e','#10b981'],
+  ];
+  const idx = (Number(uid) || 0) % palette.length;
+  return `linear-gradient(135deg, ${palette[idx][0]}, ${palette[idx][1]})`;
+};
+const avaHtml = u => `<div class="user-ava-sm" style="background:${avaColor(u && (u.user_id || u.id))}">${avaInitial(u)}</div>`;
 
-async function loadData(){
-  notify('Загрузка...','');
-  try{
-    [users,subs,refs]=await Promise.all([
-      api('users','?select=*&order=created_at.desc'),
-      api('subscriptions','?select=*&order=created_at.desc'),
-      api('referrals','?select=*&order=created_at.desc')
-    ]);
-    renderAll();
-    notify('✅ Обновлено','success');
-  }catch(e){notify('❌ Ошибка','error');}
+const userById = id => state.users.find(u => Number(u.user_id) === Number(id));
+
+const activeSubFor = uid => {
+  return state.subs.find(s => Number(s.user_id) === Number(uid) && s.status === 'active');
+};
+
+function notify(msg, type='success'){
+  const t = $('#toast');
+  const ico = type === 'success' ? '✓' : type === 'error' ? '⚠' : type === 'warning' ? '⚠' : 'ℹ';
+  t.className = 'toast ' + type;
+  t.innerHTML = `<span class="toast-ico">${ico}</span><span>${escapeHtml(msg)}</span>`;
+  t.classList.add('show');
+  clearTimeout(t._timer);
+  t._timer = setTimeout(() => t.classList.remove('show'), 3500);
 }
 
-function renderAll(){rDash();rUsers();rSubs();rRefs();rActivity();rPromos();}
-
-function getSub(uid){return subs.find(s=>s.user_id==uid&&s.status==='active');}
-function fmt(d){if(!d)return'—';return new Date(d).toLocaleDateString('ru-RU');}
-function fmtDt(d){if(!d)return'—';return new Date(d).toLocaleString('ru-RU');}
-function days(d){if(!d)return 0;return Math.max(0,Math.ceil((new Date(d)-new Date())/86400000));}
-function bgColor(n){const c=['#3b82f6','#8b5cf6','#10b981','#f59e0b','#ef4444','#06b6d4','#ec4899'];return c[(n||'x').charCodeAt(0)%c.length];}
-function dname(u){if(u.username)return'@'+u.username;if(u.first_name)return u.first_name+(u.last_name?' '+u.last_name:'');return'ID:'+u.user_id;}
-function inits(u){return dname(u).replace('@','').slice(0,2).toUpperCase();}
-function ava(u){return`<div class="user-ava" style="background:${bgColor(dname(u))}">${inits(u)}</div>`;}
-
-function rDash(){
-  const act=subs.filter(s=>s.status==='active');
-  const tot=users.length,actN=act.length,noS=tot-actN,pct=tot?Math.round(actN/tot*100):0;
-  document.getElementById('st-total').textContent=tot;
-  document.getElementById('st-active').textContent=actN;
-  document.getElementById('st-pct').textContent='конверсия '+pct+'%';
-  document.getElementById('st-nosub').textContent=noS;
-
-  // Chart
-  const ds=[];
-  for(let i=6;i>=0;i--){const d=new Date();d.setDate(d.getDate()-i);ds.push(d);}
-  const counts=ds.map(d=>{const s=d.toISOString().slice(0,10);return users.filter(u=>u.created_at&&u.created_at.slice(0,10)===s).length;});
-  const mx=Math.max(...counts,1);
-  document.getElementById('regChart').innerHTML=counts.map((c,i)=>`<div style="flex:1;height:${Math.max(4,Math.round(c/mx*80))}px;background:${i===6?'var(--accent)':'rgba(59,130,246,.3)'};border-radius:3px 3px 0 0;" title="${c} пользователей"></div>`).join('');
-  document.getElementById('regLabels').innerHTML=ds.map(d=>`<span class="text-muted text-mono" style="font-size:10px;">${d.toLocaleDateString('ru-RU',{weekday:'short'})}</span>`).join('');
-
-  // By devices
-  const el=document.getElementById('subByDevices');
-  if(!act.length){el.innerHTML='<div class="empty-state"><div class="icon">📊</div>Нет активных подписок</div>';return;}
-  const devs=[1,2,5];
-  el.innerHTML=devs.map(d=>{const c=act.filter(s=>s.devices===d).length;const p=act.length?Math.round(c/act.length*100):0;return`<div class="progress-row"><span class="progress-label">${d} уст.</span><div class="progress-bar"><div class="progress-fill" style="width:${p}%"></div></div><span class="progress-val">${c}</span></div>`;}).join('');
-
-  // Last users
-  const tb=document.getElementById('dashTable');
-  if(!users.length){tb.innerHTML='<tr><td colspan="5"><div class="empty-state"><div class="icon">👥</div>Нет пользователей</div></td></tr>';return;}
-  tb.innerHTML=users.slice(0,5).map(u=>{const s=getSub(u.user_id);return`<tr><td><div class="user-cell">${ava(u)}<div><div class="user-name">${dname(u)}</div></div></div></td><td><span class="text-mono" style="font-size:12px;color:var(--text3)">${u.user_id}</span></td><td>${s?'<span class="badge badge-green">активна</span>':'<span class="badge badge-red">нет</span>'}</td><td>${s?fmt(s.expires_at):'—'}</td><td><span class="text-mono" style="font-size:11px;color:var(--text3)">${fmt(u.created_at)}</span></td></tr>`;}).join('');
+/* =================================================================
+   SUPABASE API
+   ================================================================= */
+async function sbGet(table, query=''){
+  const url = `${SUPABASE_URL}/rest/v1/${table}${query ? '?' + query : ''}`;
+  const r = await fetch(url, {headers: SB_HEADERS});
+  if (!r.ok) throw new Error(`${table}: HTTP ${r.status}`);
+  return r.json();
 }
-
-function applyFilter(){
-  let f=users.filter(u=>{
-    const n=dname(u).toLowerCase(),id=String(u.user_id);
-    const m=n.includes(fq)||id.includes(fq);
-    const s=getSub(u.user_id);
-    const st=fst==='all'||(fst==='active'&&s)||(fst==='inactive'&&!s);
-    return m&&st;
+async function sbCount(table, query=''){
+  const url = `${SUPABASE_URL}/rest/v1/${table}?select=user_id${query ? '&' + query : ''}`;
+  const r = await fetch(url, {headers: {...SB_HEADERS, 'Prefer':'count=exact', 'Range':'0-0'}});
+  return Number(r.headers.get('content-range')?.split('/')[1] || 0);
+}
+async function sbInsert(table, data){
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
+    method:'POST',
+    headers:{...SB_HEADERS,'Prefer':'return=representation'},
+    body:JSON.stringify(data)
   });
-  document.getElementById('userCount').textContent=f.length+' из '+users.length;
-  const tb=document.getElementById('usersTable');
-  if(!f.length){tb.innerHTML='<tr><td colspan="7"><div class="empty-state"><div class="icon">🔍</div>Ничего не найдено</div></td></tr>';return;}
-  tb.innerHTML=f.map(u=>{
-    const s=getSub(u.user_id);const dl=s?days(s.expires_at):0;
-    const dc=dl<5?'var(--red)':dl<14?'var(--yellow)':'var(--green)';
-    return`<tr><td><div class="user-cell">${ava(u)}<div><div class="user-name">${dname(u)}</div><div class="user-id">${u.first_name||''} ${u.last_name||''}</div></div></div></td><td><span class="text-mono" style="font-size:12px;color:var(--text3)">${u.user_id}</span></td><td>${s?'<span class="badge badge-green">активна</span>':'<span class="badge badge-red">нет</span>'}</td><td>${s?`${fmt(s.expires_at)} <span style="color:${dc};font-size:11px;font-family:'Space Mono'">(${dl}д)</span>`:'—'}</td><td>${s?s.devices:'—'}</td><td><span class="text-mono" style="font-size:11px;color:var(--text3)">${fmt(u.created_at)}</span></td><td><div class="action-btns"><button class="btn btn-ghost btn-sm" onclick="quickGrant(${u.user_id})">📅 Выдать</button></div></td></tr>`;
-  }).join('');
+  if (!r.ok) throw new Error(`${table} insert: HTTP ${r.status} — ${await r.text()}`);
+  return r.json();
 }
-function rUsers(){applyFilter();}
-function filterUsers(q){fq=q.toLowerCase();applyFilter();}
-function filterByStatus(s){fst=s;applyFilter();}
-
-function rSubs(){
-  const act=subs.filter(s=>s.status==='active');
-  const tb=document.getElementById('subsTable');
-  if(!act.length){tb.innerHTML='<tr><td colspan="5"><div class="empty-state"><div class="icon">✅</div>Нет активных подписок</div></td></tr>';return;}
-  tb.innerHTML=act.map(s=>{
-    const u=users.find(u=>u.user_id==s.user_id)||{user_id:s.user_id};
-    const dl=days(s.expires_at);const dc=dl<5?'var(--red)':dl<14?'var(--yellow)':'var(--green)';
-    return`<tr><td><div class="user-cell">${ava(u)}<div class="user-name">${dname(u)}</div></div></td><td><span class="badge badge-blue">${s.devices} уст.</span></td><td>${fmt(s.expires_at)}</td><td><span style="color:${dc};font-weight:700;font-family:'Space Mono'">${dl} дней</span></td><td><div class="action-btns"><button class="btn btn-ghost btn-sm" onclick="quickGrant(${s.user_id})">📅 Продлить</button><button class="btn btn-danger btn-sm" onclick="revokeSub(${s.id})">✕</button></div></td></tr>`;
-  }).join('');
+async function sbUpdate(table, filter, data){
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${filter}`, {
+    method:'PATCH',
+    headers:{...SB_HEADERS,'Prefer':'return=minimal'},
+    body:JSON.stringify(data)
+  });
+  if (!r.ok) throw new Error(`${table} update: HTTP ${r.status} — ${await r.text()}`);
+}
+async function sbDelete(table, filter){
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${filter}`, {
+    method:'DELETE',
+    headers:{...SB_HEADERS,'Prefer':'return=minimal'}
+  });
+  if (!r.ok) throw new Error(`${table} delete: HTTP ${r.status}`);
 }
 
-function rRefs(){
-  const tot=refs.length;
-  const conv=refs.filter(r=>subs.some(s=>s.user_id==r.referred_id&&s.status==='active')).length;
-  const pct=tot?Math.round(conv/tot*100):0;
-  document.getElementById('ref-total').textContent=tot;
-  document.getElementById('ref-conv').textContent=conv;
-  document.getElementById('ref-pct').textContent=pct+'%';
-  const tb=document.getElementById('refTable');
-  if(!refs.length){tb.innerHTML='<tr><td colspan="4"><div class="empty-state"><div class="icon">🤝</div>Рефералов пока нет</div></td></tr>';return;}
-  tb.innerHTML=refs.map(r=>{
-    const rr=users.find(u=>u.user_id==r.referrer_id);
-    const rd=users.find(u=>u.user_id==r.referred_id);
-    const hs=subs.some(s=>s.user_id==r.referred_id&&s.status==='active');
-    return`<tr><td>${rr?dname(rr):r.referrer_id}</td><td>${rd?dname(rd):r.referred_id}</td><td>${fmt(r.created_at)}</td><td>${hs?'<span class="badge badge-green">да</span>':'<span class="badge badge-red">нет</span>'}</td></tr>`;
-  }).join('');
-}
-
-function rActivity(){
-  const el=document.getElementById('activityLog');if(!el)return;
-  const ev=[];
-  users.forEach(u=>ev.push({t:new Date(u.created_at),c:'var(--green)',txt:`Новый пользователь <b>${dname(u)}</b> (${u.user_id}) запустил бота`,b:'<span class="badge badge-green">регистрация</span>'}));
-  subs.forEach(s=>{const u=users.find(u=>u.user_id==s.user_id);const n=u?dname(u):s.user_id;ev.push({t:new Date(s.created_at),c:'var(--yellow)',txt:`Подписка выдана <b>${n}</b> — ${s.devices} уст. до ${fmt(s.expires_at)}`,b:`<span class="badge badge-yellow">${s.status==='active'?'активна':'истекла'}</span>`});});
-  refs.forEach(r=>{const rr=users.find(u=>u.user_id==r.referrer_id);const rd=users.find(u=>u.user_id==r.referred_id);ev.push({t:new Date(r.created_at),c:'var(--accent3)',txt:`<b>${rr?dname(rr):r.referrer_id}</b> пригласил <b>${rd?dname(rd):r.referred_id}</b>`,b:'<span class="badge badge-purple">реферал</span>'});});
-  ev.sort((a,b)=>b.t-a.t);
-  if(!ev.length){el.innerHTML='<div class="empty-state"><div class="icon">📋</div>Нет событий</div>';return;}
-  el.innerHTML=ev.map(e=>`<div class="activity-item"><div class="activity-dot" style="background:${e.c}"></div><div style="flex:1"><div class="activity-text">${e.txt}</div><div class="activity-time">${fmtDt(e.t)}</div></div>${e.b}</div>`).join('');
-}
-
-function rPromos(){
-  const list=document.getElementById('promoList');if(!list)return;
-  if(!promos.length){list.innerHTML='<div class="empty-state"><div class="icon">🎁</div>Нет промокодов</div>';return;}
-  list.innerHTML=promos.map((p,i)=>{
-    const tl=p.type==='percent'?p.value+'% скидка':p.type==='fixed'?p.value+' ₽':''+p.value+' дней бесплатно';
-    return`<div class="promo-card"><div><div class="promo-code">${p.code}</div><div class="promo-info">${tl} · макс. ${p.max||'∞'} · до ${p.expiry||'∞'}</div>${p.desc?'<div class="promo-info">'+p.desc+'</div>':''}</div><div style="display:flex;gap:6px;align-items:center;"><span class="badge badge-green">активен</span><button class="btn btn-ghost btn-sm" onclick="copyP('${p.code}')">📋</button><button class="btn btn-danger btn-sm" onclick="delP(${i})">✕</button></div></div>`;
-  }).join('');
-}
-
-async function grantSubscription(){
-  const uid=document.getElementById('subUserId').value.trim();
-  const dev=parseInt(document.getElementById('subDevices').value);
-  const d=parseInt(document.getElementById('subPeriod').value);
-  if(!uid){notify('Введите Telegram ID','error');return;}
-
-  notify('⏳ Создаём ключ...','');
-
-  try{
-    const r=await fetch('https://admin.tuvpn.ru/admin-api/grant',{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({user_id:parseInt(uid),devices:dev,days:d})
-    });
-    const data=await r.json();
-
-    if(data.success){
-      // Прокси уже сам обновил БД (продлил или создал подписку).
-      // Админка только сохраняет client_uuid в users.
-      // Сохраняем uuid в users
-      await fetch(SB+'/rest/v1/users?user_id=eq.'+uid,{method:'PATCH',
-        headers:{...H,'Prefer':'return=minimal'},
-        body:JSON.stringify({client_uuid:data.uuid})});
-      closeModal('addSubModal');
-      document.getElementById('subUserId').value='';
-      notify('✅ Уникальный ключ создан: '+data.sub_url.split('/').pop().slice(0,8)+'...','success');
-      await loadData();
-    }else{
-      notify('❌ Ошибка: '+data.error,'error');
-    }
-  }catch(e){
-    notify('❌ Ошибка соединения с proxy','error');
-    console.error(e);
+/* =================================================================
+   AUTH
+   ================================================================= */
+function getStoredPass(){ return localStorage.getItem('tuvpn_admin_pass') || DEFAULT_PASS; }
+function isLoggedIn(){ return localStorage.getItem('tuvpn_admin_session') === '1'; }
+function doLogin(){
+  const v = $('#loginInput').value;
+  if (v === getStoredPass()){
+    localStorage.setItem('tuvpn_admin_session','1');
+    showApp();
+  } else {
+    notify('Неверный пароль', 'error');
+    $('#loginInput').value = '';
   }
 }
-function quickGrant(uid){document.getElementById('subUserId').value=uid;openModal('addSubModal');}
-async function revokeSub(id){if(!confirm('Отозвать?'))return;await apiPatch('subscriptions','id=eq.'+id,{status:'inactive'});notify('Подписка отозвана','success');await loadData();}
-
-function createPromo(){
-  const code=document.getElementById('promoCode').value.trim().toUpperCase();
-  const type=document.getElementById('promoType').value;
-  const value=document.getElementById('promoValue').value;
-  const max=document.getElementById('promoMax').value;
-  const expiry=document.getElementById('promoExpiry').value;
-  const desc=document.getElementById('promoDesc').value;
-  if(!code||!value){notify('Заполните код и размер','error');return;}
-  if(promos.find(p=>p.code===code)){notify('Такой код уже есть','error');return;}
-  promos.push({code,type,value,max,expiry,desc,used:0});
-  localStorage.setItem('tuvpn_promos',JSON.stringify(promos));
-  closeModal('addPromoModal');notify('🎁 Промокод '+code+' создан','success');
-  document.getElementById('promoCode').value='';document.getElementById('promoValue').value='';
-  rPromos();
+function doLogout(){
+  if (!confirm('Выйти из админки?')) return;
+  localStorage.removeItem('tuvpn_admin_session');
+  location.reload();
 }
-function delP(i){if(!confirm('Удалить?'))return;promos.splice(i,1);localStorage.setItem('tuvpn_promos',JSON.stringify(promos));rPromos();notify('Удалено','success');}
-function genPromo(){const c='ABCDEFGHJKLMNPQRSTUVWXYZ23456789';let s='TU';for(let i=0;i<6;i++)s+=c[Math.floor(Math.random()*c.length)];document.getElementById('promoCode').value=s;}
-function copyP(c){navigator.clipboard.writeText(c);notify('Скопировано: '+c,'success');}
-
 function changePass(){
-  const o=document.getElementById('oldPass').value;
-  const n=document.getElementById('newPass').value;
-  if(o!==localStorage.getItem('tuvpn_auth')){notify('Неверный пароль','error');return;}
-  if(!n){notify('Введите новый пароль','error');return;}
-  localStorage.setItem('tuvpn_auth',n);notify('✅ Пароль изменён','success');
+  const o = $('#oldPass').value;
+  const n = $('#newPass').value;
+  if (o !== getStoredPass()){ notify('Текущий пароль неверный', 'error'); return; }
+  if (!n || n.length < 4){ notify('Новый пароль слишком короткий', 'error'); return; }
+  localStorage.setItem('tuvpn_admin_pass', n);
+  $('#oldPass').value = ''; $('#newPass').value = '';
+  notify('Пароль обновлён', 'success');
+}
+function showApp(){
+  $('#loginScreen').classList.remove('show');
+  $('#app').style.display = 'flex';
+  loadAll();
 }
 
-const titles={dashboard:'Дашборд',users:'Все пользователи',subscribers:'Активные подписчики',referrals:'Рефералы',payments:'Платежи',promos:'Промокоды',server:'Сервер',activity:'Лог активности',settings:'Настройки'};
-function showPage(id,el){
-  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
-  document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
-  document.getElementById('page-'+id)?.classList.add('active');
-  el?.classList.add('active');
-  document.getElementById('pageTitle').textContent=titles[id]||id;
+/* =================================================================
+   DATA LOADING
+   ================================================================= */
+async function loadAll(){
+  $('#liveDot').classList.add('pulse');
+  try {
+    const [users, subs, payments, promos, promoUses, refs, tickets, supportAdmins] = await Promise.all([
+      sbGet('users', 'select=*&order=created_at.desc'),
+      sbGet('subscriptions', 'select=*&order=created_at.desc'),
+      sbGet('payments', 'select=*&order=created_at.desc'),
+      sbGet('promocodes', 'select=*&order=created_at.desc'),
+      sbGet('promocode_uses', 'select=*'),
+      sbGet('referrals', 'select=*'),
+      sbGet('support_tickets', 'select=*&order=created_at.desc'),
+      sbGet('support_admins', 'select=*'),
+    ]);
+    state.users = users;
+    state.subs = subs;
+    state.payments = payments;
+    state.promos = promos;
+    state.promoUses = promoUses;
+    state.refs = refs;
+    state.tickets = tickets;
+    state.supportAdmins = supportAdmins;
+    state.loaded = true;
+    renderAll();
+    updateTopbarTime();
+  } catch (e) {
+    console.error(e);
+    notify('Ошибка загрузки: ' + e.message, 'error');
+  }
 }
-function openModal(id){document.getElementById(id).classList.add('open');}
-function closeModal(id){document.getElementById(id).classList.remove('open');}
-document.querySelectorAll('.modal-overlay').forEach(m=>m.addEventListener('click',e=>{if(e.target===m)m.classList.remove('open');}));
-
-function notify(msg,type){
-  const n=document.getElementById('notif');n.textContent=msg;n.className='notif '+(type||'')+' show';
-  clearTimeout(n._t);n._t=setTimeout(()=>n.classList.remove('show'),3000);
+function updateTopbarTime(){
+  $('#topSub').textContent = 'Обновлено в ' + new Date().toLocaleTimeString('ru-RU');
 }
 
-setInterval(()=>{document.getElementById('currentTime').textContent=new Date().toLocaleTimeString('ru-RU');},1000);
-loadData();
+/* =================================================================
+   NAV
+   ================================================================= */
+function goPage(page){
+  $$('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.page === page));
+  $$('.page').forEach(p => p.classList.toggle('active', p.id === 'page-' + page));
+  const titles = {
+    dashboard:['Дашборд','Обзор'], users:['Пользователи','Все пользователи бота'],
+    subs:['Подписки','Активные и истёкшие'], payments:['Платежи','История транзакций'],
+    promos:['Промокоды','Скидки и бонусы'], referrals:['Рефералы','Кто кого привёл'],
+    support:['Тикеты','Обращения в поддержку'], server:['Сервер','Инфраструктура'],
+    settings:['Настройки','Конфигурация админки'],
+  };
+  const [t, s] = titles[page] || [page, ''];
+  $('#topTitle').textContent = t;
+  $('#topSub').textContent = s + ' · обновлено в ' + new Date().toLocaleTimeString('ru-RU');
+}
+$$('.nav-item').forEach(n => n.addEventListener('click', () => goPage(n.dataset.page)));
+
+/* =================================================================
+   RENDER ALL
+   ================================================================= */
+function renderAll(){
+  renderNavCounts();
+  renderDashboard();
+  renderUsers();
+  renderSubs();
+  renderPayments();
+  renderPromos();
+  renderReferrals();
+  renderTickets();
+  renderSettings();
+}
+
+function renderNavCounts(){
+  $('#navUsersCount').textContent = state.users.length;
+  $('#navSubsCount').textContent = state.subs.filter(s => s.status === 'active').length;
+  $('#navPaymentsCount').textContent = state.payments.length;
+  $('#navPromosCount').textContent = state.promos.filter(p => p.is_active).length;
+  $('#navRefsCount').textContent = state.refs.length;
+  $('#navTicketsCount').textContent = state.tickets.filter(t => t.status === 'open' || t.status === 'in_progress').length;
+}
+
+/* =================================================================
+   DASHBOARD
+   ================================================================= */
+function renderDashboard(){
+  const now = Date.now();
+  const dayMs = 86400000;
+  const succeeded = state.payments.filter(p => p.status === 'succeeded');
+  const succeeded30d = succeeded.filter(p => (now - new Date(p.paid_at || p.created_at)) < 30 * dayMs);
+  const revenue30d = succeeded30d.reduce((s, p) => s + Number(p.amount || 0), 0);
+  const receiptPending = succeeded.filter(p => p.receipt_status !== 'registered' && p.receipt_status !== 'not_required').length;
+  const activeSubs = state.subs.filter(s => s.status === 'active' && new Date(s.expires_at) > new Date()).length;
+
+  $('#kpiUsers').textContent = num(state.users.length);
+  $('#kpiActive').textContent = num(activeSubs);
+  $('#kpiRevenue').textContent = money(revenue30d);
+  $('#kpiReceipts').textContent = num(receiptPending);
+
+  // expiring
+  const expiring = state.subs
+    .filter(s => s.status === 'active')
+    .map(s => ({...s, dl: daysLeft(s.expires_at)}))
+    .filter(s => s.dl >= 0 && s.dl <= 3)
+    .sort((a,b) => a.dl - b.dl);
+  $('#expiringSub').textContent = expiring.length + ' шт.';
+  if (!expiring.length){
+    $('#expiringList').innerHTML = '<div class="empty"><span class="ico">✓</span><div class="title">Никто не истекает</div><div class="sub">Напомним когда что-то изменится</div></div>';
+  } else {
+    $('#expiringList').innerHTML = expiring.slice(0, 6).map(s => {
+      const u = userById(s.user_id);
+      const cls = s.dl === 0 ? 'red' : s.dl === 1 ? 'red' : s.dl === 2 ? 'yellow' : 'yellow';
+      return `<div class="list-row" onclick="openUserSheet(${s.user_id})" style="cursor:pointer">
+        <div class="list-icon ${cls}">⏰</div>
+        <div class="list-main">
+          <div class="list-title">${escapeHtml(displayName(u))}</div>
+          <div class="list-sub">${s.devices} уст. · ${fmtDate(s.expires_at)}</div>
+        </div>
+        <div class="list-end"><div class="num" style="color:var(--${cls});font-weight:800">${s.dl} дн.</div></div>
+      </div>`;
+    }).join('');
+  }
+
+  // recent payments
+  const recent = state.payments.slice(0, 6);
+  if (!recent.length){
+    $('#recentPayments').innerHTML = '<div class="empty"><span class="ico">💸</span><div class="title">Платежей пока нет</div><div class="sub">Когда пройдёт первая оплата — появится здесь</div></div>';
+  } else {
+    $('#recentPayments').innerHTML = recent.map(p => {
+      const u = userById(p.user_id);
+      const stCls = p.status === 'succeeded' ? 'green' : p.status === 'pending' ? 'yellow' : 'red';
+      const ico = p.status === 'succeeded' ? '✓' : p.status === 'pending' ? '⏳' : '✕';
+      return `<div class="list-row">
+        <div class="list-icon ${stCls}">${ico}</div>
+        <div class="list-main">
+          <div class="list-title">${escapeHtml(displayName(u))} · ${p.months || '?'} мес. ${p.devices || '?'} уст.</div>
+          <div class="list-sub">${fmtDateTime(p.created_at)} · ${escapeHtml(p.email || '—')}</div>
+        </div>
+        <div class="list-end"><div class="num">${money(p.amount)}</div></div>
+      </div>`;
+    }).join('');
+  }
+
+  // open tickets
+  const openT = state.tickets.filter(t => t.status === 'open' || t.status === 'in_progress').slice(0, 6);
+  if (!openT.length){
+    $('#openTickets').innerHTML = '<div class="empty"><span class="ico">✓</span><div class="title">Открытых тикетов нет</div><div class="sub">Все обращения закрыты</div></div>';
+  } else {
+    $('#openTickets').innerHTML = openT.map(t => {
+      const u = {user_id: t.user_id, username: t.username, first_name: t.first_name, last_name: t.last_name};
+      const cls = t.status === 'open' ? 'yellow' : 'blue';
+      return `<div class="list-row">
+        <div class="list-icon ${cls}">💬</div>
+        <div class="list-main">
+          <div class="list-title">${escapeHtml(displayName(u))} · #${t.id}</div>
+          <div class="list-sub">${escapeHtml((t.subject || '').slice(0, 60))}</div>
+        </div>
+        <div class="list-end"><span class="badge badge-${cls}">${t.status === 'open' ? 'open' : 'work'}</span></div>
+      </div>`;
+    }).join('');
+  }
+
+  renderChart('revenue');
+}
+
+/* Chart =========================================== */
+$$('.chart-tab').forEach(t => t.addEventListener('click', () => {
+  $$('.chart-tab').forEach(x => x.classList.toggle('active', x === t));
+  renderChart(t.dataset.chart);
+}));
+
+function renderChart(kind){
+  state.currentChart = kind;
+  const labels = [];
+  const data = [];
+  const dayMs = 86400000;
+  const today = new Date();
+  today.setHours(23,59,59,999);
+  for (let i = 29; i >= 0; i--){
+    const d = new Date(today.getTime() - i * dayMs);
+    labels.push(d.toLocaleDateString('ru-RU', {day:'2-digit', month:'short'}));
+    const dStart = new Date(d); dStart.setHours(0,0,0,0);
+    const dEnd = new Date(d); dEnd.setHours(23,59,59,999);
+    let v = 0;
+    if (kind === 'revenue'){
+      v = state.payments
+        .filter(p => p.status === 'succeeded')
+        .filter(p => {
+          const t = new Date(p.paid_at || p.created_at);
+          return t >= dStart && t <= dEnd;
+        })
+        .reduce((s, p) => s + Number(p.amount || 0), 0);
+    } else if (kind === 'payments'){
+      v = state.payments.filter(p => {
+        const t = new Date(p.created_at);
+        return t >= dStart && t <= dEnd;
+      }).length;
+    } else { // users
+      v = state.users.filter(u => {
+        const t = new Date(u.created_at);
+        return t >= dStart && t <= dEnd;
+      }).length;
+    }
+    data.push(v);
+  }
+
+  const total = data.reduce((s, v) => s + v, 0);
+  $('#chartSubtitle').textContent = kind === 'revenue'
+    ? money(total) + ' итого'
+    : kind === 'payments' ? num(total) + ' платежей' : num(total) + ' регистраций';
+
+  if (state.chartInstance) state.chartInstance.destroy();
+  const ctx = $('#mainChart').getContext('2d');
+  const grad = ctx.createLinearGradient(0, 0, 0, 240);
+  const color = kind === 'revenue' ? '#3b82f6' : kind === 'payments' ? '#06b6d4' : '#8b5cf6';
+  grad.addColorStop(0, color + '55');
+  grad.addColorStop(1, color + '00');
+
+  state.chartInstance = new Chart(ctx, {
+    type:'line',
+    data:{ labels, datasets:[{
+      data, fill:true, backgroundColor:grad, borderColor:color, borderWidth:2,
+      pointRadius:0, pointHoverRadius:5, pointHoverBackgroundColor:color,
+      pointHoverBorderColor:'#fff', pointHoverBorderWidth:2, tension:.35,
+    }]},
+    options:{
+      responsive:true, maintainAspectRatio:false,
+      plugins:{
+        legend:{display:false},
+        tooltip:{
+          backgroundColor:'#0f1526', borderColor:'#1e2a4a', borderWidth:1,
+          padding:10, titleColor:'#e2e8f0', bodyColor:'#94a3b8',
+          titleFont:{family:'Space Mono', size:11},
+          bodyFont:{family:'Syne', size:13, weight:'700'},
+          callbacks:{
+            label: ctx => kind === 'revenue' ? money(ctx.parsed.y) : num(ctx.parsed.y),
+          }
+        }
+      },
+      scales:{
+        x:{ grid:{display:false}, ticks:{color:'#475569', font:{family:'Space Mono',size:10}, maxRotation:0, autoSkipPadding:20} },
+        y:{ grid:{color:'rgba(30,42,74,.5)', drawBorder:false}, ticks:{color:'#475569', font:{family:'Space Mono',size:10}, callback:v => kind === 'revenue' ? (v >= 1000 ? (v/1000)+'k' : v) : v} },
+      }
+    }
+  });
+}
+
+/* =================================================================
+   USERS
+   ================================================================= */
+function renderUsers(){
+  const filter = $('#usersFilter').value;
+  const search = ($('#usersSearch').value || '').toLowerCase().trim();
+  let users = state.users.slice();
+
+  users = users.filter(u => {
+    if (filter === 'active'){
+      return state.subs.some(s => Number(s.user_id) === Number(u.user_id) && s.status === 'active' && new Date(s.expires_at) > new Date());
+    }
+    if (filter === 'none'){
+      return !state.subs.some(s => Number(s.user_id) === Number(u.user_id) && s.status === 'active');
+    }
+    if (filter === 'referred') return u.referrer_id != null;
+    if (filter === 'bonus') return (u.bonus_days || 0) > 0;
+    return true;
+  });
+  if (search){
+    users = users.filter(u => {
+      const hay = [u.username, u.first_name, u.last_name, u.user_id].filter(Boolean).join(' ').toLowerCase();
+      return hay.includes(search);
+    });
+  }
+
+  $('#usersCounter').textContent = users.length + ' из ' + state.users.length;
+
+  const tbody = $('#usersTable tbody');
+  if (!users.length){
+    tbody.innerHTML = '<tr><td colspan="8"><div class="empty"><span class="ico">🔍</span><div class="title">Ничего не найдено</div></div></td></tr>';
+    return;
+  }
+  tbody.innerHTML = users.map(u => {
+    const sub = activeSubFor(u.user_id);
+    const dl = sub ? daysLeft(sub.expires_at) : null;
+    const subStatus = sub
+      ? (dl > 0 ? `<span class="badge badge-green">актив.</span>` : `<span class="badge badge-red">истёк</span>`)
+      : `<span class="badge badge-gray">нет</span>`;
+    const dlText = sub
+      ? (dl > 0 ? `${fmtDate(sub.expires_at)} <span class="text-mono" style="color:${dl <= 3 ? 'var(--red)' : 'var(--text-3)'}">(${dl} дн.)</span>` : '<span class="text-muted">—</span>')
+      : '<span class="text-muted">—</span>';
+    return `<tr class="clickable" onclick="openUserSheet(${u.user_id})">
+      <td><div class="user-cell">${avaHtml(u)}<div><div class="user-name">${escapeHtml(displayName(u))}</div><div class="user-id-mono">${escapeHtml([u.first_name,u.last_name].filter(Boolean).join(' ') || '')}</div></div></div></td>
+      <td><span class="text-mono">${u.user_id}</span></td>
+      <td>${subStatus}</td>
+      <td>${dlText}</td>
+      <td>${sub ? `<span class="badge badge-blue">${sub.devices}</span>` : '—'}</td>
+      <td>${(u.bonus_days || 0) > 0 ? `<span class="badge badge-purple">+${u.bonus_days}</span>` : '<span class="text-muted">0</span>'}</td>
+      <td><span class="text-mono">${fmtDate(u.created_at)}</span></td>
+      <td><div class="action-btns" onclick="event.stopPropagation()"><button class="btn btn-ghost btn-sm" onclick="quickGrant(${u.user_id})">📅</button><button class="btn btn-ghost btn-sm" onclick="openBonusModal(${u.user_id})">🎁</button></div></td>
+    </tr>`;
+  }).join('');
+}
+
+/* =================================================================
+   USER SHEET
+   ================================================================= */
+function openUserSheet(uid){
+  const u = userById(uid);
+  if (!u){ notify('Пользователь не найден', 'error'); return; }
+  state.currentUser = u;
+
+  $('#sheetAva').style.background = avaColor(uid);
+  $('#sheetAva').textContent = avaInitial(u);
+  $('#sheetName').textContent = displayName(u);
+  $('#sheetIdLine').textContent = `id: ${u.user_id} · регистрация ${fmtDateTime(u.created_at)}`;
+
+  const sub = activeSubFor(uid);
+  const userSubs = state.subs.filter(s => Number(s.user_id) === Number(uid)).sort((a,b) => new Date(b.created_at) - new Date(a.created_at));
+  const userPays = state.payments.filter(p => Number(p.user_id) === Number(uid)).sort((a,b) => new Date(b.created_at) - new Date(a.created_at));
+  const totalSpent = userPays.filter(p => p.status === 'succeeded').reduce((s, p) => s + Number(p.amount || 0), 0);
+  const referrer = u.referrer_id ? userById(u.referrer_id) : null;
+  const broughtIn = state.users.filter(x => Number(x.referrer_id) === Number(uid));
+  const broughtPaid = broughtIn.filter(x => state.payments.some(p => Number(p.user_id) === Number(x.user_id) && p.status === 'succeeded')).length;
+  const tickets = state.tickets.filter(t => Number(t.user_id) === Number(uid));
+
+  $('#sheetBody').innerHTML = `
+    <div class="sheet-section">
+      <div class="sheet-section-title">Сводка</div>
+      <div class="info-row"><span class="info-label">Username</span><span class="info-value">${u.username ? '@' + escapeHtml(u.username) : '—'}</span></div>
+      <div class="info-row"><span class="info-label">Имя</span><span class="info-value">${escapeHtml([u.first_name,u.last_name].filter(Boolean).join(' ') || '—')}</span></div>
+      <div class="info-row"><span class="info-label">Telegram ID</span><span class="info-value text-mono">${u.user_id}</span></div>
+      <div class="info-row"><span class="info-label">Регистрация</span><span class="info-value">${fmtDateTime(u.created_at)}</span></div>
+      <div class="info-row"><span class="info-label">Bonus дней</span><span class="info-value num">${u.bonus_days || 0}</span></div>
+      <div class="info-row"><span class="info-label">Потратил всего</span><span class="info-value num">${money(totalSpent)}</span></div>
+    </div>
+
+    <div class="sheet-section">
+      <div class="sheet-section-title">Активная подписка</div>
+      ${sub ? `
+        <div class="info-row"><span class="info-label">Тариф</span><span class="info-value">${sub.devices} уст.</span></div>
+        <div class="info-row"><span class="info-label">Старт</span><span class="info-value">${fmtDateTime(sub.started_at)}</span></div>
+        <div class="info-row"><span class="info-label">Истекает</span><span class="info-value">${fmtDateTime(sub.expires_at)} <span class="text-mono" style="color:${daysLeft(sub.expires_at) <= 3 ? 'var(--red)' : 'var(--text-3)'}">(${daysLeft(sub.expires_at)} дн.)</span></span></div>
+        <div class="info-row"><span class="info-label">Ссылка подписки</span><span class="info-value text-mono" style="font-size:11px;word-break:break-all">${escapeHtml((sub.sub_url || '').slice(-32))}…</span></div>
+      ` : '<div class="empty" style="padding:20px"><div class="title" style="font-size:13px">Активной подписки нет</div></div>'}
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn btn-success btn-sm" onclick="quickGrant(${uid})">📅 Выдать / продлить</button>
+        <button class="btn btn-ghost btn-sm" onclick="openBonusModal(${uid})">🎁 Бонусные дни</button>
+        ${sub ? `<button class="btn btn-danger btn-sm" onclick="revokeSub(${sub.id})">⨯ Отозвать</button>` : ''}
+      </div>
+    </div>
+
+    <div class="sheet-section">
+      <div class="sheet-section-title">Реферальная информация</div>
+      <div class="info-row"><span class="info-label">Кто пригласил</span><span class="info-value">${referrer ? escapeHtml(displayName(referrer)) : '—'}</span></div>
+      <div class="info-row"><span class="info-label">Привёл</span><span class="info-value num">${broughtIn.length} (из них оплатили: ${broughtPaid})</span></div>
+      <div class="info-row"><span class="info-label">Реф. ссылка</span><span class="info-value text-mono" style="font-size:11px">https://t.me/MaxArtVPN_bot?start=${uid}</span></div>
+    </div>
+
+    ${userPays.length ? `
+    <div class="sheet-section">
+      <div class="sheet-section-title">История платежей · ${userPays.length}</div>
+      ${userPays.slice(0, 10).map(p => `
+        <div class="list-row">
+          <div class="list-icon ${p.status === 'succeeded' ? 'green' : p.status === 'pending' ? 'yellow' : 'red'}">${p.status === 'succeeded' ? '✓' : p.status === 'pending' ? '⏳' : '✕'}</div>
+          <div class="list-main">
+            <div class="list-title">${money(p.amount)} · ${p.months || '?'} мес. ${p.devices || '?'} уст.</div>
+            <div class="list-sub">${fmtDateTime(p.created_at)}</div>
+          </div>
+          <div class="list-end"><span class="badge badge-${p.status === 'succeeded' ? 'green' : p.status === 'pending' ? 'yellow' : 'red'}">${p.status}</span></div>
+        </div>
+      `).join('')}
+    </div>` : ''}
+
+    ${userSubs.length > 1 ? `
+    <div class="sheet-section">
+      <div class="sheet-section-title">Все подписки · ${userSubs.length}</div>
+      ${userSubs.map(s => `
+        <div class="list-row">
+          <div class="list-icon ${s.status === 'active' ? 'green' : 'gray' === 'gray' ? 'red' : 'red'}">${s.status === 'active' ? '✓' : '○'}</div>
+          <div class="list-main">
+            <div class="list-title">${s.devices} уст. · ${fmtDate(s.started_at)} → ${fmtDate(s.expires_at)}</div>
+            <div class="list-sub">id: ${s.id} · ${s.status}</div>
+          </div>
+        </div>
+      `).join('')}
+    </div>` : ''}
+
+    ${tickets.length ? `
+    <div class="sheet-section">
+      <div class="sheet-section-title">Тикеты · ${tickets.length}</div>
+      ${tickets.slice(0, 5).map(t => `
+        <div class="list-row">
+          <div class="list-icon ${t.status === 'closed' ? 'green' : t.status === 'in_progress' ? 'blue' : 'yellow'}">💬</div>
+          <div class="list-main">
+            <div class="list-title">#${t.id} · ${escapeHtml((t.subject || '').slice(0, 40))}</div>
+            <div class="list-sub">${fmtDateTime(t.created_at)}</div>
+          </div>
+          <div class="list-end"><span class="badge badge-${t.status === 'closed' ? 'green' : t.status === 'in_progress' ? 'blue' : 'yellow'}">${t.status}</span></div>
+        </div>
+      `).join('')}
+    </div>` : ''}
+  `;
+  $('#sheetOverlay').classList.add('open');
+  $('#userSheet').classList.add('open');
+}
+function closeSheet(){
+  $('#sheetOverlay').classList.remove('open');
+  $('#userSheet').classList.remove('open');
+}
+
+/* =================================================================
+   SUBSCRIPTIONS
+   ================================================================= */
+function renderSubs(){
+  const f = $('#subsFilter').value;
+  const dev = $('#subsDevicesFilter').value;
+  let subs = state.subs.slice();
+  const now = new Date();
+  if (f === 'active') subs = subs.filter(s => s.status === 'active' && new Date(s.expires_at) > now);
+  else if (f === 'expiring') subs = subs.filter(s => s.status === 'active' && daysLeft(s.expires_at) >= 0 && daysLeft(s.expires_at) <= 3);
+  else if (f === 'expired') subs = subs.filter(s => s.status !== 'active' || new Date(s.expires_at) <= now);
+  if (dev !== 'all') subs = subs.filter(s => Number(s.devices) === Number(dev));
+  subs.sort((a,b) => new Date(a.expires_at) - new Date(b.expires_at));
+  $('#subsCounter').textContent = subs.length + ' шт.';
+  const tbody = $('#subsTable tbody');
+  if (!subs.length){
+    tbody.innerHTML = '<tr><td colspan="7"><div class="empty"><span class="ico">📭</span><div class="title">Подписок нет</div></div></td></tr>';
+    return;
+  }
+  tbody.innerHTML = subs.map(s => {
+    const u = userById(s.user_id);
+    const dl = daysLeft(s.expires_at);
+    const isActive = s.status === 'active' && dl > 0;
+    const dlColor = dl <= 1 ? 'var(--red)' : dl <= 3 ? 'var(--yellow)' : 'var(--text)';
+    return `<tr class="clickable" onclick="openUserSheet(${s.user_id})">
+      <td><div class="user-cell">${avaHtml(u)}<div class="user-name">${escapeHtml(displayName(u))}</div></div></td>
+      <td><span class="badge badge-blue">${s.devices} уст.</span></td>
+      <td><span class="text-mono">${fmtDate(s.started_at)}</span></td>
+      <td><span class="text-mono">${fmtDate(s.expires_at)}</span></td>
+      <td><span class="num" style="color:${dlColor};font-weight:700">${dl > 0 ? dl + ' дн.' : 'истекло'}</span></td>
+      <td><span class="badge badge-${isActive ? 'green' : 'red'}">${isActive ? 'актив.' : 'неакт.'}</span></td>
+      <td><div class="action-btns" onclick="event.stopPropagation()">
+        <button class="btn btn-ghost btn-sm" onclick="quickGrant(${s.user_id})">📅 Продлить</button>
+        ${isActive ? `<button class="btn btn-danger btn-sm" onclick="revokeSub(${s.id})">⨯</button>` : ''}
+      </div></td>
+    </tr>`;
+  }).join('');
+}
+
+/* =================================================================
+   PAYMENTS
+   ================================================================= */
+function renderPayments(){
+  const all = state.payments;
+  const succeeded = all.filter(p => p.status === 'succeeded');
+  $('#payKpiSucceeded').textContent = num(succeeded.length);
+  $('#payKpiSucceededSum').textContent = money(succeeded.reduce((s,p) => s + Number(p.amount||0), 0));
+  $('#payKpiPending').textContent = num(all.filter(p => p.status === 'pending').length);
+  $('#payKpiCanceled').textContent = num(all.filter(p => p.status === 'canceled' || p.status === 'failed').length);
+  $('#payKpiReceipt').textContent = num(succeeded.filter(p => p.receipt_status !== 'registered' && p.receipt_status !== 'not_required').length);
+
+  const f = $('#paymentsFilter').value;
+  const rf = $('#paymentsReceiptFilter').value;
+  const search = ($('#paymentsSearch').value || '').toLowerCase().trim();
+  let list = all.slice();
+  if (f !== 'all') list = list.filter(p => p.status === f);
+  if (rf !== 'all'){
+    if (rf === 'pending') list = list.filter(p => p.status === 'succeeded' && p.receipt_status !== 'registered' && p.receipt_status !== 'not_required');
+    if (rf === 'registered') list = list.filter(p => p.receipt_status === 'registered');
+  }
+  if (search){
+    list = list.filter(p => [p.email, p.provider_payment_id, p.user_id].some(x => String(x || '').toLowerCase().includes(search)));
+  }
+  $('#paymentsCounter').textContent = list.length + ' шт.';
+  const tbody = $('#paymentsTable tbody');
+  if (!list.length){
+    tbody.innerHTML = '<tr><td colspan="9"><div class="empty"><span class="ico">📭</span><div class="title">Платежей нет</div></div></td></tr>';
+    return;
+  }
+  tbody.innerHTML = list.map(p => {
+    const u = userById(p.user_id);
+    const stCls = p.status === 'succeeded' ? 'green' : p.status === 'pending' ? 'yellow' : p.status === 'canceled' ? 'red' : 'orange';
+    const promoInfo = p.metadata && p.metadata.promo_code
+      ? `<span class="badge badge-purple">${escapeHtml(p.metadata.promo_code)}</span>` : '<span class="text-muted">—</span>';
+    const receiptCell = p.status !== 'succeeded'
+      ? '<span class="text-muted">—</span>'
+      : p.receipt_status === 'registered'
+        ? `<span class="badge badge-green">✓ оформлен</span>`
+        : p.receipt_status === 'not_required'
+          ? `<span class="badge badge-gray">не нужен</span>`
+          : `<span class="badge badge-yellow">⏳ ждёт</span>`;
+    return `<tr>
+      <td><span class="text-mono">${fmtDateTime(p.created_at)}</span></td>
+      <td><div class="user-cell">${avaHtml(u || {user_id:p.user_id})}<div class="user-name">${escapeHtml(u ? displayName(u) : ('id:' + p.user_id))}</div></div></td>
+      <td><span class="num" style="font-weight:700">${money(p.amount)}</span></td>
+      <td><span class="text-mono">${p.months || '?'} мес. · ${p.devices || '?'} уст.</span></td>
+      <td><span class="text-mono">${escapeHtml(p.email || '—')}</span></td>
+      <td>${promoInfo}</td>
+      <td><span class="badge badge-${stCls}">${p.status}</span></td>
+      <td>${receiptCell}</td>
+      <td><div class="action-btns">
+        ${p.status === 'succeeded' && p.receipt_status !== 'registered' && p.receipt_status !== 'not_required' ? `<button class="btn btn-success btn-sm" onclick="markReceipt(${p.id}, 'registered')" title="Отметить чек оформленным">✓</button>` : ''}
+        ${p.status === 'succeeded' && p.receipt_status === 'registered' ? `<button class="btn btn-ghost btn-sm" onclick="markReceipt(${p.id}, 'pending')" title="Откатить">↺</button>` : ''}
+        ${p.confirmation_url && p.status === 'pending' ? `<a class="btn btn-ghost btn-sm" href="${escapeHtml(p.confirmation_url)}" target="_blank">↗</a>` : ''}
+      </div></td>
+    </tr>`;
+  }).join('');
+}
+
+async function markReceipt(payId, statusVal){
+  try {
+    const data = {receipt_status: statusVal};
+    if (statusVal === 'registered') data.receipt_registered_at = new Date().toISOString();
+    else data.receipt_registered_at = null;
+    await sbUpdate('payments', 'id=eq.' + payId, data);
+    const p = state.payments.find(x => x.id === payId);
+    if (p) Object.assign(p, data);
+    renderPayments();
+    notify(statusVal === 'registered' ? 'Чек отмечен оформленным' : 'Отметка снята', 'success');
+  } catch (e) {
+    notify('Ошибка: ' + e.message, 'error');
+  }
+}
+
+/* =================================================================
+   PROMOS
+   ================================================================= */
+function promoStatus(p){
+  if (!p.is_active) return {key:'inactive', label:'отключён', cls:'gray'};
+  if (p.expires_at && new Date(p.expires_at) < new Date()) return {key:'expired', label:'просрочен', cls:'red'};
+  if (p.max_uses != null && (p.uses_count || 0) >= p.max_uses) return {key:'exhausted', label:'исчерпан', cls:'orange'};
+  return {key:'active', label:'активен', cls:'green'};
+}
+function renderPromos(){
+  const f = $('#promosFilter').value;
+  const search = ($('#promosSearch').value || '').toLowerCase().trim();
+  let list = state.promos.slice();
+  if (search) list = list.filter(p => p.code.toLowerCase().includes(search) || (p.description || '').toLowerCase().includes(search));
+  if (f !== 'all') list = list.filter(p => promoStatus(p).key === f);
+  list.sort((a,b) => new Date(b.created_at) - new Date(a.created_at));
+  const tbody = $('#promosTable tbody');
+  if (!list.length){
+    tbody.innerHTML = '<tr><td colspan="7"><div class="empty"><span class="ico">🎁</span><div class="title">Промокодов нет</div><div class="sub">Создайте первый — он сразу станет доступен в боте</div></div></td></tr>';
+    return;
+  }
+  tbody.innerHTML = list.map(p => {
+    const st = promoStatus(p);
+    const max = p.max_uses == null ? '∞' : p.max_uses;
+    const usedPct = p.max_uses == null ? 0 : Math.min(100, (p.uses_count || 0) / p.max_uses * 100);
+    const valDisplay = p.type === 'percent' ? `−${p.value}%` : `+${p.value} дн.`;
+    return `<tr>
+      <td><span class="text-mono" style="font-size:14px;font-weight:700;color:var(--accent-2);letter-spacing:1.5px">${escapeHtml(p.code)}</span>${p.description ? `<div class="text-muted" style="font-size:11.5px;margin-top:2px">${escapeHtml(p.description)}</div>` : ''}</td>
+      <td>${p.type === 'percent' ? '<span class="badge badge-blue">скидка %</span>' : '<span class="badge badge-purple">бонус дней</span>'}</td>
+      <td><span class="num" style="font-weight:700">${valDisplay}</span></td>
+      <td><span class="num">${p.uses_count || 0}</span> / <span class="num text-muted">${max}</span>${p.max_uses != null ? `<div style="height:3px;background:var(--bg4);border-radius:3px;margin-top:5px;overflow:hidden;width:80px"><div style="height:100%;background:linear-gradient(90deg,var(--accent),var(--accent-2));width:${usedPct}%"></div></div>` : ''}</td>
+      <td><span class="text-mono">${p.expires_at ? fmtDate(p.expires_at) : '∞'}</span></td>
+      <td><span class="badge badge-${st.cls}">${st.label}</span></td>
+      <td><div class="action-btns">
+        <button class="icon-btn" onclick="copyText('${escapeHtml(p.code)}')" title="Копировать код">⎘</button>
+        <label class="toggle" title="Включить/выключить"><input type="checkbox" ${p.is_active ? 'checked' : ''} onchange="togglePromo(${p.id}, this.checked)"><span class="toggle-slider"></span></label>
+        <button class="btn btn-danger btn-sm" onclick="deletePromo(${p.id}, '${escapeHtml(p.code)}')">⨯</button>
+      </div></td>
+    </tr>`;
+  }).join('');
+}
+function copyText(t){ navigator.clipboard.writeText(t); notify('Скопировано: ' + t); }
+async function togglePromo(id, val){
+  try { await sbUpdate('promocodes', 'id=eq.' + id, {is_active: val});
+    const p = state.promos.find(x => x.id === id); if (p) p.is_active = val;
+    renderPromos(); renderNavCounts();
+    notify(val ? 'Промокод включён' : 'Промокод отключён');
+  } catch (e) { notify('Ошибка: ' + e.message, 'error'); renderPromos(); }
+}
+async function deletePromo(id, code){
+  if (!confirm(`Удалить промокод ${code}? Это действие необратимо.`)) return;
+  try {
+    await sbDelete('promocodes', 'id=eq.' + id);
+    state.promos = state.promos.filter(x => x.id !== id);
+    renderPromos(); renderNavCounts();
+    notify('Промокод удалён');
+  } catch (e) { notify('Ошибка: ' + e.message, 'error'); }
+}
+function genPromoCode(){
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let s = '';
+  for (let i = 0; i < 8; i++) s += chars[Math.floor(Math.random()*chars.length)];
+  $('#promoCode').value = s;
+}
+function resetPromoModal(){
+  $('#promoModalTitle').textContent = '🎁 Создать промокод';
+  $('#promoCode').value = '';
+  $('#promoType').value = 'percent';
+  $('#promoValue').value = '';
+  $('#promoMax').value = '';
+  $('#promoExpiry').value = '';
+  $('#promoDesc').value = '';
+  updatePromoHelp();
+}
+function updatePromoHelp(){
+  const t = $('#promoType').value;
+  if (t === 'percent'){
+    $('#promoValueLabel').textContent = 'Размер скидки, %';
+    $('#promoValue').placeholder = '20';
+    $('#promoHelp').textContent = 'Скидка снижает итоговую сумму платежа в %. Один пользователь может использовать промокод только один раз.';
+  } else {
+    $('#promoValueLabel').textContent = 'Бонусных дней';
+    $('#promoValue').placeholder = '7';
+    $('#promoHelp').textContent = 'Бонусные дни добавляются к оплачиваемой подписке (например, купил 30 — получил 37). Один пользователь может использовать промокод только один раз.';
+  }
+}
+async function savePromo(){
+  const code = $('#promoCode').value.trim().toUpperCase();
+  const type = $('#promoType').value;
+  const value = parseInt($('#promoValue').value);
+  const max = parseInt($('#promoMax').value) || null;
+  const expiry = $('#promoExpiry').value || null;
+  const desc = $('#promoDesc').value.trim() || null;
+  if (!code || code.length < 3){ notify('Введите код (минимум 3 символа)', 'error'); return; }
+  if (!/^[A-Z0-9_-]+$/.test(code)){ notify('Код должен содержать только латиницу, цифры, _ или -', 'error'); return; }
+  if (!value || value < 1){ notify('Введите значение', 'error'); return; }
+  if (type === 'percent' && value > 99){ notify('Скидка не может быть 100% и больше', 'error'); return; }
+  if (state.promos.some(p => p.code === code)){ notify('Промокод с таким кодом уже есть', 'error'); return; }
+  try {
+    const created = await sbInsert('promocodes', {
+      code, type, value, description: desc, max_uses: max,
+      expires_at: expiry ? new Date(expiry + 'T23:59:59').toISOString() : null,
+      is_active: true, uses_count: 0,
+    });
+    state.promos.unshift(created[0]);
+    closeModal('promoModal');
+    renderPromos(); renderNavCounts();
+    notify('Промокод ' + code + ' создан');
+  } catch (e) {
+    notify('Ошибка создания: ' + e.message, 'error');
+  }
+}
+
+/* =================================================================
+   REFERRALS
+   ================================================================= */
+function renderReferrals(){
+  const total = state.refs.length;
+  const referrers = {};
+  state.users.filter(u => u.referrer_id).forEach(u => {
+    referrers[u.referrer_id] = referrers[u.referrer_id] || {referred:[], paid:0};
+    referrers[u.referrer_id].referred.push(u);
+  });
+  Object.keys(referrers).forEach(rid => {
+    referrers[rid].paid = referrers[rid].referred.filter(u => state.payments.some(p => Number(p.user_id) === Number(u.user_id) && p.status === 'succeeded')).length;
+  });
+  const referrerList = Object.entries(referrers).map(([rid, info]) => ({
+    user: userById(rid) || {user_id: rid},
+    referred: info.referred.length,
+    paid: info.paid,
+  })).sort((a,b) => b.referred - a.referred);
+
+  const totalPaid = referrerList.reduce((s, r) => s + r.paid, 0);
+  const activeRefs = referrerList.length;
+  const totalDays = state.refs.reduce((s, r) => s + (r.bonus_days || 0), 0);
+
+  $('#refKpiTotal').textContent = num(total);
+  $('#refKpiPaid').textContent = num(totalPaid);
+  $('#refKpiActive').textContent = num(activeRefs);
+  $('#refKpiDays').textContent = num(totalDays);
+
+  const tbody = $('#topRefsTable tbody');
+  if (!referrerList.length){
+    tbody.innerHTML = '<tr><td colspan="5"><div class="empty"><span class="ico">🤝</span><div class="title">Рефералов пока нет</div><div class="sub">Когда кто-то перейдёт по реф.ссылке — появится здесь</div></div></td></tr>';
+    return;
+  }
+  tbody.innerHTML = referrerList.slice(0, 30).map((r, i) => {
+    const conv = r.referred ? Math.round(r.paid / r.referred * 100) : 0;
+    const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : '#' + (i + 1);
+    return `<tr class="clickable" onclick="openUserSheet(${r.user.user_id})">
+      <td><span style="font-weight:800;font-size:14px">${medal}</span></td>
+      <td><div class="user-cell">${avaHtml(r.user)}<div class="user-name">${escapeHtml(displayName(r.user))}</div></div></td>
+      <td><span class="num" style="font-weight:700">${r.referred}</span></td>
+      <td><span class="num" style="color:var(--green);font-weight:700">${r.paid}</span></td>
+      <td><span class="num">${conv}%</span></td>
+    </tr>`;
+  }).join('');
+}
+
+/* =================================================================
+   TICKETS
+   ================================================================= */
+function renderTickets(){
+  const f = $('#ticketsFilter').value;
+  let list = state.tickets.slice();
+  if (f === 'active') list = list.filter(t => t.status === 'open' || t.status === 'in_progress');
+  else if (f !== 'all') list = list.filter(t => t.status === f);
+  $('#ticketsCounter').textContent = list.length + ' шт.';
+  const tbody = $('#ticketsTable tbody');
+  if (!list.length){
+    tbody.innerHTML = '<tr><td colspan="7"><div class="empty"><span class="ico">💬</span><div class="title">Тикетов нет</div></div></td></tr>';
+    return;
+  }
+  tbody.innerHTML = list.map(t => {
+    const u = {user_id: t.user_id, username: t.username, first_name: t.first_name, last_name: t.last_name};
+    const cls = t.status === 'open' ? 'yellow' : t.status === 'in_progress' ? 'blue' : 'green';
+    const lab = t.status === 'open' ? 'open' : t.status === 'in_progress' ? 'work' : 'closed';
+    const admin = t.assigned_admin_id ? state.supportAdmins.find(a => Number(a.user_id) === Number(t.assigned_admin_id)) : null;
+    return `<tr class="clickable" onclick="openUserSheet(${t.user_id})">
+      <td><span class="text-mono" style="font-weight:700">#${t.id}</span></td>
+      <td><div class="user-cell">${avaHtml(u)}<div class="user-name">${escapeHtml(displayName(u))}</div></div></td>
+      <td><span class="text-muted">${escapeHtml((t.subject || '').slice(0, 60))}</span></td>
+      <td><span class="badge badge-${cls}">${lab}</span></td>
+      <td>${admin ? escapeHtml(admin.full_name || ('@' + admin.username)) : '<span class="text-muted">—</span>'}</td>
+      <td><span class="text-mono">${fmtDateTime(t.created_at)}</span></td>
+      <td><a class="btn btn-ghost btn-sm" href="https://t.me/TuVPNSupport_bot" target="_blank" onclick="event.stopPropagation()">↗ Открыть в боте</a></td>
+    </tr>`;
+  }).join('');
+}
+
+/* =================================================================
+   SETTINGS
+   ================================================================= */
+function renderSettings(){
+  $('#dbStatUsers').textContent = num(state.users.length);
+  $('#dbStatSubs').textContent = num(state.subs.length);
+  $('#dbStatPayments').textContent = num(state.payments.length);
+  $('#dbStatPromos').textContent = num(state.promos.length);
+  $('#dbStatTickets').textContent = num(state.tickets.length);
+  $('#dbStatRefs').textContent = num(state.refs.length);
+}
+
+/* =================================================================
+   GRANT SUBSCRIPTION
+   ================================================================= */
+function quickGrant(uid){
+  $('#grantUid').value = uid;
+  const u = userById(uid);
+  $('#grantUserHint').textContent = u ? `Найден: ${displayName(u)}` : 'Пользователь не найден в БД, но можно попробовать выдать.';
+  openModal('grantModal');
+}
+function openGrantModal(){
+  $('#grantUid').value = '';
+  $('#grantUserHint').textContent = 'Пользователь должен сначала запустить бот.';
+  openModal('grantModal');
+}
+async function grantSubscription(){
+  const uid = parseInt($('#grantUid').value);
+  const devices = parseInt($('#grantDevices').value);
+  const days = parseInt($('#grantDays').value);
+  if (!uid){ notify('Введите Telegram ID', 'error'); return; }
+  const btn = $('#grantBtn'); btn.disabled = true; btn.textContent = '⏳ Выдаём...';
+  try {
+    const r = await fetch(PROXY_URL + '/admin-api/grant', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({user_id: uid, devices, days})
+    });
+    const data = await r.json();
+    if (data.success){
+      notify(`✓ Подписка ${data.action === 'extended' ? 'продлена' : 'создана'}`);
+      closeModal('grantModal');
+      // Обновим uuid пользователя
+      try { await sbUpdate('users', 'user_id=eq.' + uid, {client_uuid: data.uuid}); } catch(e){}
+      await loadAll();
+    } else {
+      notify('Ошибка: ' + (data.error || 'unknown'), 'error');
+    }
+  } catch (e) {
+    notify('Ошибка соединения с proxy: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = '✓ Выдать';
+  }
+}
+async function revokeSub(id){
+  if (!confirm('Отозвать подписку? Пользователь потеряет доступ.')) return;
+  try {
+    await sbUpdate('subscriptions', 'id=eq.' + id, {status: 'inactive'});
+    const s = state.subs.find(x => x.id === id);
+    if (s) s.status = 'inactive';
+    renderAll();
+    notify('Подписка отозвана');
+  } catch (e) { notify('Ошибка: ' + e.message, 'error'); }
+}
+
+/* =================================================================
+   BONUS DAYS
+   ================================================================= */
+function openBonusModal(uid){
+  const u = userById(uid);
+  $('#bonusUser').value = u ? `${displayName(u)} (${uid})` : 'id:' + uid;
+  $('#bonusUser').dataset.uid = uid;
+  $('#bonusDays').value = '';
+  openModal('bonusModal');
+}
+async function grantBonusDays(){
+  const uid = parseInt($('#bonusUser').dataset.uid);
+  const days = parseInt($('#bonusDays').value);
+  if (!days || days < 1){ notify('Введите количество дней', 'error'); return; }
+  try {
+    // Если есть активная подписка — продлеваем её через proxy (это правильнее, чем чистый UPDATE, потому что и в 3X-UI обновится)
+    const sub = activeSubFor(uid);
+    if (sub && daysLeft(sub.expires_at) > 0){
+      const r = await fetch(PROXY_URL + '/admin-api/grant', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({user_id: uid, devices: sub.devices, days})
+      });
+      const data = await r.json();
+      if (!data.success) throw new Error(data.error || 'unknown');
+      notify(`✓ Подписка продлена на ${days} дней`);
+    } else {
+      // Иначе кладём в копилку bonus_days
+      const u = userById(uid);
+      const cur = (u && u.bonus_days) || 0;
+      await sbUpdate('users', 'user_id=eq.' + uid, {bonus_days: cur + days});
+      if (u) u.bonus_days = cur + days;
+      notify(`✓ +${days} дней в копилке (применятся при следующей оплате)`);
+    }
+    closeModal('bonusModal');
+    await loadAll();
+  } catch (e) {
+    notify('Ошибка: ' + e.message, 'error');
+  }
+}
+
+/* =================================================================
+   MODALS
+   ================================================================= */
+function openModal(id){ $('#' + id).classList.add('open'); }
+function closeModal(id){ $('#' + id).classList.remove('open'); }
+$$('.modal-overlay').forEach(o => o.addEventListener('click', e => { if (e.target === o) o.classList.remove('open'); }));
+
+/* =================================================================
+   INIT
+   ================================================================= */
+document.addEventListener('DOMContentLoaded', () => {
+  if (isLoggedIn()) showApp();
+  else $('#loginScreen').classList.add('show');
+  $('#loginInput').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+});
 </script>
 </body>
 </html>
