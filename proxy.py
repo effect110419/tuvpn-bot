@@ -359,8 +359,56 @@ def yookassa_webhook():
             days = months * 30
             months_label = {1: "1 месяц", 3: "3 месяца", 12: "1 год"}.get(months, f"{months} мес.")
 
+            # Промокод — добавляем бонусные дни (если type=days)
+            promo_id = metadata.get("promo_id")
+            promo_code = metadata.get("promo_code")
+            promo_type = metadata.get("promo_type")
+            promo_value = metadata.get("promo_value")
+            try:
+                bonus_days_from_promo = int(metadata.get("bonus_days_from_promo", 0) or 0)
+            except (TypeError, ValueError):
+                bonus_days_from_promo = 0
+            if bonus_days_from_promo > 0:
+                days += bonus_days_from_promo
+                app.logger.info(f"Промокод {promo_code} даёт +{bonus_days_from_promo} дн. user_id={uid}")
+
             result = issue_subscription(uid, devices, days)
             app.logger.info(f"Выдача подписки по платежу {payment_id}: {result}")
+
+            # Записываем использование промокода (после успешной выдачи)
+            if promo_id and result.get("success"):
+                try:
+                    promo_id_int = int(promo_id)
+                    # Получаем internal payment_id из нашей таблицы
+                    pay_row = sb.table("payments").select("id, amount").eq("provider_payment_id", payment_id).limit(1).execute()
+                    internal_pay_id = pay_row.data[0]["id"] if pay_row.data else None
+
+                    # applied_value — что фактически дал промокод
+                    if promo_type == "percent":
+                        # Скидка в рублях = base_price - final_price (final_price = amount платежа)
+                        try:
+                            base_price = float(parsed["amount"]) / (1 - int(promo_value) / 100)
+                            applied_value = round(base_price - float(parsed["amount"]), 2)
+                        except Exception:
+                            applied_value = None
+                    else:  # days
+                        applied_value = bonus_days_from_promo
+
+                    sb.table("promocode_uses").insert({
+                        "promocode_id": promo_id_int,
+                        "user_id": uid,
+                        "payment_id": internal_pay_id,
+                        "applied_value": applied_value,
+                    }).execute()
+
+                    # Инкрементим счётчик uses_count
+                    cur = sb.table("promocodes").select("uses_count").eq("id", promo_id_int).limit(1).execute()
+                    if cur.data:
+                        new_count = (cur.data[0].get("uses_count") or 0) + 1
+                        sb.table("promocodes").update({"uses_count": new_count}).eq("id", promo_id_int).execute()
+                    app.logger.info(f"Промокод {promo_code} зафиксирован для user_id={uid}")
+                except Exception as e:
+                    app.logger.error(f"Не удалось записать использование промокода: {e}")
 
             # Реферальный бонус — рефереру +7 дней за оплату другом
             try:

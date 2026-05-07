@@ -62,18 +62,32 @@ def create_payment(
     devices: int,
     months: int,
     email: str,
+    promo_id=None,
+    promo_code=None,
+    promo_type=None,
+    promo_value=None,
+    bonus_days_from_promo: int = 0,
 ) -> dict:
     """
     Создаёт платёж в ЮКассе.
 
-    Возвращает dict:
-        {
-            "payment_id": "abc-123-...",
-            "confirmation_url": "https://yoomoney.ru/checkout/...",
-            "status": "pending",
-        }
+    Параметры промо (опционально) сохраняются в metadata платежа,
+    чтобы webhook мог применить бонусные дни и зафиксировать использование.
     """
     idempotence_key = str(uuid_lib.uuid4())
+
+    metadata = {
+        "user_id": str(user_id),
+        "devices": str(devices),
+        "months": str(months),
+        "email": email,
+    }
+    if promo_id:
+        metadata["promo_id"] = str(promo_id)
+        metadata["promo_code"] = str(promo_code or "")
+        metadata["promo_type"] = str(promo_type or "")
+        metadata["promo_value"] = str(promo_value or "")
+        metadata["bonus_days_from_promo"] = str(bonus_days_from_promo or 0)
 
     payment = Payment.create(
         {
@@ -87,12 +101,7 @@ def create_payment(
             },
             "capture": True,
             "description": description,
-            "metadata": {
-                "user_id": str(user_id),
-                "devices": str(devices),
-                "months": str(months),
-                "email": email,
-            },
+            "metadata": metadata,
             # Чек НЕ передаём — самозанятый формирует вручную в "Мой налог"
         },
         idempotence_key,

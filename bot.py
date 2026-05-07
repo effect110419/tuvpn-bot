@@ -17,6 +17,7 @@ import re
 
 
 class BuyStates(StatesGroup):
+    waiting_promo = State()
     waiting_email = State()
 
 from aiogram.client.default import DefaultBotProperties
@@ -366,20 +367,145 @@ async def pay_card(callback: types.CallbackQuery, state: FSMContext):
     price = PRICES[devices][months]
     months_label = {"1": "1 месяц", "3": "3 месяца", "12": "1 год"}[months]
 
-    # Запоминаем выбор пользователя в state
-    await state.set_state(BuyStates.waiting_email)
+    # Сохраняем выбор пользователя
     await state.update_data(devices=devices, months=months, price=price, months_label=months_label)
 
+    # Проверяем активную подписку
+    user_id = callback.from_user.id
+    sub = get_subscription(user_id)
+    days_left = 0
+    if sub:
+        try:
+            from datetime import datetime as _dt
+            exp = _dt.fromisoformat(sub["expires_at"].replace("Z", "+00:00"))
+            if exp.tzinfo is not None:
+                exp = exp.replace(tzinfo=None)
+            days_left = max(0, (exp - _dt.now()).days)
+        except Exception:
+            days_left = 0
+
+    # Если активной подписки нет или она истекла — обычный flow
+    if not sub or days_left <= 0:
+        await _ask_promo(callback.message, state, devices, months, price, months_label)
+        await callback.answer()
+        return
+
+    current_devices = sub.get("devices", 1)
+    days_in_period = {"1": 30, "3": 90, "12": 365}[months]
+
+    # Сценарий: тот же тариф по устройствам
+    if current_devices == devices:
+        text = (
+            f"♻️ <b>У вас активная подписка</b>\n\n"
+            f"📱 Устройств: {current_devices}\n"
+            f"⏳ Осталось: {days_left} дн.\n\n"
+            f"После оплаты:\n"
+            f"📦 {months_label} / {devices} уст. / {price} ₽\n"
+            f"➕ К сроку добавится: {days_in_period} дн.\n"
+            f"⏳ Итого станет: {days_left + days_in_period} дн.\n\n"
+            f"Продолжить?"
+        )
+    elif devices > current_devices:
+        # Повышение тарифа
+        text = (
+            f"⬆️ <b>Повышение тарифа</b>\n\n"
+            f"📱 Сейчас: {current_devices} уст.\n"
+            f"⏳ Осталось: {days_left} дн.\n\n"
+            f"После оплаты:\n"
+            f"📱 Устройств станет: <b>{devices}</b>\n"
+            f"➕ К сроку добавится: {days_in_period} дн.\n"
+            f"⏳ Итого станет: {days_left + days_in_period} дн.\n"
+            f"💰 К оплате: {price} ₽\n\n"
+            f"Продолжить?"
+        )
+    else:
+        # Понижение тарифа — строгое предупреждение
+        text = (
+            f"⚠️ <b>ВНИМАНИЕ: понижение тарифа</b>\n\n"
+            f"📱 Сейчас у вас: <b>{current_devices} уст.</b>\n"
+            f"⏳ Осталось: {days_left} дн.\n\n"
+            f"Вы выбираете тариф на <b>{devices} уст.</b> — это <b>меньше</b> чем сейчас.\n\n"
+            f"После оплаты:\n"
+            f"• Лимит устройств станет: <b>{devices}</b>\n"
+            f"• Лишние подключения будут отключены\n"
+            f"• К сроку добавится: {days_in_period} дн. (станет {days_left + days_in_period})\n"
+            f"• К оплате: {price} ₽\n\n"
+            f"Уверены что хотите понизить тариф?"
+        )
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Да, продолжить", callback_data="confirm_buy")],
+        [InlineKeyboardButton(text="❌ Отменить", callback_data="cancel_buy")],
+    ])
+    await callback.message.answer(text, reply_markup=kb)
+    await callback.answer()
+
+
+@dp.callback_query(lambda c: c.data == "confirm_buy")
+async def confirm_buy(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    devices = data.get("devices")
+    months = data.get("months")
+    price = data.get("price")
+    months_label = data.get("months_label")
+    if not all([devices, months, price, months_label]):
+        await callback.answer("Сессия истекла, начните заново через /start", show_alert=True)
+        await state.clear()
+        return
+    await _ask_promo(callback.message, state, devices, months, price, months_label)
+    await callback.answer()
+
+
+async def _ask_promo(message, state: FSMContext, devices, months, price, months_label):
+    """Спрашивает у пользователя есть ли промокод."""
+    await state.update_data(
+        devices=devices, months=months, price=price, months_label=months_label,
+        promo_id=None, promo_code=None, promo_type=None, promo_value=None,
+        final_price=price, bonus_days_from_promo=0,
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎁 У меня есть промокод", callback_data="have_promo")],
+        [InlineKeyboardButton(text="➡️ Без промокода", callback_data="no_promo")],
+        [InlineKeyboardButton(text="❌ Отменить", callback_data="cancel_buy")],
+    ])
+    await message.answer(
+        f"🎁 <b>Есть ли у вас промокод?</b>\n\n"
+        f"📦 {months_label} / {devices} уст.\n"
+        f"💰 Сумма: {price} ₽\n\n"
+        f"Если есть промокод — введите его и получите скидку или бонусные дни.",
+        reply_markup=kb,
+    )
+
+
+async def _ask_email(message, state: FSMContext):
+    """Запрашивает email у пользователя для чека.
+    Должна вызываться ПОСЛЕ обработки промокода (или его пропуска)."""
+    data = await state.get_data()
+    devices = data.get("devices")
+    months_label = data.get("months_label")
+    final_price = data.get("final_price", data.get("price"))
+    promo_code = data.get("promo_code")
+    bonus_days = data.get("bonus_days_from_promo", 0)
+
+    promo_line = ""
+    if promo_code:
+        promo_type = data.get("promo_type")
+        if promo_type == "percent":
+            promo_line = f"\n🎁 Промокод <b>{promo_code}</b>: скидка {data.get('promo_value')}%"
+        elif promo_type == "days":
+            promo_line = f"\n🎁 Промокод <b>{promo_code}</b>: +{bonus_days} дней"
+
+    await state.set_state(BuyStates.waiting_email)
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="❌ Отменить", callback_data="cancel_buy")],
     ])
-    await callback.message.answer(
-        f"📧 Введите ваш email для отправки чека\n\n"
-        f"📦 {months_label} / {devices} уст. / {price} ₽\n\n"
+    await message.answer(
+        f"📧 <b>Введите ваш email для отправки чека</b>\n\n"
+        f"📦 {months_label} / {devices} уст.{promo_line}\n"
+        f"💰 К оплате: <b>{final_price} ₽</b>\n\n"
         f"Чек будет отправлен на указанный email.",
         reply_markup=kb,
     )
-    await callback.answer()
 
 
 @dp.callback_query(lambda c: c.data == "cancel_buy")
@@ -401,20 +527,33 @@ async def process_email(message: types.Message, state: FSMContext):
     data = await state.get_data()
     devices = data["devices"]
     months = data["months"]
-    price = data["price"]
+    base_price = data["price"]
+    final_price = data.get("final_price", base_price)
     months_label = data["months_label"]
+    promo_id = data.get("promo_id")
+    promo_code = data.get("promo_code")
+    promo_type = data.get("promo_type")
+    promo_value = data.get("promo_value")
+    bonus_days_from_promo = data.get("bonus_days_from_promo", 0)
 
     user_id = message.from_user.id
     description = f"TuVPN: {months_label}, {devices} уст."
+    if promo_code:
+        description += f" (промо {promo_code})"
 
     try:
         payment = yookassa_client.create_payment(
-            amount=price,
+            amount=final_price,
             description=description,
             user_id=user_id,
             devices=devices,
             months=int(months),
             email=email,
+            promo_id=promo_id,
+            promo_code=promo_code,
+            promo_type=promo_type,
+            promo_value=promo_value,
+            bonus_days_from_promo=bonus_days_from_promo,
         )
     except Exception as e:
         logging.error(f"Ошибка создания платежа: {e}")
@@ -426,11 +565,20 @@ async def process_email(message: types.Message, state: FSMContext):
 
     # Записываем платёж в Supabase в статусе pending
     try:
+        payment_meta = {
+            "base_price": base_price,
+            "final_price": final_price,
+            "promo_id": promo_id,
+            "promo_code": promo_code,
+            "promo_type": promo_type,
+            "promo_value": promo_value,
+            "bonus_days_from_promo": bonus_days_from_promo,
+        }
         sb.table("payments").insert({
             "provider": "yookassa",
             "provider_payment_id": payment["payment_id"],
             "user_id": user_id,
-            "amount": price,
+            "amount": final_price,
             "currency": "RUB",
             "status": payment["status"],
             "email": email,
@@ -438,19 +586,27 @@ async def process_email(message: types.Message, state: FSMContext):
             "months": int(months),
             "description": description,
             "confirmation_url": payment["confirmation_url"],
+            "metadata": payment_meta,
         }).execute()
     except Exception as e:
         logging.error(f"Не удалось записать платёж в БД: {e}")
 
     await state.clear()
 
+    promo_line = ""
+    if promo_code:
+        if promo_type == "percent":
+            promo_line = f"\n🎁 Промокод {promo_code}: −{promo_value}%"
+        else:
+            promo_line = f"\n🎁 Промокод {promo_code}: +{promo_value} дн."
+
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💳 Оплатить", url=payment["confirmation_url"])],
     ])
     await message.answer(
-        f"✅ Платёж создан!\n\n"
-        f"📦 {months_label} / {devices} уст.\n"
-        f"💰 Сумма: {price} ₽\n"
+        f"✅ <b>Платёж создан!</b>\n\n"
+        f"📦 {months_label} / {devices} уст.{promo_line}\n"
+        f"💰 К оплате: <b>{final_price} ₽</b>\n"
         f"📧 Email для чека: {email}\n\n"
         f"Нажмите кнопку ниже, чтобы оплатить.\n"
         f"После успешной оплаты ссылка для подключения появится в боте в разделе «🔌 Подключиться».",
@@ -572,6 +728,163 @@ async def main():
     ])
     asyncio.create_task(check_expired())
     await dp.start_polling(bot)
+
+
+
+
+@dp.callback_query(lambda c: c.data == "have_promo")
+async def have_promo(callback: types.CallbackQuery, state: FSMContext):
+    await state.set_state(BuyStates.waiting_promo)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="◀️ Без промокода", callback_data="no_promo")],
+        [InlineKeyboardButton(text="❌ Отменить", callback_data="cancel_buy")],
+    ])
+    await callback.message.answer(
+        "✍️ <b>Введите промокод</b>\n\n"
+        "Промокоды чувствительны к регистру. Например: <code>TEST20</code>",
+        reply_markup=kb,
+    )
+    await callback.answer()
+
+
+@dp.callback_query(lambda c: c.data == "no_promo")
+async def no_promo(callback: types.CallbackQuery, state: FSMContext):
+    await _ask_email(callback.message, state)
+    await callback.answer()
+
+
+@dp.message(BuyStates.waiting_promo)
+async def process_promo(message: types.Message, state: FSMContext):
+    code_input = (message.text or "").strip().upper()
+    user_id = message.from_user.id
+
+    if not code_input or len(code_input) > 50:
+        await message.answer("❌ Некорректный код. Попробуйте ещё раз.")
+        return
+
+    # Ищем промокод
+    try:
+        r = sb.table("promocodes").select("*").eq("code", code_input).limit(1).execute()
+    except Exception as e:
+        logging.error(f"Ошибка поиска промокода: {e}")
+        await message.answer("⚠️ Сервис временно недоступен, попробуйте позже.")
+        return
+
+    if not r.data:
+        await message.answer(
+            "❌ <b>Промокод не найден</b>\n\n"
+            "Проверьте правильность кода или продолжите без него.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔁 Попробовать ещё раз", callback_data="have_promo")],
+                [InlineKeyboardButton(text="➡️ Без промокода", callback_data="no_promo")],
+                [InlineKeyboardButton(text="❌ Отменить", callback_data="cancel_buy")],
+            ])
+        )
+        return
+
+    promo = r.data[0]
+
+    # Валидации
+    if not promo.get("is_active"):
+        await message.answer(
+            "❌ Этот промокод деактивирован.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔁 Другой промокод", callback_data="have_promo")],
+                [InlineKeyboardButton(text="➡️ Без промокода", callback_data="no_promo")],
+            ])
+        )
+        return
+
+    if promo.get("expires_at"):
+        try:
+            from datetime import datetime as _dt
+            exp = _dt.fromisoformat(promo["expires_at"].replace("Z", "+00:00"))
+            if exp.tzinfo is not None:
+                exp = exp.replace(tzinfo=None)
+            if exp < _dt.now():
+                await message.answer(
+                    "❌ Срок действия промокода истёк.",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="🔁 Другой промокод", callback_data="have_promo")],
+                        [InlineKeyboardButton(text="➡️ Без промокода", callback_data="no_promo")],
+                    ])
+                )
+                return
+        except Exception:
+            pass
+
+    if promo.get("max_uses") is not None and promo.get("uses_count", 0) >= promo["max_uses"]:
+        await message.answer(
+            "❌ Этот промокод уже исчерпан (достигнут лимит использований).",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔁 Другой промокод", callback_data="have_promo")],
+                [InlineKeyboardButton(text="➡️ Без промокода", callback_data="no_promo")],
+            ])
+        )
+        return
+
+    # Проверка: использовал ли уже этот пользователь
+    used = sb.table("promocode_uses").select("id").eq("promocode_id", promo["id"]).eq("user_id", user_id).execute()
+    if used.data:
+        await message.answer(
+            "❌ Вы уже использовали этот промокод ранее.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔁 Другой промокод", callback_data="have_promo")],
+                [InlineKeyboardButton(text="➡️ Без промокода", callback_data="no_promo")],
+            ])
+        )
+        return
+
+    # Применяем промокод
+    data = await state.get_data()
+    base_price = data["price"]
+    promo_type = promo["type"]
+    promo_value = promo["value"]
+
+    if promo_type == "percent":
+        discount = round(base_price * promo_value / 100, 2)
+        final_price = max(1, round(base_price - discount, 2))
+        await state.update_data(
+            promo_id=promo["id"], promo_code=promo["code"],
+            promo_type=promo_type, promo_value=promo_value,
+            final_price=final_price, bonus_days_from_promo=0,
+        )
+        text = (
+            f"✅ <b>Промокод {promo['code']} применён!</b>\n\n"
+            f"📦 {data['months_label']} / {data['devices']} уст.\n"
+            f"💰 Цена: {base_price} ₽\n"
+            f"🎁 Скидка {promo_value}%: −{discount} ₽\n"
+            f"━━━━━━━━━━━━━━\n"
+            f"💳 К оплате: <b>{final_price} ₽</b>\n\n"
+            f"Продолжить?"
+        )
+    else:  # days
+        await state.update_data(
+            promo_id=promo["id"], promo_code=promo["code"],
+            promo_type=promo_type, promo_value=promo_value,
+            final_price=base_price, bonus_days_from_promo=promo_value,
+        )
+        text = (
+            f"✅ <b>Промокод {promo['code']} применён!</b>\n\n"
+            f"📦 {data['months_label']} / {data['devices']} уст.\n"
+            f"💰 Цена: {base_price} ₽\n"
+            f"🎁 Бонус: <b>+{promo_value} дней</b> к подписке\n\n"
+            f"Продолжить?"
+        )
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Продолжить", callback_data="promo_confirmed")],
+        [InlineKeyboardButton(text="🔁 Другой промокод", callback_data="have_promo")],
+        [InlineKeyboardButton(text="❌ Отменить", callback_data="cancel_buy")],
+    ])
+    await message.answer(text, reply_markup=kb)
+
+
+@dp.callback_query(lambda c: c.data == "promo_confirmed")
+async def promo_confirmed(callback: types.CallbackQuery, state: FSMContext):
+    await _ask_email(callback.message, state)
+    await callback.answer()
+
 
 if __name__ == "__main__":
     asyncio.run(main())
