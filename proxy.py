@@ -266,13 +266,12 @@ def apply_referral_bonus(user_id: int, days: int, reason: str):
             
             client_uuid = sub["sub_url"].split("/sub/")[-1] if "/sub/" in sub.get("sub_url", "") else str(uuid.uuid4())
             
+            expire_ms = int(new_expires.timestamp() * 1000)
+            devices_count = sub.get("devices", 1)
             for server in servers:
-                try:
-                    xui_add_client_on_server(server, client_uuid, f"ref_{user_id}", sub.get("devices", 1))
-                except Exception as e:
-                    print(f"⚠️ Ошибка на сервере {server.get('country_name')}: {e}")
+                xui_update_client_on_server(server, client_uuid, user_id, devices_count, expire_ms)
             
-            sb.table("subscriptions").update({"expires_at": expires_str}).eq("id", sub["id"]).execute()
+            sb.table("subscriptions").update({"expires_at": expires_str, "notified_3d": False, "notified_1d": False, "notified_expired": False}).eq("id", sub["id"]).execute()
         else:
             issue_subscription(user_id, 1, days)
         
@@ -367,6 +366,120 @@ def server_edit(server_id):
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 # =================================================================
+
+@app.route('/admin-api/servers/<server_id>/test', methods=['POST'])
+def server_test(server_id):
+    """Проверить соединение с панелью 3X-UI. Запишет результат в БД."""
+    import time as _t
+    try:
+        srv_resp = sb.table("servers").select("*").eq("id", server_id).limit(1).execute()
+        if not srv_resp.data:
+            return jsonify({"success": False, "error": "server not found"}), 404
+        server = srv_resp.data[0]
+        start = _t.time()
+        try:
+            session, _ = xui_session(server)
+            elapsed_ms = int((_t.time() - start) * 1000)
+            status = "up"
+            error = None
+        except Exception as e:
+            elapsed_ms = int((_t.time() - start) * 1000)
+            status = "down"
+            error = str(e)
+        try:
+            sb.table("servers").update({
+                "last_check_at": datetime.utcnow().isoformat(),
+                "last_check_status": status,
+                "last_check_response_ms": elapsed_ms,
+            }).eq("id", server_id).execute()
+        except Exception:
+            pass
+        return jsonify({
+            "success": status == "up",
+            "status": status,
+            "response_ms": elapsed_ms,
+            "error": error,
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/admin-api/servers/<server_id>/clients', methods=['GET'])
+def server_clients(server_id):
+    """Получить список клиентов с конкретного сервера (из 3X-UI API)."""
+    try:
+        srv_resp = sb.table("servers").select("*").eq("id", server_id).limit(1).execute()
+        if not srv_resp.data:
+            return jsonify({"success": False, "error": "server not found"}), 404
+        server = srv_resp.data[0]
+        session, _ = xui_session(server)
+        url = server["panel_url"].rstrip("/")
+        r = session.get(f"{url}/xui/API/inbounds/list", timeout=10)
+        data = r.json()
+        clients = []
+        for inbound in data.get("obj", []):
+            if int(inbound.get("id", 0)) != int(server["inbound_id"]):
+                continue
+            settings = json.loads(inbound.get("settings", "{}"))
+            for c in settings.get("clients", []):
+                clients.append({
+                    "uuid": c.get("id"),
+                    "email": c.get("email"),
+                    "limit_ip": c.get("limitIp"),
+                    "expiry_ms": c.get("expiryTime"),
+                    "expiry_human": (datetime.fromtimestamp(c["expiryTime"] / 1000).isoformat() if c.get("expiryTime") else None),
+                    "enable": c.get("enable", True),
+                })
+        return jsonify({"success": True, "clients": clients, "total": len(clients)})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/admin-api/servers/<server_id>/stats', methods=['GET'])
+def server_stats(server_id):
+    """Сколько активных подписок ссылается на этот сервер (по факту все, т.к. multi-server)."""
+    try:
+        srv_resp = sb.table("servers").select("*").eq("id", server_id).limit(1).execute()
+        if not srv_resp.data:
+            return jsonify({"success": False, "error": "server not found"}), 404
+        # Активные подписки в системе — общее число клиентов на сервере (так как multi-server)
+        active = sb.table("subscriptions").select("id", count="exact").eq("status", "active").execute()
+        total_active = active.count or 0
+        return jsonify({
+            "success": True,
+            "active_subscriptions": total_active,
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+def healthcheck_loop():
+    """Фоновая проверка всех активных серверов каждые 5 минут."""
+    import time as _t
+    while True:
+        try:
+            servers = get_active_servers()
+            for s in servers:
+                start = _t.time()
+                try:
+                    xui_session(s)
+                    elapsed_ms = int((_t.time() - start) * 1000)
+                    status = "up"
+                except Exception:
+                    elapsed_ms = int((_t.time() - start) * 1000)
+                    status = "down"
+                try:
+                    sb.table("servers").update({
+                        "last_check_at": datetime.utcnow().isoformat(),
+                        "last_check_status": status,
+                        "last_check_response_ms": elapsed_ms,
+                    }).eq("id", s["id"]).execute()
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"healthcheck_loop error: {e}")
+        _t.sleep(300)
+
 
 @app.route('/admin-api/grant', methods=['POST', 'OPTIONS'])
 def grant():
@@ -540,4 +653,6 @@ def yookassa_webhook():
     return jsonify({"ok": True}), 200
 
 if __name__ == '__main__':
+    import threading
+    threading.Thread(target=healthcheck_loop, daemon=True).start()
     app.run(host='127.0.0.1', port=5000)
