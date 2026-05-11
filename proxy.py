@@ -2,6 +2,7 @@ import sys
 sys.path.insert(0, '/root')
 from flask import Flask, request, jsonify, Response
 import requests, json, uuid, base64
+import asyncio
 from datetime import datetime, timedelta
 from config import PANEL_URL, PANEL_USER, PANEL_PASS, INBOUND_ID, SERVER_IP, SUB_BASE_URL
 from supabase import create_client
@@ -14,156 +15,51 @@ PUBLIC_KEY = "9q2JxVMnpr1nvhK407R0ymy5k-W_tyE_iEvSLJTXWg8"
 SHORT_ID = "d1a247d5a8"
 sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-def xui_session():
-    s = requests.Session()
-    s.verify = False
-    s.post(f"{PANEL_URL}/login", json={"username": PANEL_USER, "password": PANEL_PASS})
-    return s
-
-def get_client_expire(client_uuid):
+# ====================== MULTI-SERVER HELPERS ======================
+def get_active_servers():
+    """Получить список активных серверов из Supabase (sort_order ASC)"""
     try:
-        s = xui_session()
-        r = s.get(f"{PANEL_URL}/xui/API/inbounds/list")
-        data = r.json()
-        settings = json.loads(data["obj"][0]["settings"])
-        for client in settings.get("clients", []):
-            if client.get("id") == client_uuid:
-                return client.get("expiryTime", 0) // 1000
-    except:
-        pass
-    return 0
-
-def get_existing_client(uid):
-    """Получаем активную подписку пользователя из Supabase"""
-    try:
-        r = sb.table("subscriptions").select("*").eq("user_id", uid).eq("status", "active").execute()
-        if r.data:
-            sub = r.data[0]
-            # Извлекаем UUID из sub_url
-            if "/sub/" in sub["sub_url"]:
-                existing_uuid = sub["sub_url"].split("/sub/")[-1]
-                return sub["id"], existing_uuid, sub["devices"]
-    except:
-        pass
-    return None, None, None
-
-@app.route('/sub/<client_uuid>')
-def subscription(client_uuid):
-    import json as _json
-    import subscription_generator
-    try:
-        srv = sb.table("servers").select("*").eq("is_active", True).order("sort_order").execute()
-        servers = srv.data or []
+        r = sb.table("servers").select("*").eq("is_active", True).order("sort_order").execute()
+        return r.data or []
     except Exception as e:
-        app.logger.error(f"Servers fetch error: {e}")
-        servers = []
-    if not servers:
-        return Response("No active servers", status=503)
-    configs = subscription_generator.build_subscription(servers, client_uuid)
-    body = _json.dumps(configs, ensure_ascii=False, separators=(",", ":"))
-    expire_ts = get_client_expire(client_uuid)
-    announcement_b64 = "4pqg77iPINCd0LUg0YDQsNCx0L7RgtCw0LXRgj8g0J3QsNC20LzQuCDwn5SEINC4INCy0YvQsdC10YDQuCDQtNGA0YPQs9GD0Y4g0LvQvtC60LDRhtC40Y4uIPCfk4Ug0J/RgNC+0LTQu9C10LLQsNC5INC30LDRgNCw0L3QtdC1IOKAlCBUZWxlZ3JhbSDQt9Cw0LzQtdC00LvRj9GO0YIh"
-    headers = {
-        "Content-Type": "application/json; charset=utf-8",
-        "profile-title": "TuVPN",
-        "profile-update-interval": "6",
-        "support-url": "https://t.me/MaxArtVPN_bot",
-        "subscription-userinfo": f"upload=0; download=0; total=0; expire={expire_ts}",
-        "announce": "base64:" + announcement_b64,
-    }
-    return Response(body, headers=headers)
+        print(f"get_active_servers error: {e}")
+        return []
 
-def issue_subscription(uid: int, devices: int, days: int) -> dict:
-    """
-    Создаёт или обновляет подписку в 3X-UI и Supabase.
-    Если у пользователя уже есть активная неистёкшая подписка — продлевает её
-    от текущего expires_at, а не перезаписывает срок.
-    """
-    from datetime import datetime, timedelta
-    import json, uuid
-    ts = int(datetime.now().timestamp())
-    s = xui_session()
-    sub_id, existing_uuid, existing_devices = get_existing_client(uid)
 
-    if existing_uuid:
-        # Получаем текущий expires_at из БД для этой подписки
-        sub_row = sb.table("subscriptions").select("expires_at").eq("id", sub_id).limit(1).execute()
-        now = datetime.now()
-        base_expires = now
-        if sub_row.data and sub_row.data[0].get("expires_at"):
-            try:
-                current_exp = datetime.fromisoformat(sub_row.data[0]["expires_at"].replace("Z", "+00:00"))
-                # Если работаем с aware datetime — приводим к naive для сравнения
-                if current_exp.tzinfo is not None:
-                    current_exp = current_exp.replace(tzinfo=None)
-                # Продлеваем от current_exp если он в будущем, иначе от сейчас
-                if current_exp > now:
-                    base_expires = current_exp
-            except Exception as e:
-                app.logger.warning(f"Не удалось распарсить expires_at: {e}")
+def xui_session(server=None):
+    """Логинится в 3X-UI. Если server передан — используем его параметры,
+    иначе берём первый из get_active_servers (fallback на config)."""
+    if server is None:
+        servers = get_active_servers()
+        if servers:
+            server = servers[0]
+        else:
+            server = {
+                "panel_url": PANEL_URL,
+                "panel_login": PANEL_USER,
+                "panel_password": PANEL_PASS,
+                "inbound_id": INBOUND_ID,
+                "country_name": "Finland",
+            }
+    session = requests.Session()
+    session.verify = False
+    url = server["panel_url"].rstrip("/")
+    resp = session.post(f"{url}/login",
+                        json={"username": server["panel_login"],
+                              "password": server["panel_password"]},
+                        timeout=10)
+    if resp.status_code != 200:
+        raise Exception(f"Login failed on {server.get('country_name', 'server')}")
+    return session, server
 
-        # Учитываем накопленные бонусные дни пользователя
-        bonus_days = 0
-        try:
-            user_row = sb.table("users").select("bonus_days").eq("user_id", uid).limit(1).execute()
-            bonus_days = (user_row.data[0].get("bonus_days") or 0) if user_row.data else 0
-        except Exception:
-            pass
-        total_days = days + bonus_days
-        new_expires = base_expires + timedelta(days=total_days)
-        expire_ms = int(new_expires.timestamp() * 1000)
-        if bonus_days > 0:
-            try:
-                sb.table("users").update({"bonus_days": 0}).eq("user_id", uid).execute()
-                app.logger.info(f"Применены {bonus_days} бонусных дней для user_id={uid}")
-            except Exception as e:
-                app.logger.error(f"Не удалось обнулить bonus_days: {e}")
 
+def xui_add_client_on_server(server, client_uuid, uid, devices, expire_ms):
+    """Создаёт клиента на одном сервере. True если успешно."""
+    try:
+        session, server = xui_session(server)
+        ts = int(datetime.utcnow().timestamp())
         payload = {
-            "id": INBOUND_ID,
-            "settings": json.dumps({"clients": [{
-                "id": existing_uuid,
-                "email": f"user_{uid}_{ts}",
-                "limitIp": devices,
-                "totalGB": 0,
-                "expiryTime": expire_ms,
-                "enable": True,
-                "flow": "xtls-rprx-vision"
-            }]})
-        }
-        r = s.post(f"{PANEL_URL}/panel/api/inbounds/updateClient/{existing_uuid}", json=payload)
-        result = r.json()
-        if result.get("success"):
-            sub_url = f"{SUB_BASE_URL}/sub/{existing_uuid}"
-            sb.table("subscriptions").update({
-                "devices": devices,
-                "expires_at": new_expires.isoformat(),
-                "sub_url": sub_url,
-                "status": "active"
-            }).eq("id", sub_id).execute()
-            app.logger.info(f"Подписка продлена user_id={uid}: было до {base_expires}, стало до {new_expires}")
-            return {"success": True, "uuid": existing_uuid, "sub_url": sub_url, "action": "extended"}
-        return {"success": False, "error": str(result)}
-    else:
-        # Применяем накопленные бонусные дни и для нового клиента
-        bonus_days = 0
-        try:
-            user_row = sb.table("users").select("bonus_days").eq("user_id", uid).limit(1).execute()
-            bonus_days = (user_row.data[0].get("bonus_days") or 0) if user_row.data else 0
-        except Exception:
-            pass
-        total_days = days + bonus_days
-        new_expires = datetime.now() + timedelta(days=total_days)
-        expire_ms = int(new_expires.timestamp() * 1000)
-        if bonus_days > 0:
-            try:
-                sb.table("users").update({"bonus_days": 0}).eq("user_id", uid).execute()
-                app.logger.info(f"Применены {bonus_days} бонусных дней для нового клиента user_id={uid}")
-            except Exception:
-                pass
-        client_uuid = str(uuid.uuid4())
-        payload = {
-            "id": INBOUND_ID,
+            "id": int(server["inbound_id"]),
             "settings": json.dumps({"clients": [{
                 "id": client_uuid,
                 "email": f"user_{uid}_{ts}",
@@ -171,96 +67,220 @@ def issue_subscription(uid: int, devices: int, days: int) -> dict:
                 "totalGB": 0,
                 "expiryTime": expire_ms,
                 "enable": True,
-                "flow": "xtls-rprx-vision"
-            }]})
+                "flow": "xtls-rprx-vision",
+            }]}),
         }
-        r = s.post(f"{PANEL_URL}/panel/api/inbounds/addClient", json=payload)
+        url = server["panel_url"].rstrip("/")
+        r = session.post(f"{url}/panel/api/inbounds/addClient", json=payload, timeout=15)
         result = r.json()
         if result.get("success"):
-            sub_url = f"{SUB_BASE_URL}/sub/{client_uuid}"
-            sb.table("subscriptions").update({"status": "inactive"}).eq("user_id", uid).eq("status", "active").execute()
-            sb.table("subscriptions").insert({
-                "user_id": uid, "devices": devices, "status": "active",
-                "sub_url": sub_url, "started_at": datetime.now().isoformat(),
-                "expires_at": new_expires.isoformat()
-            }).execute()
-            sb.table("users").update({"client_uuid": client_uuid}).eq("user_id", uid).execute()
-            return {"success": True, "uuid": client_uuid, "sub_url": sub_url, "action": "created"}
-        return {"success": False, "error": str(result)}
+            print(f"[{server.get('country_name')}] addClient {client_uuid[:8]} OK")
+            return True
+        print(f"[{server.get('country_name')}] addClient failed: {result}")
+    except Exception as e:
+        print(f"[{server.get('country_name', '?')}] add_client error: {e}")
+    return False
 
 
-def apply_referral_bonus(user_id: int, days: int, reason: str):
-    """
-    Начисляет бонусные дни пользователю.
-    - Если есть активная подписка (не истёкшая) — продлевает её на days дней.
-    - Если подписки нет или истекла — копит в users.bonus_days,
-      эти дни будут добавлены при следующей покупке/выдаче ключа.
-    """
-    from datetime import datetime, timedelta
-    import json
-    now = datetime.now()
-    # Ищем активную неистёкшую подписку
-    subs = sb.table("subscriptions").select("*").eq("user_id", user_id).eq("status", "active").order("expires_at", desc=True).limit(1).execute()
-    has_active = False
-    if subs.data:
-        sub = subs.data[0]
+def xui_update_client_on_server(server, client_uuid, uid, devices, expire_ms):
+    """Обновляет клиента на одном сервере. Если его нет — добавляет."""
+    try:
+        session, server = xui_session(server)
+        ts = int(datetime.utcnow().timestamp())
+        payload = {
+            "id": int(server["inbound_id"]),
+            "settings": json.dumps({"clients": [{
+                "id": client_uuid,
+                "email": f"user_{uid}_{ts}",
+                "limitIp": devices,
+                "totalGB": 0,
+                "expiryTime": expire_ms,
+                "enable": True,
+                "flow": "xtls-rprx-vision",
+            }]}),
+        }
+        url = server["panel_url"].rstrip("/")
+        r = session.post(f"{url}/panel/api/inbounds/updateClient/{client_uuid}", json=payload, timeout=15)
+        result = r.json()
+        if result.get("success"):
+            print(f"[{server.get('country_name')}] updateClient {client_uuid[:8]} OK")
+            return True
+        # Клиента нет на этом сервере — добавляем
+        print(f"[{server.get('country_name')}] updateClient failed ({result.get('msg', '')}) — trying addClient")
+        return xui_add_client_on_server(server, client_uuid, uid, devices, expire_ms)
+    except Exception as e:
+        print(f"[{server.get('country_name', '?')}] update_client error: {e}")
+    return False
+
+
+def get_client_expire(client_uuid):
+    """Получить дату истечения клиента в Unix timestamp (секунды).
+    Берёт expiryTime с первого сервера где клиент найден."""
+    servers = get_active_servers()
+    if not servers:
+        return 0
+    for server in servers:
         try:
-            exp = datetime.fromisoformat(sub["expires_at"].replace("Z", "+00:00"))
-            if exp.tzinfo is not None:
-                exp = exp.replace(tzinfo=None)
-            if exp > now:
-                has_active = True
+            session, _ = xui_session(server)
+            url = server["panel_url"].rstrip("/")
+            r = session.get(f"{url}/xui/API/inbounds/list", timeout=10)
+            data = r.json()
+            for inbound in data.get("obj", []):
+                if int(inbound.get("id", 0)) != int(server["inbound_id"]):
+                    continue
+                settings = json.loads(inbound["settings"])
+                for client in settings.get("clients", []):
+                    if client.get("id") == client_uuid:
+                        return client.get("expiryTime", 0) // 1000
+        except Exception as e:
+            print(f"get_client_expire on {server.get('country_name')}: {e}")
+            continue
+    return 0
+
+
+def get_existing_client(uid):
+    """Получаем активную подписку пользователя из Supabase"""
+    try:
+        r = sb.table("subscriptions").select("*").eq("user_id", uid).eq("status", "active").execute()
+        if r.data:
+            sub = r.data[0]
+            if "/sub/" in sub.get("sub_url", ""):
+                existing_uuid = sub["sub_url"].split("/sub/")[-1]
+                return sub["id"], existing_uuid, sub["devices"]
+    except Exception:
+        pass
+    return None, None, None
+
+
+def issue_subscription(uid: int, devices: int, days: int) -> dict:
+    """Выдать/продлить подписку на всех активных серверах.
+    - Если есть активная подписка — продлевает с тем же UUID
+    - Если нет — создаёт новую с новым UUID
+    - Применяет накопленные bonus_days
+    """
+    try:
+        # Учитываем bonus_days
+        bonus_days = 0
+        try:
+            u_row = sb.table("users").select("bonus_days").eq("user_id", uid).limit(1).execute()
+            bonus_days = (u_row.data[0].get("bonus_days") or 0) if u_row.data else 0
         except Exception:
             pass
+        total_days = days + bonus_days
 
-    if has_active:
-        # Продлеваем активную подписку
-        sub = subs.data[0]
-        try:
-            exp = datetime.fromisoformat(sub["expires_at"].replace("Z", "+00:00"))
-            if exp.tzinfo is not None:
-                exp = exp.replace(tzinfo=None)
-        except Exception:
-            exp = now
-        new_exp = exp + timedelta(days=days)
-        sb.table("subscriptions").update({"expires_at": new_exp.isoformat()}).eq("id", sub["id"]).execute()
+        # Проверяем существующую подписку
+        sub_id, existing_uuid, _ = get_existing_client(uid)
+        now = datetime.utcnow()
 
-        # Обновляем в 3X-UI
-        try:
-            client_uuid = sub.get("sub_url", "").rsplit("/", 1)[-1]
-            if client_uuid and "-" in client_uuid:
-                s = xui_session()
-                ts_now = int(now.timestamp())
-                payload = {
-                    "id": INBOUND_ID,
-                    "settings": json.dumps({"clients": [{
-                        "id": client_uuid,
-                        "email": f"user_{user_id}_{ts_now}",
-                        "limitIp": sub.get("devices", 1),
-                        "totalGB": 0,
-                        "expiryTime": int(new_exp.timestamp() * 1000),
-                        "enable": True,
-                        "flow": "xtls-rprx-vision"
-                    }]})
-                }
-                s.post(f"{PANEL_URL}/panel/api/inbounds/updateClient/{client_uuid}", json=payload)
-        except Exception as e:
-            app.logger.error(f"Не удалось обновить срок в 3X-UI для бонуса: {e}")
+        if existing_uuid and sub_id:
+            # ПРОДЛЕНИЕ существующей
+            try:
+                cur_row = sb.table("subscriptions").select("expires_at").eq("id", sub_id).limit(1).execute()
+                cur_exp_raw = cur_row.data[0]["expires_at"] if cur_row.data else None
+                cur_exp = datetime.fromisoformat(cur_exp_raw.replace("Z", "+00:00")).replace(tzinfo=None) if cur_exp_raw else now
+                base = cur_exp if cur_exp > now else now
+            except Exception:
+                base = now
+            new_expires = base + timedelta(days=total_days)
+            client_uuid = existing_uuid
+            action = "extended"
+        else:
+            # СОЗДАНИЕ новой
+            client_uuid = str(uuid.uuid4())
+            new_expires = now + timedelta(days=total_days)
+            action = "created"
 
-        notify_user(user_id, f"🎁 <b>Бонус +{days} дней!</b>\n{reason}\n\nВаша подписка продлена.")
-    else:
-        # Копим в bonus_days
-        try:
-            user_row = sb.table("users").select("bonus_days").eq("user_id", user_id).limit(1).execute()
-            current_bonus = (user_row.data[0].get("bonus_days") or 0) if user_row.data else 0
-            new_bonus = current_bonus + days
-            sb.table("users").update({"bonus_days": new_bonus}).eq("user_id", user_id).execute()
-            notify_user(user_id, f"🎁 <b>Бонус +{days} дней!</b>\n{reason}\n\nДни сохранены и будут добавлены при следующей оплате подписки. Сейчас на счету: <b>{new_bonus}</b> дн.")
-        except Exception as e:
-            app.logger.error(f"Не удалось сохранить bonus_days: {e}")
+        expire_ms = int(new_expires.timestamp() * 1000)
 
+        # Применяем на всех активных серверах
+        servers = get_active_servers()
+        if not servers:
+            return {"success": False, "error": "no active servers in DB"}
 
+        success_count = 0
+        for server in servers:
+            if action == "extended":
+                ok = xui_update_client_on_server(server, client_uuid, uid, devices, expire_ms)
+            else:
+                ok = xui_add_client_on_server(server, client_uuid, uid, devices, expire_ms)
+            if ok:
+                success_count += 1
 
+        if success_count == 0:
+            return {"success": False, "error": "failed on all servers"}
+
+        # Сохраняем в Supabase
+        sub_url = f"{SUB_BASE_URL}/sub/{client_uuid}"
+        sub_data = {
+            "user_id": uid,
+            "devices": devices,
+            "status": "active",
+            "sub_url": sub_url,
+            "expires_at": new_expires.isoformat(),
+            "notified_3d": False,
+            "notified_1d": False,
+            "notified_expired": False,
+        }
+        if sub_id:
+            sb.table("subscriptions").update(sub_data).eq("id", sub_id).execute()
+        else:
+            sub_data["started_at"] = now.isoformat()
+            sb.table("subscriptions").insert(sub_data).execute()
+            sb.table("users").update({"client_uuid": client_uuid}).eq("user_id", uid).execute()
+
+        # Списываем bonus_days если применили
+        if bonus_days > 0:
+            try:
+                sb.table("users").update({"bonus_days": 0}).eq("user_id", uid).execute()
+                print(f"Применены {bonus_days} бонусных дней для user_id={uid}")
+            except Exception:
+                pass
+
+        print(f"✅ {action} user_id={uid} on {success_count}/{len(servers)} servers, expires {new_expires}")
+        return {
+            "success": True,
+            "uuid": client_uuid,
+            "sub_url": sub_url,
+            "action": action,
+            "servers": success_count,
+        }
+    except Exception as e:
+        print(f"❌ Ошибка issue_subscription: {e}")
+        return {"success": False, "error": str(e)}
+
+def apply_referral_bonus(user_id: int, days: int, reason: str):
+    """Начислить реферальный бонус (multi-server версия)"""
+    try:
+        print(f"🔄 Начисление реф. бонуса {days} дней для {user_id} ({reason})")
+        
+        servers = get_active_servers()
+        if not servers:
+            servers = [{"panel_url": PANEL_URL, "panel_login": PANEL_USER, "panel_password": PANEL_PASS, "country_name": "Finland"}]
+        
+        existing = sb.table("subscriptions").select("*").eq("user_id", user_id).eq("status", "active").execute()
+        
+        if existing.data:
+            sub = existing.data[0]
+            new_expires = datetime.fromisoformat(sub["expires_at"].replace("Z", "+00:00")) + timedelta(days=days)
+            expires_str = new_expires.isoformat().replace("+00:00", "Z")
+            
+            client_uuid = sub["sub_url"].split("/sub/")[-1] if "/sub/" in sub.get("sub_url", "") else str(uuid.uuid4())
+            
+            for server in servers:
+                try:
+                    xui_add_client_on_server(server, client_uuid, f"ref_{user_id}", sub.get("devices", 1))
+                except Exception as e:
+                    print(f"⚠️ Ошибка на сервере {server.get('country_name')}: {e}")
+            
+            sb.table("subscriptions").update({"expires_at": expires_str}).eq("id", sub["id"]).execute()
+        else:
+            issue_subscription(user_id, 1, days)
+        
+        print(f"✅ Реферальный бонус успешно начислен пользователю {user_id}")
+        return True
+    except Exception as e:
+        print(f"❌ Ошибка apply_referral_bonus: {e}")
+        return False
 
 def notify_user(user_id: int, text: str) -> bool:
     """Отправляет сообщение пользователю в Telegram через HTTP API."""
@@ -279,6 +299,74 @@ def notify_user(user_id: int, text: str) -> bool:
         app.logger.error(f"Не удалось отправить сообщение user_id={user_id}: {e}")
         return False
 
+
+# ====================== ADMIN API: СЕРВЕРЫ ======================
+@app.route('/admin-api/servers', methods=['GET', 'POST'])
+def servers_api():
+    """Получить список серверов или добавить новый"""
+    try:
+        if request.method == 'GET':
+            r = sb.table('servers').select('*').order('sort_order').execute()
+            return jsonify({"success": True, "servers": r.data})
+        
+        if request.method == 'POST':
+            data = request.get_json()
+            required = ['code', 'country_name', 'panel_url', 'panel_login', 'panel_password', 'server_ip']
+            for field in required:
+                if field not in data:
+                    return jsonify({"success": False, "error": f"Поле {field} обязательно"}), 400
+            
+            new_server = {
+                "code": data['code'],
+                "country_name": data['country_name'],
+                "country_flag": data.get('country_flag', ''),
+                "country_code": data.get('country_code', data['code'].split('-')[0].upper()),
+                "panel_url": data['panel_url'],
+                "panel_login": data['panel_login'],
+                "panel_password": data['panel_password'],
+                "inbound_id": data.get('inbound_id', 1),
+                "server_ip": data['server_ip'],
+                "server_port": data.get('server_port', 443),
+                "public_key": data.get('public_key', ''),
+                "short_id": data.get('short_id', ''),
+                "sni": data.get('sni', 'www.bing.com'),
+                "flow": data.get('flow', 'xtls-rprx-vision'),
+                "fingerprint": data.get('fingerprint', 'chrome'),
+                "is_active": data.get('is_active', True),
+                "sort_order": data.get('sort_order', 0),
+                "created_at": datetime.utcnow().isoformat()
+            }
+            
+            sb.table('servers').insert(new_server).execute()
+            return jsonify({"success": True, "message": "Сервер добавлен"})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/admin-api/servers/<server_id>', methods=['PUT', 'DELETE'])
+def server_edit(server_id):
+    """Обновить или удалить сервер"""
+    try:
+        if request.method == 'PUT':
+            data = request.get_json()
+            update_data = {}
+            allowed_fields = ['code', 'country_name', 'country_flag', 'country_code', 
+                            'panel_url', 'panel_login', 'panel_password', 'inbound_id',
+                            'server_ip', 'server_port', 'public_key', 'short_id', 
+                            'sni', 'flow', 'fingerprint', 'is_active', 'sort_order']
+            for field in allowed_fields:
+                if field in data:
+                    update_data[field] = data[field]
+            update_data['updated_at'] = datetime.utcnow().isoformat()
+            
+            sb.table('servers').update(update_data).eq('id', server_id).execute()
+            return jsonify({"success": True, "message": "Сервер обновлён"})
+        
+        if request.method == 'DELETE':
+            sb.table('servers').delete().eq('id', server_id).execute()
+            return jsonify({"success": True, "message": "Сервер удалён"})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+# =================================================================
 
 @app.route('/admin-api/grant', methods=['POST', 'OPTIONS'])
 def grant():
