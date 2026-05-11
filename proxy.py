@@ -49,27 +49,29 @@ def get_existing_client(uid):
 
 @app.route('/sub/<client_uuid>')
 def subscription(client_uuid):
-    vless = (
-        f"vless://{client_uuid}@{SERVER_IP}:443"
-        f"?type=tcp&security=reality"
-        f"&pbk={PUBLIC_KEY}"
-        f"&fp=chrome&sni=www.bing.com"
-        f"&sid={SHORT_ID}&spx=%2F"
-        f"&flow=xtls-rprx-vision"
-        f"#\U0001f1eb\U0001f1ee Finland"
-    )
-    encoded = base64.b64encode(vless.encode()).decode()
+    import json as _json
+    import subscription_generator
+    try:
+        srv = sb.table("servers").select("*").eq("is_active", True).order("sort_order").execute()
+        servers = srv.data or []
+    except Exception as e:
+        app.logger.error(f"Servers fetch error: {e}")
+        servers = []
+    if not servers:
+        return Response("No active servers", status=503)
+    configs = subscription_generator.build_subscription(servers, client_uuid)
+    body = _json.dumps(configs, ensure_ascii=False, separators=(",", ":"))
     expire_ts = get_client_expire(client_uuid)
     announcement_b64 = "4pqg77iPINCd0LUg0YDQsNCx0L7RgtCw0LXRgj8g0J3QsNC20LzQuCDwn5SEINC4INCy0YvQsdC10YDQuCDQtNGA0YPQs9GD0Y4g0LvQvtC60LDRhtC40Y4uIPCfk4Ug0J/RgNC+0LTQu9C10LLQsNC5INC30LDRgNCw0L3QtdC1IOKAlCBUZWxlZ3JhbSDQt9Cw0LzQtdC00LvRj9GO0YIh"
     headers = {
-        "Content-Type": "text/plain; charset=utf-8",
+        "Content-Type": "application/json; charset=utf-8",
         "profile-title": "TuVPN",
         "profile-update-interval": "6",
         "support-url": "https://t.me/MaxArtVPN_bot",
         "subscription-userinfo": f"upload=0; download=0; total=0; expire={expire_ts}",
         "announce": "base64:" + announcement_b64,
     }
-    return Response(encoded, headers=headers)
+    return Response(body, headers=headers)
 
 def issue_subscription(uid: int, devices: int, days: int) -> dict:
     """
