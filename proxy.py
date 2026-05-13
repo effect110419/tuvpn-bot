@@ -11,6 +11,22 @@ import urllib3
 urllib3.disable_warnings()
 
 app = Flask(__name__)
+# ─── CORS для админки ───
+from flask import make_response
+
+@app.after_request
+def add_cors_headers(response):
+    if request.path.startswith('/admin-api/'):
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        response.headers['Access-Control-Max-Age'] = '3600'
+    return response
+
+@app.route('/admin-api/<path:path>', methods=['OPTIONS'])
+def handle_admin_options(path):
+    return make_response('', 204)
+# ─────────────────────────
 PUBLIC_KEY = "9q2JxVMnpr1nvhK407R0ymy5k-W_tyE_iEvSLJTXWg8"
 SHORT_ID = "d1a247d5a8"
 sb = create_client(SUPABASE_URL, SUPABASE_KEY)

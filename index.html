@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#08090d">
+<title>TuVPN — Admin</title>
+<link rel="stylesheet" href="styles.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
+</head>
+<body>
+
+<!-- =========================================================
+     LOGIN
+     ========================================================= -->
+<div id="loginScreen" class="login-bg">
+  <div class="login-box">
+    <div class="brand-mark"></div>
+    <h2>TuVPN Admin</h2>
+    <p>Введите пароль для доступа</p>
+    <input id="loginInput" type="password" class="input" placeholder="••••••" autocomplete="off">
+    <button class="btn btn-primary" id="loginBtn">Войти</button>
+  </div>
+</div>
+
+<!-- =========================================================
+     APP
+     ========================================================= -->
+<div class="app" id="app" style="display:none">
+
+  <!-- SIDEBAR -->
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark"></div>
+      <div>
+        <div class="brand-title">TuVPN</div>
+        <div class="brand-sub">ADMIN · v3.0</div>
+      </div>
+    </div>
+
+    <button class="cmd-trigger" id="cmdTrigger" title="Открыть команды (⌘K)">
+      <svg class="ico" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.35-4.35"/></svg>
+      <span class="label">Поиск или команда</span>
+      <kbd>⌘K</kbd>
+    </button>
+
+    <nav class="nav">
+      <div class="nav-section">Главное</div>
+      <div class="nav-item active" data-page="dashboard">
+        <span class="nav-ico"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="7" height="9" x="3" y="3" rx="1"/><rect width="7" height="5" x="14" y="3" rx="1"/><rect width="7" height="9" x="14" y="12" rx="1"/><rect width="7" height="5" x="3" y="16" rx="1"/></svg></span>
+        <span>Дашборд</span>
+        <span class="nav-kbd">G D</span>
+      </div>
+      <div class="nav-item" data-page="users">
+        <span class="nav-ico"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></span>
+        <span>Пользователи</span>
+        <span class="nav-count" id="navUsersCount">—</span>
+      </div>
+      <div class="nav-item" data-page="subs">
+        <span class="nav-ico"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="4" rx="2" ry="2"/><line x1="16" x2="16" y1="2" y2="6"/><line x1="8" x2="8" y1="2" y2="6"/><line x1="3" x2="21" y1="10" y2="10"/></svg></span>
+        <span>Подписки</span>
+        <span class="nav-count" id="navSubsCount">—</span>
+      </div>
+      <div class="nav-item" data-page="payments">
+        <span class="nav-ico"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="14" x="2" y="5" rx="2"/><line x1="2" x2="22" y1="10" y2="10"/></svg></span>
+        <span>Платежи</span>
+        <span class="nav-count" id="navPaymentsCount">—</span>
+      </div>
+
+      <div class="nav-section">Маркетинг</div>
+      <div class="nav-item" data-page="promos">
+        <span class="nav-ico"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12v10H4V12"/><path d="M2 7h20v5H2z"/><path d="M12 22V7"/><path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7Z"/><path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7Z"/></svg></span>
+        <span>Промокоды</span>
+        <span class="nav-count" id="navPromosCount">—</span>
+      </div>
+      <div class="nav-item" data-page="referrals">
+        <span class="nav-ico"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 7H7a5 5 0 0 0-5 5 5 5 0 0 0 5 5h10a5 5 0 0 0 5-5 5 5 0 0 0-5-5z"/><path d="M8 12h.01"/><path d="M16 12h.01"/></svg></span>
+        <span>Рефералы</span>
+        <span class="nav-count" id="navRefsCount">—</span>
+      </div>
+
+      <div class="nav-section">Поддержка</div>
+      <div class="nav-item" data-page="tickets">
+        <span class="nav-ico"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></span>
+        <span>Тикеты</span>
+        <span class="nav-count" id="navTicketsCount">—</span>
+      </div>
+
+      <div class="nav-section">Инфраструктура</div>
+      <div class="nav-item" data-page="servers">
+        <span class="nav-ico"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="8" x="2" y="2" rx="2" ry="2"/><rect width="20" height="8" x="2" y="14" rx="2" ry="2"/><line x1="6" x2="6.01" y1="6" y2="6"/><line x1="6" x2="6.01" y1="18" y2="18"/></svg></span>
+        <span>Серверы</span>
+        <span class="nav-count" id="navServersCount">—</span>
+      </div>
+      <div class="nav-item" data-page="settings">
+        <span class="nav-ico"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg></span>
+        <span>Настройки</span>
+      </div>
+    </nav>
+
+    <div class="sidebar-footer">
+      <div class="avatar-me">A</div>
+      <div class="me-meta">
+        <div class="me-name">Admin</div>
+        <div class="me-sub">online</div>
+      </div>
+      <button class="icon-btn" id="logoutBtn" title="Выйти">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/></svg>
+      </button>
+    </div>
+  </aside>
+
+  <!-- MAIN -->
+  <div class="main">
+
+    <!-- TOPBAR -->
+    <div class="topbar">
+      <div class="crumbs">
+        <span id="crumbSec">Главное</span>
+        <span class="sep">/</span>
+        <span class="now" id="crumbNow">Дашборд</span>
+      </div>
+      <div class="top-actions">
+        <span class="live-dot" id="liveDot">обновлено сейчас</span>
+        <button class="btn btn-ghost btn-sm" id="reloadBtn" title="Обновить (R)">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
+          Обновить
+        </button>
+        <button class="btn btn-primary btn-sm" id="quickGrantBtn">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
+          Выдать подписку
+        </button>
+      </div>
+    </div>
+
+    <!-- CONTENT -->
+    <div class="content" id="content">
+      <!-- Pages rendered by app.js -->
+      <div class="page active" id="page-dashboard"></div>
+      <div class="page" id="page-users"></div>
+      <div class="page" id="page-subs"></div>
+      <div class="page" id="page-payments"></div>
+      <div class="page" id="page-promos"></div>
+      <div class="page" id="page-referrals"></div>
+      <div class="page" id="page-tickets"></div>
+      <div class="page" id="page-servers"></div>
+      <div class="page" id="page-settings"></div>
+    </div>
+  </div>
+</div>
+
+<!-- =========================================================
+     COMMAND PALETTE (Cmd+K)
+     ========================================================= -->
+<div class="cmd-bg" id="cmdPalette">
+  <div class="cmd">
+    <div class="cmd-input-wrap">
+      <svg class="ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.35-4.35"/></svg>
+      <input class="cmd-input" id="cmdInput" placeholder="Поиск пользователей, действий, страниц...">
+      <span class="cmd-esc">ESC</span>
+    </div>
+    <div class="cmd-list" id="cmdList"></div>
+    <div class="cmd-foot">
+      <span class="k"><kbd>↑</kbd><kbd>↓</kbd> навигация</span>
+      <span class="k"><kbd>↵</kbd> выбрать</span>
+      <span class="k"><kbd>ESC</kbd> закрыть</span>
+    </div>
+  </div>
+</div>
+
+<!-- =========================================================
+     MODAL: Grant subscription
+     ========================================================= -->
+<div class="modal-bg" id="grantModal">
+  <div class="modal">
+    <div class="modal-head">
+      <div class="modal-title">Выдать / продлить подписку</div>
+      <button class="icon-btn" data-close>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="field">
+        <label class="label">Telegram ID пользователя</label>
+        <input id="grantUid" class="input mono" placeholder="784871620" inputmode="numeric">
+        <div class="help" id="grantUserHint">Пользователь должен сначала запустить бот.</div>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label class="label">Устройств</label>
+          <select class="select" id="grantDevices">
+            <option value="1">1 устройство</option>
+            <option value="2">2 устройства</option>
+            <option value="5">5 устройств</option>
+          </select>
+        </div>
+        <div class="field">
+          <label class="label">Срок</label>
+          <select class="select" id="grantDays">
+            <option value="7">7 дней (триал)</option>
+            <option value="30" selected>30 дней</option>
+            <option value="90">90 дней</option>
+            <option value="365">365 дней</option>
+          </select>
+        </div>
+      </div>
+      <div class="help">Если подписка активна — срок продлится. Бонусные дни применятся автоматически.</div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" data-close>Отмена</button>
+      <button class="btn btn-success" id="grantSubmit">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+        Выдать
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- =========================================================
+     MODAL: Promo
+     ========================================================= -->
+<div class="modal-bg" id="promoModal">
+  <div class="modal">
+    <div class="modal-head">
+      <div class="modal-title" id="promoModalTitle">Создать промокод</div>
+      <button class="icon-btn" data-close>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="field">
+        <label class="label">Код</label>
+        <div class="flex gap-2">
+          <input id="promoCode" class="input mono" placeholder="TUVPN20" style="text-transform:uppercase">
+          <button class="btn btn-ghost" id="promoGenBtn" type="button" title="Сгенерировать">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label class="label">Тип</label>
+          <select id="promoType" class="select">
+            <option value="percent">Скидка (%)</option>
+            <option value="days">Бесплатные дни</option>
+          </select>
+        </div>
+        <div class="field">
+          <label class="label" id="promoValueLabel">Размер скидки, %</label>
+          <input id="promoValue" type="number" min="1" class="input" placeholder="20">
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label class="label">Макс. использований</label>
+          <input id="promoMax" type="number" min="1" class="input" placeholder="∞">
+        </div>
+        <div class="field">
+          <label class="label">Действует до</label>
+          <input id="promoExpiry" type="date" class="input">
+        </div>
+      </div>
+      <div class="field">
+        <label class="label">Описание (внутреннее)</label>
+        <input id="promoDesc" class="input" placeholder="Запуск проекта">
+      </div>
+      <div class="help" id="promoHelp">Скидка снижает итоговую сумму платежа в %. Один пользователь — одно использование.</div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" data-close>Отмена</button>
+      <button class="btn btn-primary" id="promoSubmit">Создать</button>
+    </div>
+  </div>
+</div>
+
+<!-- =========================================================
+     MODAL: Bonus days
+     ========================================================= -->
+<div class="modal-bg" id="bonusModal">
+  <div class="modal">
+    <div class="modal-head">
+      <div class="modal-title">Начислить бонусные дни</div>
+      <button class="icon-btn" data-close>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="field">
+        <label class="label">Пользователь</label>
+        <input id="bonusUser" class="input" disabled>
+      </div>
+      <div class="field">
+        <label class="label">Сколько дней начислить</label>
+        <input id="bonusDays" type="number" min="1" class="input" placeholder="7">
+        <div class="help">Если есть активная подписка — дни добавятся к ней. Если нет — сохранятся в копилке.</div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" data-close>Отмена</button>
+      <button class="btn btn-success" id="bonusSubmit">Начислить</button>
+    </div>
+  </div>
+</div>
+
+<!-- =========================================================
+     MODAL: Server (add/edit)
+     ========================================================= -->
+<div class="modal-bg" id="serverModal">
+  <div class="modal lg">
+    <div class="modal-head">
+      <div class="modal-title" id="serverModalTitle">Добавить сервер</div>
+      <button class="icon-btn" data-close>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="srvId">
+
+      <div class="field-row-3">
+        <div class="field">
+          <label class="label">Флаг</label>
+          <input id="srvFlag" class="input" placeholder="🇫🇮" maxlength="4">
+        </div>
+        <div class="field" style="grid-column: span 2">
+          <label class="label">Страна</label>
+          <input id="srvCountry" class="input" placeholder="Финляндия">
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div class="field">
+          <label class="label">Код (slug)</label>
+          <input id="srvCode" class="input mono" placeholder="fi-1">
+          <div class="help">Уникальный идентификатор: fi-1, de-1, nl-2…</div>
+        </div>
+        <div class="field">
+          <label class="label">Код страны</label>
+          <input id="srvCountryCode" class="input mono" placeholder="FI" maxlength="3">
+        </div>
+      </div>
+
+      <div class="divider"></div>
+
+      <div class="field">
+        <label class="label">URL панели 3X-UI</label>
+        <input id="srvPanelUrl" class="input mono" placeholder="https://89.125.53.210:17627/secret-path">
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label class="label">Логин панели</label>
+          <input id="srvPanelLogin" class="input mono" placeholder="admin">
+        </div>
+        <div class="field">
+          <label class="label">Пароль панели</label>
+          <input id="srvPanelPass" type="password" class="input mono" placeholder="••••••">
+        </div>
+      </div>
+      <div class="field-row-3">
+        <div class="field" style="grid-column: span 2">
+          <label class="label">IP сервера</label>
+          <input id="srvIp" class="input mono" placeholder="89.125.53.210">
+        </div>
+        <div class="field">
+          <label class="label">Порт</label>
+          <input id="srvPort" type="number" class="input mono" placeholder="443" value="443">
+        </div>
+      </div>
+      <div class="field">
+        <label class="label">Inbound ID</label>
+        <input id="srvInbound" type="number" class="input mono" placeholder="2" value="1">
+      </div>
+
+      <div class="divider"></div>
+
+      <div class="field">
+        <label class="label">Public Key (Reality)</label>
+        <input id="srvPubKey" class="input mono" placeholder="9q2JxVMnpr1nvhK407R0ymy5k-W_tyE_iEvSLJTXWg8">
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label class="label">Short ID</label>
+          <input id="srvShortId" class="input mono" placeholder="d1a247d5a8">
+        </div>
+        <div class="field">
+          <label class="label">SNI</label>
+          <input id="srvSni" class="input mono" placeholder="www.bing.com" value="www.bing.com">
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label class="label">Flow</label>
+          <input id="srvFlow" class="input mono" value="xtls-rprx-vision">
+        </div>
+        <div class="field">
+          <label class="label">Fingerprint</label>
+          <select id="srvFp" class="select">
+            <option value="chrome">chrome</option>
+            <option value="firefox">firefox</option>
+            <option value="safari">safari</option>
+            <option value="ios">ios</option>
+            <option value="android">android</option>
+            <option value="edge">edge</option>
+            <option value="random">random</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="divider"></div>
+
+      <div class="field-row">
+        <div class="field">
+          <label class="label">Порядок сортировки</label>
+          <input id="srvSort" type="number" class="input mono" placeholder="0" value="0">
+        </div>
+        <div class="field" style="display:flex; align-items:flex-end; gap:10px">
+          <label class="toggle"><input type="checkbox" id="srvActive" checked><span class="toggle-slider"></span></label>
+          <span style="font-size:13px; color:var(--fg-2)">Сервер активен</span>
+        </div>
+      </div>
+    </div>
+    <div class="modal-foot modal-foot-spread">
+      <button class="btn btn-danger" id="srvDeleteBtn" style="display:none">Удалить</button>
+      <div class="flex gap-2" style="margin-left:auto">
+        <button class="btn btn-ghost" data-close>Отмена</button>
+        <button class="btn btn-primary" id="serverSubmit">Сохранить</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- =========================================================
+     SLIDE SHEET: user detail
+     ========================================================= -->
+<div class="sheet-bg" id="sheetBg"></div>
+<div class="sheet" id="userSheet">
+  <div class="sheet-head">
+    <div class="u-cell" style="flex:1">
+      <div class="u-ava" id="sheetAva" style="width:36px;height:36px;font-size:14px">U</div>
+      <div style="min-width:0">
+        <div id="sheetName" style="font-size:14.5px;font-weight:700">—</div>
+        <div class="u-handle" id="sheetIdLine">—</div>
+      </div>
+    </div>
+    <button class="icon-btn" id="sheetClose">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+    </button>
+  </div>
+  <div class="sheet-body" id="sheetBody"></div>
+</div>
+
+<!-- =========================================================
+     TOASTS
+     ========================================================= -->
+<div class="toast-wrap" id="toastWrap"></div>
+
+<script src="app.js" defer></script>
+</body>
+</html>
