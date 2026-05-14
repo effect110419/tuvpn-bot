@@ -43,8 +43,16 @@ def get_active_servers():
 
 
 def xui_session(server=None):
-    """Логинится в 3X-UI. Если server передан — используем его параметры,
-    иначе берём первый из get_active_servers (fallback на config)."""
+    """Логинится в 3X-UI и сохраняет CSRF-токен в session.headers для всех POST.
+
+    Стратегия:
+    1. GET / — получаем cookie + CSRF-токен из <meta name="csrf-token">
+    2. POST /login с CSRF в заголовке + cookies
+    3. Если успех — CSRF остаётся в session.headers, и все следующие POST его используют
+
+    Совместимо со старой версией: если CSRF нет в HTML, идём напрямую с JSON.
+    """
+    import re as _re
     if server is None:
         servers = get_active_servers()
         if servers:
@@ -60,13 +68,64 @@ def xui_session(server=None):
     session = requests.Session()
     session.verify = False
     url = server["panel_url"].rstrip("/")
-    resp = session.post(f"{url}/login",
-                        json={"username": server["panel_login"],
-                              "password": server["panel_password"]},
-                        timeout=10)
-    if resp.status_code != 200:
-        raise Exception(f"Login failed on {server.get('country_name', 'server')}")
-    return session, server
+    creds = {"username": server["panel_login"], "password": server["panel_password"]}
+
+    # Получаем CSRF-токен (если новая версия) + cookies
+    csrf = None
+    try:
+        get_resp = session.get(f"{url}/", timeout=10, headers={
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
+        })
+        if get_resp.status_code == 200:
+            m = _re.search(r'name="csrf-token"\s+content="([^"]+)"', get_resp.text)
+            if m:
+                csrf = m.group(1)
+                app.logger.info(f"xui_session({server.get('country_name')}): got CSRF token")
+    except Exception as e:
+        app.logger.warning(f"xui_session: GET / failed: {e}")
+
+    # Базовые заголовки для всех запросов сессии
+    base_headers = {
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
+        "Origin": url.split("/", 3)[0] + "//" + url.split("/", 3)[2],
+        "Referer": f"{url}/",
+    }
+    if csrf:
+        base_headers["X-CSRF-Token"] = csrf
+
+    # Применяем базовые заголовки к сессии — они будут шириться на все POST
+    session.headers.update(base_headers)
+
+    # Логинимся
+    try:
+        if csrf:
+            # Новая версия — form-data POST
+            resp = session.post(f"{url}/login", data=creds, timeout=10)
+        else:
+            # Старая версия — JSON POST
+            resp = session.post(f"{url}/login", json=creds, timeout=10)
+        if resp.status_code == 200:
+            try:
+                body = resp.json()
+                if body.get("success"):
+                    return session, server
+            except Exception:
+                pass
+        # Fallback: если первый способ упал, пробуем альтернативный
+        if csrf:
+            resp = session.post(f"{url}/login", json=creds, timeout=10)
+        else:
+            resp = session.post(f"{url}/login", data=creds, timeout=10)
+        if resp.status_code == 200:
+            try:
+                body = resp.json()
+                if body.get("success"):
+                    return session, server
+            except Exception:
+                pass
+        raise Exception(f"Login failed on {server.get('country_name', 'server')}: HTTP {resp.status_code}, body={resp.text[:200]}")
+    except Exception as e:
+        raise Exception(f"Login failed on {server.get('country_name', 'server')}: {e}")
 
 
 def xui_add_client_on_server(server, client_uuid, uid, devices, expire_ms):
