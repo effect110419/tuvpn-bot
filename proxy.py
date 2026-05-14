@@ -168,6 +168,148 @@ def get_existing_client(uid):
     return None, None, None
 
 
+def detect_device_type(ua: str) -> str:
+    """Парсит User-Agent и возвращает 'ios' / 'android' / 'pc' / 'unknown'."""
+    if not ua:
+        return "unknown"
+    ua_low = ua.lower()
+    if any(k in ua_low for k in ["iphone", "ipad", "ios", "darwin"]):
+        return "ios"
+    if "android" in ua_low:
+        return "android"
+    if any(k in ua_low for k in ["windows", "macintosh", "linux", "x11"]):
+        return "pc"
+    if "happ" in ua_low:
+        return "ios"  # Happ Plus в основном iOS
+    if "v2ray" in ua_low:
+        return "android"
+    return "unknown"
+
+
+def make_device_name(ua: str, dtype: str) -> str:
+    """Формирует читаемое имя устройства."""
+    icons = {"ios": "🍏 iPhone/iPad", "android": "🤖 Android", "pc": "💻 ПК", "unknown": "📱 Устройство"}
+    name = icons.get(dtype, "📱 Устройство")
+    # Достаём версию из UA если есть
+    import re as _re
+    m = _re.search(r"(iOS|Android|Windows|Mac OS X)[ /]?(\d+[\d._]*)", ua or "", _re.IGNORECASE)
+    if m:
+        name += f" · {m.group(1)} {m.group(2).replace('_', '.')}"
+    return name
+
+
+def track_device(client_uuid: str, client_ip: str, user_agent: str) -> dict:
+    """
+    Регистрирует/обновляет устройство при обращении к подписке.
+    Возвращает {"allowed": bool, "reason": str, "device_id": int|None}.
+
+    Логика:
+    - Находим подписку по client_uuid
+    - Если устройство с таким (uuid, ip) уже есть и активно — обновляем last_seen
+    - Если новое устройство:
+        * считаем активные устройства этого юзера
+        * если меньше лимита (subscription.devices) — добавляем
+        * если уже равно лимиту — отказываем
+    """
+    try:
+        # Находим подписку
+        sub_q = sb.table("subscriptions").select("*").eq("status", "active").like("sub_url", f"%{client_uuid}").limit(1).execute()
+        if not sub_q.data:
+            return {"allowed": False, "reason": "subscription_not_found", "device_id": None}
+        sub = sub_q.data[0]
+        user_id = sub["user_id"]
+        device_limit = sub.get("devices", 1)
+
+        # Ищем существующее устройство с тем же IP и uuid
+        existing = sb.table("user_devices").select("*").eq("user_id", user_id).eq("client_uuid", client_uuid).eq("ip_address", client_ip).limit(1).execute()
+        if existing.data:
+            dev = existing.data[0]
+            # Просто обновляем last_seen и реактивируем если было выключено
+            sb.table("user_devices").update({
+                "last_seen": datetime.utcnow().isoformat(),
+                "is_active": True,
+                "user_agent": user_agent,
+            }).eq("id", dev["id"]).execute()
+            return {"allowed": True, "reason": "updated", "device_id": dev["id"]}
+
+        # Новое устройство — проверим лимит
+        active_count_q = sb.table("user_devices").select("id", count="exact").eq("user_id", user_id).eq("is_active", True).execute()
+        active_count = active_count_q.count or 0
+        if active_count >= device_limit:
+            app.logger.warning(f"Device limit exceeded: user={user_id} limit={device_limit} active={active_count} IP={client_ip}")
+            return {"allowed": False, "reason": "limit_exceeded", "device_id": None}
+
+        # Добавляем новое устройство
+        dtype = detect_device_type(user_agent)
+        dname = make_device_name(user_agent, dtype)
+        new_dev = sb.table("user_devices").insert({
+            "user_id": user_id,
+            "device_name": dname,
+            "device_type": dtype,
+            "device_info": (user_agent or "")[:200],
+            "client_uuid": client_uuid,
+            "ip_address": client_ip,
+            "user_agent": (user_agent or "")[:500],
+            "connected_at": datetime.utcnow().isoformat(),
+            "last_seen": datetime.utcnow().isoformat(),
+            "is_active": True,
+        }).execute()
+        dev_id = new_dev.data[0]["id"] if new_dev.data else None
+        app.logger.info(f"New device tracked: user={user_id} IP={client_ip} type={dtype} id={dev_id}")
+        return {"allowed": True, "reason": "added", "device_id": dev_id}
+    except Exception as e:
+        app.logger.error(f"track_device error: {e}")
+        return {"allowed": True, "reason": "error_allow_anyway", "device_id": None}
+
+
+@app.route('/sub/<client_uuid>')
+def subscription(client_uuid):
+    """Отдать подписку клиенту — JSON-массив конфигов для всех активных серверов.
+    Также регистрирует устройство по IP и проверяет лимит."""
+    import json as _json
+    import subscription_generator
+
+    # IP клиента (учитываем nginx прокси)
+    client_ip = (request.headers.get('X-Real-IP') or
+                 request.headers.get('X-Forwarded-For', '').split(',')[0].strip() or
+                 request.remote_addr or "unknown")
+    user_agent = request.headers.get('User-Agent', '')
+
+    # Регистрация устройства / проверка лимита
+    track_result = track_device(client_uuid, client_ip, user_agent)
+    if not track_result["allowed"]:
+        if track_result["reason"] == "limit_exceeded":
+            app.logger.info(f"Subscription blocked (limit): {client_uuid} from {client_ip}")
+            return Response("Device limit exceeded for this subscription", status=403)
+        # Если subscription_not_found — отдаём 404
+        if track_result["reason"] == "subscription_not_found":
+            return Response("Subscription not found", status=404)
+
+    # Получаем активные серверы
+    try:
+        srv = sb.table("servers").select("*").eq("is_active", True).order("sort_order").execute()
+        servers = srv.data or []
+    except Exception as e:
+        app.logger.error(f"Servers fetch error: {e}")
+        servers = []
+    if not servers:
+        return Response("No active servers", status=503)
+
+    configs = subscription_generator.build_subscription(servers, client_uuid)
+    body = _json.dumps(configs, ensure_ascii=False, separators=(",", ":"))
+    expire_ts = get_client_expire(client_uuid)
+    announcement_b64 = "4pqg77iPINCd0LUg0YDQsNCx0L7RgtCw0LXRgj8g0J3QsNC20LzQuCDwn5SEINC4INCy0YvQsdC10YDQuCDQtNGA0YPQs9GD0Y4g0LvQvtC60LDRhtC40Y4uIPCfk4Ug0J/RgNC+0LTQu9C10LLQsNC5INC30LDRgNCw0L3QtdC1IOKAlCBUZWxlZ3JhbSDQt9Cw0LzQtdC00LvRj9GO0YIh"
+    headers = {
+        "Content-Type": "application/json; charset=utf-8",
+        "profile-title": "TuVPN",
+        "profile-update-interval": "6",
+        "support-url": "https://t.me/MaxArtVPN_bot",
+        "subscription-userinfo": f"upload=0; download=0; total=0; expire={expire_ts}",
+        "announce": "base64:" + announcement_b64,
+    }
+    return Response(body, headers=headers)
+
+
 def issue_subscription(uid: int, devices: int, days: int) -> dict:
     """Выдать/продлить подписку на всех активных серверах.
     - Если есть активная подписка — продлевает с тем же UUID
@@ -572,6 +714,17 @@ def yookassa_webhook():
     if event == "payment.succeeded" and parsed["status"] == "succeeded":
         try:
             uid = int(metadata.get("user_id"))
+# Campaign attribution: copy campaign_code from user to payment
+            campaign_code = None
+            try:
+                user_r = sb.table("users").select("campaign_code").eq("user_id", uid).limit(1).execute()
+                if user_r.data and user_r.data[0].get("campaign_code"):
+                    campaign_code = user_r.data[0]["campaign_code"]
+                    # Update payment record with campaign attribution
+                    sb.table("payments").update({"campaign_code": campaign_code}).eq("provider_payment_id", payment_id).execute()
+                    app.logger.info(f"Payment {payment_id} attributed to campaign {campaign_code}")
+            except Exception as e:
+                app.logger.error(f"Campaign attribution error: {e}")
             devices = int(metadata.get("devices"))
             months = int(metadata.get("months"))
             email = metadata.get("email", "—")

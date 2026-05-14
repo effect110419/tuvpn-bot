@@ -93,6 +93,80 @@ def extend_db_subscription(sub_id, user_id, days):
         return None
 
 # ══════════════════════════════
+# ФУНКЦИИ УПРАВЛЕНИЯ УСТРОЙСТВАМИ
+# ══════════════════════════════
+
+def get_user_devices(user_id):
+    """Получить список активных устройств пользователя"""
+    try:
+        r = sb.table("user_devices").select("*").eq("user_id", user_id).eq("is_active", True).execute()
+        return r.data
+    except Exception as e:
+        logging.error(f"get_user_devices: {e}")
+        return []
+
+def add_user_device(user_id, device_name, device_type, device_info, client_uuid):
+    """Добавить новое устройство пользователю"""
+    try:
+        sb.table("user_devices").insert({
+            "user_id": user_id,
+            "device_name": device_name,
+            "device_type": device_type,
+            "device_info": device_info,
+            "client_uuid": client_uuid,
+        }).execute()
+        return True
+    except Exception as e:
+        logging.error(f"add_user_device: {e}")
+        return False
+
+def remove_user_device(user_id, device_id):
+    """Удалить устройство пользователя"""
+    try:
+        sb.table("user_devices").update({"is_active": False}).eq("user_id", user_id).eq("id", device_id).execute()
+        return True
+    except Exception as e:
+        logging.error(f"remove_user_device: {e}")
+        return False
+
+def count_active_devices(user_id):
+    """Подсчитать количество активных устройств пользователя"""
+    try:
+        r = sb.table("user_devices").select("id", count="exact").eq("user_id", user_id).eq("is_active", True).execute()
+        return r.count
+    except Exception as e:
+        logging.error(f"count_active_devices: {e}")
+        return 0
+
+def get_user_stats(user_id):
+    """Получить статистику пользователя для профиля"""
+    try:
+        user = get_user(user_id)
+        if not user:
+            return None
+        
+        sub = get_subscription(user_id)
+        devices_count = count_active_devices(user_id)
+        
+        payments_r = sb.table("payments").select("amount", count="exact").eq("user_id", user_id).eq("status", "succeeded").execute()
+        total_paid = sum(float(p.get('amount', 0)) for p in payments_r.data) if payments_r.data else 0
+        
+        refs_r = sb.table("referrals").select("referred_id", count="exact").eq("referrer_id", user_id).execute()
+        referrals_count = refs_r.count
+        
+        return {
+            "user": user,
+            "subscription": sub,
+            "devices_count": devices_count,
+            "payments_count": payments_r.count,
+            "total_paid": total_paid,
+            "referrals_count": referrals_count
+        }
+    except Exception as e:
+        logging.error(f"get_user_stats: {e}")
+        return None
+
+# ══════════════════════════════
 # 3X-UI API
 # ══════════════════════════════
 async def xui_session():
@@ -196,29 +270,104 @@ async def give_new_user_bonus(user_id, days=7):
 # ПРОВЕРКА ИСТЁКШИХ ПОДПИСОК
 # ══════════════════════════════
 async def check_expired():
+    """
+    Каждый час проверяет подписки и шлёт уведомления:
+    - За 3 дня до истечения (один раз, флаг notified_3d)
+    - За 1 день до истечения (один раз, флаг notified_1d)
+    - При истечении — деактивирует + шлёт сообщение (флаг notified_expired)
+    """
     while True:
         try:
             r = sb.table("subscriptions").select("*").eq("status", "active").execute()
             now = datetime.now()
-            for sub in r.data:
-                expires = datetime.fromisoformat(sub["expires_at"])
-                if now > expires:
-                    deactivate_subscription(sub["id"])
-                    user = get_user(sub["user_id"])
+            for sub in (r.data or []):
+                try:
+                    expires = datetime.fromisoformat(sub["expires_at"])
+                    if expires.tzinfo is not None:
+                        expires = expires.replace(tzinfo=None)
+                except Exception:
+                    continue
+
+                days_left = (expires - now).total_seconds() / 86400
+                user_id = sub["user_id"]
+                sub_id = sub["id"]
+
+                # ИСТЕКЛА
+                if days_left <= 0:
+                    deactivate_subscription(sub_id)
+                    user = get_user(user_id)
                     client_uuid = user.get("client_uuid") if user else None
                     if client_uuid:
-                        await xui_toggle_client(client_uuid, sub["user_id"], False, sub.get("devices", 1))
+                        try:
+                            await xui_toggle_client(client_uuid, user_id, False, sub.get("devices", 1))
+                        except Exception as e:
+                            logging.error(f"xui_toggle_client error: {e}")
+                    if not sub.get("notified_expired"):
+                        try:
+                            await bot.send_message(
+                                user_id,
+                                "⚠️ <b>Ваша подписка TuVPN истекла</b>\n\n"
+                                "Продлите подписку чтобы восстановить доступ к VPN. "
+                                "Все ваши настройки сохранены — после оплаты ничего не нужно перенастраивать.",
+                                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                                    [InlineKeyboardButton(text="🛒 Продлить подписку", callback_data="buy")],
+                                    [InlineKeyboardButton(text="💬 Поддержка", url="https://t.me/TuVPNSupport_bot")],
+                                ])
+                            )
+                        except Exception as e:
+                            logging.warning(f"notify_expired failed user={user_id}: {e}")
+                        try:
+                            sb.table("subscriptions").update({"notified_expired": True}).eq("id", sub_id).execute()
+                        except Exception:
+                            pass
+                    continue
+
+                # ЗА 1 ДЕНЬ ДО ИСТЕЧЕНИЯ
+                if days_left <= 1 and not sub.get("notified_1d"):
                     try:
-                        await bot.send_message(sub["user_id"],
-                            "⚠️ Ваша подписка TuVPN истекла.\n\nПродлите подписку чтобы восстановить доступ!",
+                        await bot.send_message(
+                            user_id,
+                            f"⏰ <b>Завтра истекает ваша подписка TuVPN</b>\n\n"
+                            f"📅 Активна до: <b>{expires.strftime('%d.%m.%Y %H:%M')}</b>\n"
+                            f"📱 Тариф: {sub.get('devices', 1)} устр.\n\n"
+                            f"Продлите сейчас — и не останетесь без VPN. "
+                            f"Все ваши настройки сохранятся, ничего не нужно перенастраивать.",
                             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                                [InlineKeyboardButton(text="🛒 Продлить", callback_data="buy")]
+                                [InlineKeyboardButton(text="🛒 Продлить", callback_data="buy")],
+                                [InlineKeyboardButton(text="◀️ В меню", callback_data="back")],
                             ])
                         )
-                    except:
+                    except Exception as e:
+                        logging.warning(f"notify_1d failed user={user_id}: {e}")
+                    try:
+                        sb.table("subscriptions").update({"notified_1d": True}).eq("id", sub_id).execute()
+                    except Exception:
+                        pass
+                    continue
+
+                # ЗА 3 ДНЯ ДО ИСТЕЧЕНИЯ
+                if days_left <= 3 and not sub.get("notified_3d"):
+                    try:
+                        await bot.send_message(
+                            user_id,
+                            f"⏳ <b>Через 3 дня истекает ваша подписка TuVPN</b>\n\n"
+                            f"📅 Активна до: <b>{expires.strftime('%d.%m.%Y')}</b>\n"
+                            f"📱 Тариф: {sub.get('devices', 1)} устр.\n\n"
+                            f"Продлите заранее чтобы не остаться без VPN. "
+                            f"Не забудьте — за продление друзей вы получаете +7 дней 🎁",
+                            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                                [InlineKeyboardButton(text="🛒 Продлить", callback_data="buy")],
+                                [InlineKeyboardButton(text="🤝 Позвать друга", callback_data="referral")],
+                            ])
+                        )
+                    except Exception as e:
+                        logging.warning(f"notify_3d failed user={user_id}: {e}")
+                    try:
+                        sb.table("subscriptions").update({"notified_3d": True}).eq("id", sub_id).execute()
+                    except Exception:
                         pass
         except Exception as e:
-            logging.error(f"check_expired: {e}")
+            logging.error(f"check_expired loop error: {e}")
         await asyncio.sleep(3600)
 
 # ══════════════════════════════
@@ -235,6 +384,7 @@ def main_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⚡️ Подключиться", callback_data="connect")],
         [InlineKeyboardButton(text="🛒 Оформить подписку", callback_data="buy")],
+        [InlineKeyboardButton(text="👤 Мой профиль", callback_data="profile")],
         [InlineKeyboardButton(text="📋 Как подключиться", callback_data="howto"),
          InlineKeyboardButton(text="🤝 Позвать друга", callback_data="referral")],
         [InlineKeyboardButton(text="📣 Наш канал", callback_data="channel")],
@@ -245,12 +395,35 @@ def main_menu():
 @dp.message(Command("start"))
 async def start(message: types.Message):
     args = message.text.split()
+# UTM campaigns: check string parameters
+    campaign = None
+    if len(args) > 1 and not args[1].isdigit():
+        try:
+            r = sb.table("campaigns").select("*").eq("code", args[1]).eq("is_active", True).limit(1).execute()
+            if r.data:
+                campaign = r.data[0]
+        except Exception as e:
+            logging.error(f"UTM lookup: {e}")
     referrer_id = int(args[1]) if len(args) > 1 and args[1].isdigit() else None
     user_id = message.from_user.id
     first_name = message.from_user.first_name or ""
 
     is_new = register_user(user_id, message.from_user.username,
                            first_name, message.from_user.last_name, referrer_id)
+# UTM: process new user from campaign
+    if is_new and campaign:
+        try:
+            sb.table("users").update({"campaign_code": campaign["code"]}).eq("user_id", user_id).execute()
+            sb.table("campaign_clicks").insert({"campaign_code": campaign["code"], "user_id": user_id, "is_new_user": True}).execute()
+            bonus_days = int(campaign.get("bonus_days", 7))
+            client_uuid, sub_url = await xui_add_client(user_id, 1, bonus_days)
+            if client_uuid:
+                create_db_subscription(user_id, 1, bonus_days, client_uuid, sub_url)
+            welcome = campaign.get("welcome_text", f"🎁 Welcome! {bonus_days} days free trial! 🚀")
+            await message.answer(welcome, reply_markup=main_menu())
+            return
+        except Exception as e:
+            logging.error(f"UTM processing: {e}")
 
     if is_new and referrer_id and referrer_id != user_id:
         try:
@@ -331,7 +504,13 @@ async def connect(callback: types.CallbackQuery):
             days_left = 0
 
         if days_left > 0:
+            devices_count = count_active_devices(user_id)
+            device_limit = sub.get('devices', 1)
+            
             kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔗 Ссылка подключения", callback_data="connection_link")],
+                [InlineKeyboardButton(text="📱 Мои устройства", callback_data="my_devices")],
+                [InlineKeyboardButton(text="➕ Добавить устройства", callback_data="add_devices")],
                 [InlineKeyboardButton(text="📲 Как настроить", callback_data="howto")],
                 [InlineKeyboardButton(text="🔄 Продлить / изменить тариф", callback_data="buy")],
                 [InlineKeyboardButton(text="◀️ Назад", callback_data="back")],
@@ -340,11 +519,8 @@ async def connect(callback: types.CallbackQuery):
                 f"🔌 <b>Подключение к TuVPN</b>\n\n"
                 f"✅ Подписка активна\n"
                 f"📅 До: <b>{exp.strftime('%d.%m.%Y')}</b> (осталось {days_left} дн.)\n"
-                f"📱 Тариф: <b>{sub['devices']} устр.</b>\n\n"
-                f"🔗 <b>Ваша ссылка для подключения:</b>\n"
-                f"<code>{sub['sub_url']}</code>\n\n"
-                f"👆 Нажмите на ссылку чтобы скопировать.\n\n"
-                f"📲 Если впервые подключаетесь — нажмите «Как настроить»."
+                f"📱 Устройств: <b>{devices_count}/{device_limit}</b>\n\n"
+                f"Выберите действие:"
             )
         else:
             kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -996,6 +1172,242 @@ async def process_promo(message: types.Message, state: FSMContext):
 @dp.callback_query(lambda c: c.data == "promo_confirmed")
 async def promo_confirmed(callback: types.CallbackQuery, state: FSMContext):
     await _ask_email(callback.message, state)
+    await callback.answer()
+
+
+# ══════════════════════════════
+# ХЕНДЛЕРЫ УПРАВЛЕНИЯ УСТРОЙСТВАМИ  
+# ══════════════════════════════
+
+@dp.callback_query(lambda c: c.data == "connection_link")
+async def connection_link(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    sub = get_subscription(user_id)
+    
+    if not sub:
+        await callback.answer("❌ Подписка не найдена", show_alert=True)
+        return
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📲 Как настроить", callback_data="howto")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="connect")],
+    ])
+    
+    await callback.message.answer(
+        f"🔗 <b>Ваша ссылка для подключения:</b>\n"
+        f"<code>{sub['sub_url']}</code>\n\n"
+        f"👆 Нажмите на ссылку чтобы скопировать.\n\n"
+        f"📲 Если впервые подключаетесь — нажмите «Как настроить».",
+        reply_markup=kb
+    )
+    await callback.answer()
+
+@dp.callback_query(lambda c: c.data == "my_devices")
+async def my_devices(callback: types.CallbackQuery):
+    from datetime import datetime as _dt, timezone as _tz
+    user_id = callback.from_user.id
+    devices = get_user_devices(user_id)
+    sub = get_subscription(user_id)
+    device_limit = sub.get("devices", 1) if sub else 1
+
+    if not devices:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔗 Получить ссылку подключения", callback_data="connection_link")],
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="connect")],
+        ])
+        await callback.message.answer(
+            f"📱 <b>Мои устройства (0/{device_limit})</b>\n\n"
+            f"🔍 У вас пока нет подключённых устройств.\n\n"
+            f"Получите ссылку подписки и откройте её в Happ Plus или v2RayTun — ваше устройство автоматически появится в этом списке.",
+            reply_markup=kb
+        )
+        await callback.answer()
+        return
+
+    def _fmt_ago(iso_str):
+        if not iso_str:
+            return "—"
+        try:
+            dt = _dt.fromisoformat(iso_str.replace("Z", "+00:00"))
+            now = _dt.now(_tz.utc) if dt.tzinfo else _dt.now()
+            diff = (now - dt).total_seconds()
+            if diff < 60:
+                return f"{int(diff)} сек назад"
+            if diff < 3600:
+                return f"{int(diff // 60)} мин назад"
+            if diff < 86400:
+                return f"{int(diff // 3600)} ч назад"
+            return f"{int(diff // 86400)} дн назад"
+        except Exception:
+            return "—"
+
+    lines = [f"📱 <b>Мои устройства ({len(devices)}/{device_limit})</b>", ""]
+    for i, d in enumerate(devices, 1):
+        name = d.get("device_name") or "📱 Устройство"
+        ip = d.get("ip_address") or "—"
+        try:
+            parts = ip.split(".")
+            ip_short = f"{parts[0]}.{parts[1]}.x.x" if len(parts) == 4 else ip
+        except Exception:
+            ip_short = ip
+        last_seen = _fmt_ago(d.get("last_seen"))
+        lines.append(f"<b>{i}.</b> {name}")
+        lines.append(f"   📡 <code>{ip_short}</code> · 🕐 {last_seen}")
+        lines.append("")
+
+    lines.append("ℹ️ Если устройство больше не используется — удалите его, чтобы освободить слот.")
+    lines.append("⚠️ Учитываются <b>IP-адреса</b>: если устройство меняет сеть (Wi-Fi → 4G) — может появиться как новое.")
+
+    device_buttons = []
+    for d in devices:
+        short_name = (d.get("device_name") or "Устройство").split("·")[0].strip()
+        device_buttons.append([
+            InlineKeyboardButton(
+                text=f"❌ Удалить · {short_name}",
+                callback_data=f"remove_device_{d['id']}"
+            )
+        ])
+
+    device_buttons.extend([
+        [InlineKeyboardButton(text="🔗 Получить ссылку подключения", callback_data="connection_link")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="connect")],
+    ])
+    kb = InlineKeyboardMarkup(inline_keyboard=device_buttons)
+    await callback.message.answer("\n".join(lines), reply_markup=kb)
+    await callback.answer()
+
+
+@dp.callback_query(lambda c: c.data.startswith("remove_device_"))
+async def remove_device(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    device_id = int(callback.data.split("_")[2])
+    
+    try:
+        device_r = sb.table("user_devices").select("device_name").eq("user_id", user_id).eq("id", device_id).execute()
+        if not device_r.data:
+            await callback.answer("❌ Устройство не найдено", show_alert=True)
+            return
+        
+        device_name = device_r.data[0]['device_name']
+        
+        if remove_user_device(user_id, device_id):
+            await callback.answer(f"✅ Устройство '{device_name}' удалено", show_alert=True)
+            await my_devices(callback)
+        else:
+            await callback.answer("❌ Ошибка удаления устройства", show_alert=True)
+    except Exception as e:
+        logging.error(f"remove_device: {e}")
+        await callback.answer("❌ Ошибка удаления устройства", show_alert=True)
+
+@dp.callback_query(lambda c: c.data == "add_devices")
+async def add_devices(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    sub = get_subscription(user_id)
+    
+    if not sub:
+        await callback.answer("❌ Подписка не найдена", show_alert=True)
+        return
+    
+    current_devices = count_active_devices(user_id)
+    device_limit = sub.get('devices', 1)
+    
+    if current_devices >= device_limit:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔄 Расширить подписку", callback_data="buy")],
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="my_devices")],
+        ])
+        
+        await callback.message.answer(
+            f"📱 <b>Добавить устройства</b>\n\n"
+            f"⚠️ Вы используете все доступные слоты: <b>{current_devices}/{device_limit}</b>\n\n"
+            f"Чтобы подключить больше устройств, расширьте подписку или удалите неиспользуемые устройства.",
+            reply_markup=kb
+        )
+    else:
+        available_slots = device_limit - current_devices
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔗 Получить ссылку подключения", callback_data="connection_link")],
+            [InlineKeyboardButton(text="🔄 Расширить подписку", callback_data="buy")],
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="my_devices")],
+        ])
+        
+        await callback.message.answer(
+            f"📱 <b>Добавить устройства</b>\n\n"
+            f"✅ Доступно слотов: <b>{available_slots}</b>\n"
+            f"📊 Использовано: <b>{current_devices}/{device_limit}</b>\n\n"
+            f"Получите ссылку подключения и настройте новое устройство. Или расширьте подписку для большего количества устройств.",
+            reply_markup=kb
+        )
+    
+    await callback.answer()
+
+@dp.callback_query(lambda c: c.data == "profile")
+async def profile(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    stats = get_user_stats(user_id)
+    
+    if not stats:
+        await callback.answer("❌ Ошибка загрузки профиля", show_alert=True)
+        return
+    
+    user = stats['user']
+    sub = stats['subscription']
+    
+    name_parts = []
+    if user.get('first_name'):
+        name_parts.append(user['first_name'])
+    if user.get('last_name'):
+        name_parts.append(user['last_name'])
+    display_name = ' '.join(name_parts) if name_parts else f"ID {user_id}"
+    
+    username = f"@{user['username']}" if user.get('username') else "не указан"
+    
+    if sub:
+        try:
+            from datetime import datetime as _dt
+            exp = _dt.fromisoformat(sub["expires_at"].replace("Z", "+00:00"))
+            if exp.tzinfo is not None:
+                exp = exp.replace(tzinfo=None)
+            days_left = max(0, (exp - _dt.now()).days)
+            
+            if days_left > 0:
+                sub_status = f"✅ Активна до {exp.strftime('%d.%m.%Y')} ({days_left} дн.)"
+                device_info = f"📱 Устройств: {stats['devices_count']}/{sub.get('devices', 1)}"
+            else:
+                sub_status = f"⚠️ Истекла {exp.strftime('%d.%m.%Y')}"
+                device_info = f"📱 Лимит устройств: {sub.get('devices', 1)}"
+        except:
+            sub_status = "❓ Ошибка определения статуса"
+            device_info = f"📱 Лимит устройств: {sub.get('devices', 1)}"
+    else:
+        sub_status = "❌ Нет активной подписки"
+        device_info = "📱 Устройств: 0"
+    
+    bonus_days = user.get('bonus_days', 0)
+    balance_info = f"💰 Бонусных дней: {bonus_days}" if bonus_days > 0 else "💰 Бонусных дней: нет"
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⚡️ Подключиться", callback_data="connect")],
+        [InlineKeyboardButton(text="🛒 Оформить подписку", callback_data="buy")],
+        [InlineKeyboardButton(text="🤝 Пригласить друга", callback_data="referral")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="back")],
+    ])
+    
+    await callback.message.answer(
+        f"👤 <b>Профиль пользователя</b>\n\n"
+        f"👨‍💻 <b>{display_name}</b>\n"
+        f"🆔 {username}\n"
+        f"🔢 ID: <code>{user_id}</code>\n\n"
+        f"🔐 <b>Подписка:</b>\n"
+        f"{sub_status}\n"
+        f"{device_info}\n\n"
+        f"📊 <b>Статистика:</b>\n"
+        f"💳 Платежей: {stats['payments_count']}\n"
+        f"💸 Потрачено: {stats['total_paid']:.0f} ₽\n"
+        f"👥 Приглашено: {stats['referrals_count']} друзей\n"
+        f"{balance_info}",
+        reply_markup=kb
+    )
     await callback.answer()
 
 
