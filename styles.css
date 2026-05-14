@@ -1307,3 +1307,95 @@ table.tbl { width: 100%; border-collapse: collapse; }
 .gap-3 { gap: 12px; }
 .mt-2 { margin-top: 8px; }
 .mt-3 { margin-top: 12px; }
+
+/* ===== MARKETING PAGE ===== */
+.organic-row {
+  font-weight: 500;
+}
+
+.campaign-row {
+  cursor: pointer;
+  transition: background var(--t-1);
+}
+.campaign-row:hover {
+  background: var(--bg-hover);
+}
+
+.status-dot.organic {
+  background: var(--green);
+  box-shadow: 0 0 6px var(--green-dim);
+}
+
+.roi-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+}
+.roi-badge.success {
+  background: var(--green-dim);
+  color: var(--green);
+}
+.roi-badge.warning {
+  background: var(--yellow-dim);
+  color: var(--yellow);
+}
+.roi-badge.danger {
+  background: var(--red-dim);
+  color: var(--red);
+}
+.roi-badge.muted {
+  background: var(--bg-3);
+  color: var(--fg-4);
+}
+
+.pill-vk { background: #0077ff20; color: #5b9bd5; }
+.pill-instagram { background: #e4405f20; color: #f472b6; }
+.pill-telegram { background: #0088cc20; color: #67e8f9; }
+.pill-youtube { background: #ff000020; color: #f87171; }
+.pill-direct { background: var(--bg-3); color: var(--fg-2); }
+.pill-other { background: var(--bg-3); color: var(--fg-3); }
+
+.source-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+}
+.source-card {
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px;
+  text-align: center;
+}
+.source-icon {
+  font-size: 24px;
+  margin-bottom: 6px;
+}
+.source-label {
+  font-weight: 600;
+  margin-bottom: 8px;
+  color: var(--fg);
+}
+.source-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.source-stat {
+  font-size: 12px;
+  color: var(--fg-3);
+}
+.roi-positive {
+  color: var(--green);
+  font-weight: 600;
+}
+.roi-negative {
+  color: var(--red);
+  font-weight: 600;
+}
+
+.text-muted {
+  color: var(--fg-3);
+}

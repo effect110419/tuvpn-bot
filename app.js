@@ -212,7 +212,7 @@ function showApp() {
 /* ===================== DATA LOAD ===================== */
 async function loadAll() {
   try {
-    const [users, subs, payments, promos, promoUses, refs, tickets, supportAdmins] = await Promise.all([
+    const [users, subs, payments, promos, promoUses, refs, tickets, supportAdmins, campaigns, campaignClicks] = await Promise.all([
       sbGet('users', 'select=*&order=created_at.desc'),
       sbGet('subscriptions', 'select=*&order=created_at.desc'),
       sbGet('payments', 'select=*&order=created_at.desc'),
@@ -221,8 +221,10 @@ async function loadAll() {
       sbGet('referrals', 'select=*'),
       sbGet('support_tickets', 'select=*&order=created_at.desc'),
       sbGet('support_admins', 'select=*'),
+      sbGet('campaigns', 'select=*&order=created_at.desc'),
+      sbGet('campaign_clicks', 'select=*&order=created_at.desc'),
     ]);
-    Object.assign(state, { users, subs, payments, promos, promoUses, refs, tickets, supportAdmins, loaded: true });
+    Object.assign(state, { users, subs, payments, promos, promoUses, refs, tickets, supportAdmins, campaigns, campaignClicks, loaded: true });
 
     // Servers via proxy
     try {
@@ -248,6 +250,7 @@ const PAGE_META = {
   subs:       { sec: 'Главное', title: 'Подписки' },
   payments:   { sec: 'Главное', title: 'Платежи' },
   promos:     { sec: 'Маркетинг', title: 'Промокоды' },
+  marketing:  { sec: 'Маркетинг', title: 'UTM-кампании' },
   referrals:  { sec: 'Маркетинг', title: 'Рефералы' },
   tickets:    { sec: 'Поддержка', title: 'Тикеты' },
   servers:    { sec: 'Инфраструктура', title: 'Серверы' },
@@ -272,6 +275,7 @@ function renderPage(page) {
     subs: renderSubs,
     payments: renderPayments,
     promos: renderPromos,
+    marketing: renderMarketing,
     referrals: renderReferrals,
     tickets: renderTickets,
     servers: renderServers,
@@ -506,7 +510,7 @@ function bindShortcuts() {
     }
 
     if (state.keySeq === 'g') {
-      const map = { d: 'dashboard', u: 'users', s: 'subs', p: 'payments', m: 'promos', r: 'referrals', t: 'tickets', v: 'servers', x: 'settings' };
+      const map = { d: 'dashboard', u: 'users', s: 'subs', p: 'payments', m: 'marketing', o: 'promos', r: 'referrals', t: 'tickets', v: 'servers', x: 'settings' };
       const tgt = map[e.key.toLowerCase()];
       if (tgt) {
         e.preventDefault();
@@ -591,6 +595,9 @@ document.addEventListener('DOMContentLoaded', () => {
   // Server modal
   $('#serverSubmit').addEventListener('click', saveServer);
   $('#srvDeleteBtn').addEventListener('click', deleteServerFromModal);
+
+  // Campaign modal
+  $('#campaignSubmit').addEventListener('click', saveCampaign);
 
   // Boot
   if (isLoggedIn()) showApp();
@@ -1925,7 +1932,8 @@ function renderSettings() {
         <div class="info"><span class="info-k">Пользователи</span><span class="info-v"><span class="kbd-key">G</span> <span class="kbd-key">U</span></span></div>
         <div class="info"><span class="info-k">Подписки</span><span class="info-v"><span class="kbd-key">G</span> <span class="kbd-key">S</span></span></div>
         <div class="info"><span class="info-k">Платежи</span><span class="info-v"><span class="kbd-key">G</span> <span class="kbd-key">P</span></span></div>
-        <div class="info"><span class="info-k">Промокоды</span><span class="info-v"><span class="kbd-key">G</span> <span class="kbd-key">M</span></span></div>
+        <div class="info"><span class="info-k">Маркетинг</span><span class="info-v"><span class="kbd-key">G</span> <span class="kbd-key">M</span></span></div>
+        <div class="info"><span class="info-k">Промокоды</span><span class="info-v"><span class="kbd-key">G</span> <span class="kbd-key">O</span></span></div>
         <div class="info"><span class="info-k">Рефералы</span><span class="info-v"><span class="kbd-key">G</span> <span class="kbd-key">R</span></span></div>
         <div class="info"><span class="info-k">Тикеты</span><span class="info-v"><span class="kbd-key">G</span> <span class="kbd-key">T</span></span></div>
         <div class="info"><span class="info-k">Серверы</span><span class="info-v"><span class="kbd-key">G</span> <span class="kbd-key">V</span></span></div>
@@ -2018,5 +2026,327 @@ async function grantBonusDays() {
     closeModal('bonusModal');
     await loadAll();
   } catch (e) { toast('Ошибка: ' + e.message, 'error'); }
+}
+
+/* =====================================================================
+   ====================== PAGE: MARKETING ============================
+   ===================================================================== */
+function renderMarketing() {
+  // Calculate marketing stats
+  const campaigns = state.campaigns || [];
+  const campaignClicks = state.campaignClicks || [];
+  const organicUsers = state.users.filter(u => !u.campaign_code);
+  const organicPayments = state.payments.filter(p => !p.campaign_code);
+  const totalOrganicRevenue = organicPayments.reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0);
+
+  // Campaign stats calculation
+  const campaignStats = campaigns.map(campaign => {
+    const clicks = campaignClicks.filter(c => c.campaign_code === campaign.code);
+    const newUsers = clicks.filter(c => c.is_new_user);
+    const campaignUsers = state.users.filter(u => u.campaign_code === campaign.code);
+    const campaignPayments = state.payments.filter(p => p.campaign_code === campaign.code);
+    const revenue = campaignPayments.reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0);
+    const cost = parseFloat(campaign.cost) || 0;
+    const roi = cost > 0 ? ((revenue - cost) / cost * 100) : (revenue > 0 ? Infinity : 0);
+
+    return {
+      ...campaign,
+      clicks: clicks.length,
+      registrations: newUsers.length,
+      payments: campaignPayments.length,
+      revenue,
+      cost,
+      roi,
+      avgTicket: campaignPayments.length > 0 ? revenue / campaignPayments.length : 0
+    };
+  });
+
+  // Sort by ROI desc
+  campaignStats.sort((a, b) => (b.roi === Infinity ? 1 : b.roi) - (a.roi === Infinity ? 1 : a.roi));
+
+  // Top KPI
+  const totalCampaigns = campaigns.length;
+  const activeCampaigns = campaigns.filter(c => c.is_active).length;
+  const totalCost = campaigns.reduce((sum, c) => sum + (parseFloat(c.cost) || 0), 0);
+  const totalRevenue = campaignStats.reduce((sum, c) => sum + c.revenue, 0);
+  const totalROI = totalCost > 0 ? ((totalRevenue - totalCost) / totalCost * 100) : 0;
+
+  // Sources breakdown
+  const sourceStats = {};
+  campaigns.forEach(c => {
+    const source = c.source || 'other';
+    if (!sourceStats[source]) sourceStats[source] = { campaigns: 0, cost: 0, revenue: 0 };
+    sourceStats[source].campaigns++;
+    sourceStats[source].cost += parseFloat(c.cost) || 0;
+  });
+  campaignStats.forEach(cs => {
+    const source = cs.source || 'other';
+    if (sourceStats[source]) sourceStats[source].revenue += cs.revenue;
+  });
+
+  $('#page-marketing').innerHTML = `
+    <div class="page-head">
+      <div class="page-title">📣 UTM-кампании</div>
+      <div class="flex gap-2">
+        <button class="btn btn-ghost" onclick="loadAll()" title="Обновить (R)">
+          ${ICONS.refresh} Обновить
+        </button>
+        <button class="btn btn-primary" onclick="openCampaignModal()" title="Создать (N)">
+          ${ICONS.plus} Новая кампания
+        </button>
+      </div>
+    </div>
+
+    <div class="kpi-grid">
+      <div class="kpi-card">
+        <div class="kpi-val">${totalCampaigns}</div>
+        <div class="kpi-label">Всего кампаний</div>
+        <div class="kpi-note">${activeCampaigns} активных</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-val">${num(totalCost)}</div>
+        <div class="kpi-label">Потрачено, ₽</div>
+        <div class="kpi-note">на размещения</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-val">${num(totalRevenue)}</div>
+        <div class="kpi-label">Выручка, ₽</div>
+        <div class="kpi-note">от UTM-трафика</div>
+      </div>
+      <div class="kpi-card ${totalROI > 0 ? 'success' : totalROI < -10 ? 'danger' : ''}">
+        <div class="kpi-val">${totalROI > 0 ? '+' : ''}${totalROI.toFixed(0)}%</div>
+        <div class="kpi-label">ROI</div>
+        <div class="kpi-note">${totalROI > 0 ? 'прибыль' : 'убыток'}</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <div class="card-title">🎯 Кампании по эффективности</div>
+        <div class="table-actions">
+          <input type="search" id="campaignSearch" placeholder="Поиск кампаний..." class="search-input">
+        </div>
+      </div>
+      <div class="table-container">
+        <table id="campaignsTable">
+          <thead>
+            <tr>
+              <th>Кампания</th>
+              <th>Источник</th>
+              <th style="text-align:right">Расходы ₽</th>
+              <th style="text-align:right">Клики</th>
+              <th style="text-align:right">Рег-ции</th>
+              <th style="text-align:right">Оплаты</th>
+              <th style="text-align:right">Выручка ₽</th>
+              <th style="text-align:right">ROI</th>
+              <th style="text-align:right">Ср.чек ₽</th>
+            </tr>
+          </thead>
+          <tbody>
+            <!-- Direct Traffic Row -->
+            <tr class="organic-row" style="background:var(--bg-2);border-left:3px solid var(--accent-3)">
+              <td>
+                <div class="u-cell">
+                  <div class="status-dot organic"></div>
+                  <div>
+                    <div style="font-weight:600">🌱 Прямой трафик</div>
+                    <div class="text-muted" style="font-size:12px">Органические пользователи</div>
+                  </div>
+                </div>
+              </td>
+              <td><span class="pill pill-muted">organic</span></td>
+              <td style="text-align:right">—</td>
+              <td style="text-align:right">—</td>
+              <td style="text-align:right">${organicUsers.length}</td>
+              <td style="text-align:right">${organicPayments.length}</td>
+              <td style="text-align:right">${num(totalOrganicRevenue)}</td>
+              <td style="text-align:right"><span class="roi-badge success">∞</span></td>
+              <td style="text-align:right">${organicPayments.length > 0 ? num(totalOrganicRevenue / organicPayments.length) : '—'}</td>
+            </tr>
+            ${campaignStats.map(campaign => `
+              <tr class="campaign-row" data-code="${campaign.code}" onclick="showCampaignDetails('${campaign.code}')">
+                <td>
+                  <div class="u-cell">
+                    <div class="status-dot ${campaign.is_active ? 'active' : 'inactive'}"></div>
+                    <div>
+                      <div style="font-weight:600">${esc(campaign.name)}</div>
+                      <div class="text-muted mono" style="font-size:11px">${campaign.code}</div>
+                    </div>
+                  </div>
+                </td>
+                <td><span class="pill pill-${campaign.source || 'muted'}">${getSourceIcon(campaign.source)} ${getSourceLabel(campaign.source)}</span></td>
+                <td style="text-align:right">${campaign.cost > 0 ? num(campaign.cost) : '—'}</td>
+                <td style="text-align:right">${campaign.clicks || '—'}</td>
+                <td style="text-align:right">${campaign.registrations || '—'}</td>
+                <td style="text-align:right">${campaign.payments || '—'}</td>
+                <td style="text-align:right">${campaign.revenue > 0 ? num(campaign.revenue) : '—'}</td>
+                <td style="text-align:right">
+                  ${campaign.roi === Infinity ? '<span class="roi-badge success">∞</span>' : 
+                    campaign.roi > 50 ? `<span class="roi-badge success">+${campaign.roi.toFixed(0)}%</span>` :
+                    campaign.roi > 0 ? `<span class="roi-badge warning">+${campaign.roi.toFixed(0)}%</span>` :
+                    campaign.roi < -50 ? `<span class="roi-badge danger">${campaign.roi.toFixed(0)}%</span>` :
+                    '<span class="roi-badge muted">0%</span>'
+                  }
+                </td>
+                <td style="text-align:right">${campaign.avgTicket > 0 ? num(campaign.avgTicket) : '—'}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    ${Object.keys(sourceStats).length > 1 ? `
+    <div class="card mt-3">
+      <div class="card-head">
+        <div class="card-title">📊 Источники трафика</div>
+      </div>
+      <div class="card-pad">
+        <div class="source-grid">
+          ${Object.entries(sourceStats).map(([source, stats]) => {
+            const roi = stats.cost > 0 ? ((stats.revenue - stats.cost) / stats.cost * 100) : 0;
+            return `
+              <div class="source-card">
+                <div class="source-icon">${getSourceIcon(source)}</div>
+                <div class="source-label">${getSourceLabel(source)}</div>
+                <div class="source-stats">
+                  <div class="source-stat">${stats.campaigns} кампаний</div>
+                  <div class="source-stat">${num(stats.cost)} ₽ / ${num(stats.revenue)} ₽</div>
+                  <div class="source-stat roi-${roi > 0 ? 'positive' : 'negative'}">${roi > 0 ? '+' : ''}${roi.toFixed(0)}% ROI</div>
+                </div>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      </div>
+    </div>` : ''}
+  `;
+
+  // Add search functionality
+  $('#campaignSearch').addEventListener('input', filterCampaigns);
+}
+
+function filterCampaigns() {
+  const query = $('#campaignSearch').value.toLowerCase();
+  const rows = $$('#campaignsTable tbody tr');
+  rows.forEach(row => {
+    const text = row.textContent.toLowerCase();
+    row.style.display = text.includes(query) ? '' : 'none';
+  });
+}
+
+function getSourceIcon(source) {
+  const icons = {
+    vk: '🔵',
+    instagram: '🟣', 
+    telegram: '🔷',
+    youtube: '🔴',
+    direct: '🌐',
+    other: '📱'
+  };
+  return icons[source] || icons.other;
+}
+
+function getSourceLabel(source) {
+  const labels = {
+    vk: 'ВКонтакте',
+    instagram: 'Instagram', 
+    telegram: 'Telegram',
+    youtube: 'YouTube',
+    direct: 'Direct',
+    other: 'Другое'
+  };
+  return labels[source] || 'Другое';
+}
+
+function openCampaignModal() {
+  clearCampaignModal();
+  openModal('campaignModal');
+}
+
+function clearCampaignModal() {
+  $('#campaignModalTitle').textContent = 'Новая кампания';
+  $('#campCode').value = '';
+  $('#campName').value = '';
+  $('#campSource').value = 'vk';
+  $('#campType').value = 'post';
+  $('#campCreator').value = '';
+  $('#campCost').value = '';
+  $('#campBonusDays').value = '7';
+  $('#campWelcome').value = '';
+  $('#campNote').value = '';
+  $('#campActive').checked = true;
+}
+
+async function saveCampaign() {
+  const code = $('#campCode').value.trim().toLowerCase();
+  const name = $('#campName').value.trim();
+  const source = $('#campSource').value;
+  const type = $('#campType').value;
+  const creator = $('#campCreator').value.trim() || null;
+  const cost = parseFloat($('#campCost').value) || 0;
+  const bonusDays = parseInt($('#campBonusDays').value) || 7;
+  const welcomeText = $('#campWelcome').value.trim() || null;
+  const note = $('#campNote').value.trim() || null;
+  const isActive = $('#campActive').checked;
+
+  // Validation
+  if (!code || code.length < 3) {
+    toast('Введите код кампании (минимум 3 символа)', 'error');
+    return;
+  }
+  if (!/^[a-z0-9_-]+$/.test(code)) {
+    toast('Код может содержать только a-z, 0-9, _ и -', 'error');
+    return;
+  }
+  if (!name) {
+    toast('Введите название кампании', 'error');
+    return;
+  }
+  if ((state.campaigns || []).some(c => c.code === code)) {
+    toast('Кампания с таким кодом уже существует', 'error');
+    return;
+  }
+  if (bonusDays < 1 || bonusDays > 365) {
+    toast('Бонус дней должен быть от 1 до 365', 'error');
+    return;
+  }
+
+  try {
+    const campaignData = {
+      code,
+      name,
+      source,
+      type,
+      creator,
+      cost,
+      bonus_days: bonusDays,
+      welcome_text: welcomeText,
+      note,
+      is_active: isActive,
+    };
+
+    const created = await sbInsert('campaigns', campaignData);
+    if (!state.campaigns) state.campaigns = [];
+    state.campaigns.unshift(created[0]);
+    
+    closeModal('campaignModal');
+    renderMarketing();
+    
+    const testUrl = `https://t.me/MaxArtVPN_bot?start=${code}`;
+    toast(`Кампания ${code} создана! Тестовая ссылка скопирована в буфер обмена`, 'success');
+    navigator.clipboard?.writeText(testUrl);
+    
+  } catch (e) {
+    toast('Ошибка создания кампании: ' + e.message, 'error');
+  }
+}
+
+function showCampaignDetails(campaignCode) {
+  // This would open a detailed sheet with campaign analytics
+  // For now, just copy the campaign URL
+  const testUrl = `https://t.me/MaxArtVPN_bot?start=${campaignCode}`;
+  navigator.clipboard?.writeText(testUrl);
+  toast(`UTM-ссылка ${campaignCode} скопирована в буфер обмена`);
 }
 

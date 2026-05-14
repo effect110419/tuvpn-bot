@@ -73,6 +73,11 @@
         <span>Промокоды</span>
         <span class="nav-count" id="navPromosCount">—</span>
       </div>
+      <div class="nav-item" data-page="marketing">
+        <span class="nav-ico"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="m19 10-7 7-7-7"/></svg></span>
+        <span>Маркетинг</span>
+        <span class="nav-kbd">G M</span>
+      </div>
       <div class="nav-item" data-page="referrals">
         <span class="nav-ico"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 7H7a5 5 0 0 0-5 5 5 5 0 0 0 5 5h10a5 5 0 0 0 5-5 5 5 0 0 0-5-5z"/><path d="M8 12h.01"/><path d="M16 12h.01"/></svg></span>
         <span>Рефералы</span>
@@ -141,6 +146,7 @@
       <div class="page" id="page-subs"></div>
       <div class="page" id="page-payments"></div>
       <div class="page" id="page-promos"></div>
+      <div class="page" id="page-marketing"></div>
       <div class="page" id="page-referrals"></div>
       <div class="page" id="page-tickets"></div>
       <div class="page" id="page-servers"></div>
@@ -425,6 +431,97 @@
         <button class="btn btn-primary" id="serverSubmit">Сохранить</button>
       </div>
     </div>
+  </div>
+</div>
+
+<!-- =========================================================
+     MODAL: Create Campaign
+     ========================================================= -->
+<div class="modal-bg" id="campaignModalBg"></div>
+<div class="modal" id="campaignModal">
+  <div class="modal-head">
+    <h3 id="campaignModalTitle">Новая кампания</h3>
+    <button class="icon-btn" data-close>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+    </button>
+  </div>
+  <div class="modal-body">
+    <div class="field-row">
+      <div class="field">
+        <label class="label">Код кампании*</label>
+        <input id="campCode" type="text" class="input mono" placeholder="vk_summer25" maxlength="50" required>
+        <span class="help-text">Slug для UTM-метки (a-z, 0-9, _, -)</span>
+      </div>
+      <div class="field">
+        <label class="label">Название*</label>
+        <input id="campName" type="text" class="input" placeholder="ВК / Летняя кампания 2025" maxlength="200" required>
+      </div>
+    </div>
+
+    <div class="field-row">
+      <div class="field">
+        <label class="label">Источник</label>
+        <select id="campSource" class="select">
+          <option value="vk">ВКонтакте</option>
+          <option value="instagram">Instagram</option>
+          <option value="telegram">Telegram</option>
+          <option value="youtube">YouTube</option>
+          <option value="direct">Direct</option>
+          <option value="other">Другое</option>
+        </select>
+      </div>
+      <div class="field">
+        <label class="label">Тип размещения</label>
+        <select id="campType" class="select">
+          <option value="post">Пост</option>
+          <option value="reels">Reels/Видео</option>
+          <option value="story">Story</option>
+          <option value="chat">Чат/Канал</option>
+          <option value="blogger">Блогер</option>
+          <option value="other">Другое</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="field-row">
+      <div class="field">
+        <label class="label">У кого купили</label>
+        <input id="campCreator" type="text" class="input" placeholder="Группа / Канал / Блогер" maxlength="200">
+      </div>
+      <div class="field">
+        <label class="label">Стоимость, ₽</label>
+        <input id="campCost" type="number" class="input mono" placeholder="5000" min="0" step="100">
+      </div>
+    </div>
+
+    <div class="field-row">
+      <div class="field">
+        <label class="label">Бонус дней</label>
+        <input id="campBonusDays" type="number" class="input mono" placeholder="7" min="1" max="365" value="7">
+        <span class="help-text">Сколько дней пробной подписки выдавать</span>
+      </div>
+      <div class="field" style="display:flex; align-items:flex-end; gap:10px">
+        <label class="toggle"><input type="checkbox" id="campActive" checked><span class="toggle-slider"></span></label>
+        <span style="font-size:13px; color:var(--fg-2)">Кампания активна</span>
+      </div>
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="field">
+      <label class="label">Welcome-текст (необязательно)</label>
+      <textarea id="campWelcome" class="textarea" placeholder="🎁 Привет! Видел нас в ВК? Лови 14 дней бесплатно!" rows="4" maxlength="1000"></textarea>
+      <span class="help-text">Кастомное приветствие в боте. Если пусто — будет стандартное</span>
+    </div>
+
+    <div class="field">
+      <label class="label">Заметки</label>
+      <textarea id="campNote" class="textarea" placeholder="Дополнительная информация о кампании" rows="2" maxlength="500"></textarea>
+    </div>
+  </div>
+  <div class="modal-foot">
+    <button class="btn btn-ghost" data-close>Отмена</button>
+    <button class="btn btn-primary" id="campaignSubmit">Создать кампанию</button>
   </div>
 </div>
 
