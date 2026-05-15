@@ -1,5 +1,7 @@
 import sys
 sys.path.insert(0, '/root')
+sys.path.insert(0, '/root/tuvpn')
+from server_installer import create_installation, start_installation_thread, REALITY_TARGET_CANDIDATES
 from flask import Flask, request, jsonify, Response
 import requests, json, uuid, base64
 import asyncio
@@ -879,6 +881,183 @@ def yookassa_webhook():
             app.logger.error(f"Ошибка выдачи подписки по {payment_id}: {e}")
 
     return jsonify({"ok": True}), 200
+
+
+
+# ──────────────────────────────────────────────────────────────────────
+# AUTO-INSTALL SERVER ENDPOINTS
+# ──────────────────────────────────────────────────────────────────────
+
+@app.route('/admin-api/install_server', methods=['POST', 'OPTIONS'])
+def install_server_start():
+    """Стартует автоматическую установку нового сервера.
+    Body JSON:
+      server_ip, ssh_password, country_name, country_flag, country_code, code_slug,
+      [ssh_port=22], [sort_order=99]
+    Returns: {success, install_uuid}
+    """
+    if request.method == 'OPTIONS':
+        resp = app.make_default_options_response()
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        resp.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+        resp.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+        return resp
+    try:
+        data = request.json or {}
+        required = ["server_ip", "ssh_password", "country_name", "country_flag", "country_code", "code_slug"]
+        missing = [f for f in required if not data.get(f)]
+        if missing:
+            return jsonify({"success": False, "error": f"missing fields: {missing}"}), 400
+
+        # Создаём запись в БД
+        install_uuid = create_installation(
+            sb_client=sb,
+            server_ip=data["server_ip"],
+            country_name=data["country_name"],
+            country_flag=data["country_flag"],
+            country_code=data["country_code"],
+            code_slug=data["code_slug"],
+            sort_order=int(data.get("sort_order") or 99),
+            ssh_port=int(data.get("ssh_port") or 22),
+        )
+
+        # Стартуем поток установки
+        start_installation_thread(
+            sb_client=sb,
+            install_uuid=install_uuid,
+            ssh_password=data["ssh_password"],
+            logger=app.logger,
+        )
+
+        resp = jsonify({"success": True, "install_uuid": install_uuid})
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        return resp
+    except Exception as e:
+        app.logger.error(f"install_server_start error: {e}")
+        resp = jsonify({"success": False, "error": str(e)})
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        return resp, 500
+
+
+@app.route('/admin-api/install_server/<install_uuid>/status', methods=['GET', 'OPTIONS'])
+def install_server_status(install_uuid):
+    """Возвращает текущее состояние установки.
+    Для polling фронтом каждые 1-2 сек.
+    """
+    if request.method == 'OPTIONS':
+        resp = app.make_default_options_response()
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        resp.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+        resp.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+        return resp
+    try:
+        r = sb.table("server_installations").select("*").eq("install_uuid", install_uuid).limit(1).execute()
+        if not r.data:
+            return jsonify({"success": False, "error": "not found"}), 404
+        row = r.data[0]
+        # Чувствительные поля не выводим целиком
+        # panel_password покажем только частично
+        if row.get("panel_password"):
+            pp = row["panel_password"]
+            row["panel_password_masked"] = pp[:3] + "***" + pp[-3:] if len(pp) > 6 else "***"
+        # private_key не выводим вообще
+        row.pop("private_key", None)
+
+        resp = jsonify({"success": True, "data": row})
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        return resp
+    except Exception as e:
+        app.logger.error(f"install_server_status error: {e}")
+        resp = jsonify({"success": False, "error": str(e)})
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        return resp, 500
+
+
+@app.route('/admin-api/install_server/<install_uuid>/select_target', methods=['POST', 'OPTIONS'])
+def install_server_select_target(install_uuid):
+    """Админ выбрал Reality target. Сохраняем выбор и перезапускаем поток установки.
+    Body JSON: { target: "chat.deepseek.com", ssh_password: "..." }
+    """
+    if request.method == 'OPTIONS':
+        resp = app.make_default_options_response()
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        resp.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+        resp.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+        return resp
+    try:
+        data = request.json or {}
+        target = data.get("target")
+        ssh_password = data.get("ssh_password")
+        if not target:
+            return jsonify({"success": False, "error": "target is required"}), 400
+        if not ssh_password:
+            return jsonify({"success": False, "error": "ssh_password is required for continuation"}), 400
+
+        # Проверяем что установка существует и в правильном статусе
+        r = sb.table("server_installations").select("*").eq("install_uuid", install_uuid).limit(1).execute()
+        if not r.data:
+            return jsonify({"success": False, "error": "installation not found"}), 404
+        row = r.data[0]
+        if row.get("status") != "awaiting_target":
+            return jsonify({"success": False, "error": f"wrong status: {row.get('status')}"}), 400
+
+        # Сохраняем выбор и перезапускаем установку
+        sb.table("server_installations").update({
+            "selected_target": target,
+            "status": "pending",
+        }).eq("install_uuid", install_uuid).execute()
+
+        start_installation_thread(
+            sb_client=sb,
+            install_uuid=install_uuid,
+            ssh_password=ssh_password,
+            logger=app.logger,
+        )
+
+        resp = jsonify({"success": True, "message": "Установка продолжена"})
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        return resp
+    except Exception as e:
+        app.logger.error(f"install_server_select_target error: {e}")
+        resp = jsonify({"success": False, "error": str(e)})
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        return resp, 500
+
+
+@app.route('/admin-api/installations', methods=['GET', 'OPTIONS'])
+def installations_list():
+    """Список последних установок (для отображения истории/активных)."""
+    if request.method == 'OPTIONS':
+        resp = app.make_default_options_response()
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        resp.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+        return resp
+    try:
+        r = sb.table("server_installations").select(
+            "id, install_uuid, server_ip, country_name, country_flag, code_slug, "
+            "status, current_step, progress_percent, error_message, "
+            "started_at, completed_at, final_server_id"
+        ).order("started_at", desc=True).limit(20).execute()
+        resp = jsonify({"success": True, "data": r.data or []})
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        return resp
+    except Exception as e:
+        resp = jsonify({"success": False, "error": str(e)})
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        return resp, 500
+
+
+@app.route('/admin-api/reality_target_candidates', methods=['GET', 'OPTIONS'])
+def reality_target_candidates():
+    """Возвращает справочный список Reality target кандидатов."""
+    if request.method == 'OPTIONS':
+        resp = app.make_default_options_response()
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        return resp
+    resp = jsonify({"success": True, "data": REALITY_TARGET_CANDIDATES})
+    resp.headers['Access-Control-Allow-Origin'] = '*'
+    return resp
+
 
 if __name__ == '__main__':
     import threading
