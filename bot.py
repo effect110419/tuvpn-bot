@@ -395,6 +395,47 @@ def main_menu():
 @dp.message(Command("start"))
 async def start(message: types.Message):
     args = message.text.split()
+
+    # === ADMIN LOGIN DEEPLINK ===
+    if len(args) > 1 and args[1].startswith("login_admin_"):
+        login_token = args[1][len("login_admin_"):]
+        tg_id = message.from_user.id
+        if tg_id not in ADMIN_TG_IDS:
+            await message.answer(
+                "❌ <b>Доступ к админке запрещён</b>\n\n"
+                "Ваш Telegram ID не находится в списке администраторов TuVPN.",
+                parse_mode="HTML",
+            )
+            return
+        # Проверим что попытка существует и pending
+        try:
+            r = sb.table("admin_login_attempts").select("status,expires_at").eq("login_token", login_token).limit(1).execute()
+            if not r.data:
+                await message.answer("❌ Сессия логина не найдена. Откройте админку и попробуйте снова.")
+                return
+            if r.data[0]["status"] != "pending":
+                await message.answer(f"⚠ Эта ссылка уже использована или истекла (status: {r.data[0]['status']}).")
+                return
+        except Exception as e:
+            logging.error(f"admin login lookup: {e}")
+            await message.answer(f"Ошибка БД: {e}")
+            return
+
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Подтвердить вход", callback_data=f"adm_login_confirm:{login_token}")],
+            [InlineKeyboardButton(text="❌ Это не я", callback_data=f"adm_login_cancel:{login_token}")],
+        ])
+        await message.answer(
+            "🔐 <b>Вход в админку TuVPN</b>\n\n"
+            "Кто-то запросил вход в админ-панель с вашим Telegram ID.\n"
+            "Если это вы — нажмите «Подтвердить вход».\n"
+            "Если нет — нажмите «Это не я».",
+            reply_markup=kb,
+            parse_mode="HTML",
+        )
+        return
+    # === END ADMIN LOGIN DEEPLINK ===
+
 # UTM campaigns: check string parameters
     campaign = None
     if len(args) > 1 and not args[1].isdigit():
@@ -1409,6 +1450,100 @@ async def profile(callback: types.CallbackQuery):
         reply_markup=kb
     )
     await callback.answer()
+
+
+
+
+# === ADMIN LOGIN HANDLER ===
+import secrets as _admin_secrets
+try:
+    from config import ADMIN_TG_IDS, ADMIN_SESSION_DAYS
+except ImportError:
+    ADMIN_TG_IDS = [784871620, 1027228622]
+    ADMIN_SESSION_DAYS = 7
+
+
+@dp.callback_query(lambda c: c.data and c.data.startswith("adm_login_confirm:"))
+async def cb_admin_login_confirm(call: types.CallbackQuery):
+    """Юзер нажал «Подтвердить вход в админку»."""
+    login_token = call.data.split(":", 1)[1]
+    tg_id = call.from_user.id
+
+    # Whitelist проверка
+    if tg_id not in ADMIN_TG_IDS:
+        await call.answer("❌ Доступ запрещён", show_alert=True)
+        return
+
+    # Проверяем что попытка ещё валидна
+    try:
+        r = sb.table("admin_login_attempts").select("*").eq("login_token", login_token).limit(1).execute()
+        if not r.data:
+            await call.answer("❌ Сессия логина не найдена", show_alert=True)
+            return
+        att = r.data[0]
+        if att["status"] != "pending":
+            await call.answer(f"⚠ Эта ссылка уже использована (status: {att['status']})", show_alert=True)
+            return
+        # Проверим истечение
+        try:
+            from datetime import datetime as _dt
+            exp = _dt.fromisoformat(att["expires_at"].replace("Z", "+00:00")).replace(tzinfo=None)
+            if exp <= _dt.utcnow():
+                sb.table("admin_login_attempts").update({"status": "expired"}).eq("login_token", login_token).execute()
+                await call.answer("⏱ Срок ссылки истёк, начните вход заново", show_alert=True)
+                return
+        except Exception:
+            pass
+
+        # Генерим session_token и создаём сессию
+        from datetime import datetime as _dt, timedelta as _td
+        session_token = _admin_secrets.token_urlsafe(48)
+        session_exp = _dt.utcnow() + _td(days=ADMIN_SESSION_DAYS)
+        sb.table("admin_sessions").insert({
+            "session_token": session_token,
+            "tg_id": tg_id,
+            "tg_username": call.from_user.username or "",
+            "expires_at": session_exp.isoformat(),
+            "ip_address": att.get("ip_address") or "",
+            "user_agent": att.get("user_agent") or "",
+        }).execute()
+
+        # Обновляем попытку логина
+        sb.table("admin_login_attempts").update({
+            "status": "confirmed",
+            "tg_id": tg_id,
+            "tg_username": call.from_user.username or "",
+            "session_token": session_token,
+            "confirmed_at": _dt.utcnow().isoformat(),
+        }).eq("login_token", login_token).execute()
+
+        await call.message.edit_text(
+            "✅ <b>Вход в админку подтверждён</b>\n\n"
+            "Вернитесь во вкладку браузера — админка откроется автоматически в течение пары секунд.\n\n"
+            f"🕐 Сессия действует {ADMIN_SESSION_DAYS} дней.",
+            parse_mode="HTML",
+        )
+        await call.answer("Вход подтверждён!")
+    except Exception as e:
+        logging.error(f"admin login confirm error: {e}")
+        await call.answer(f"Ошибка: {e}", show_alert=True)
+
+
+@dp.callback_query(lambda c: c.data and c.data.startswith("adm_login_cancel:"))
+async def cb_admin_login_cancel(call: types.CallbackQuery):
+    login_token = call.data.split(":", 1)[1]
+    try:
+        sb.table("admin_login_attempts").update({"status": "rejected"}).eq("login_token", login_token).execute()
+    except Exception:
+        pass
+    try:
+        await call.message.edit_text("❌ Вход отклонён. Если это не вы пытались войти — никаких действий не требуется.")
+    except Exception:
+        pass
+    await call.answer("Отклонено")
+
+
+# === END ADMIN LOGIN HANDLER ===
 
 
 if __name__ == "__main__":

@@ -13,15 +13,41 @@
 <!-- =========================================================
      LOGIN
      ========================================================= -->
-<div id="loginScreen" class="login-bg">
+<div id="loginScreen" class="login-bg show">
   <div class="login-box">
     <div class="brand-mark"></div>
     <h2>TuVPN Admin</h2>
-    <p>Введите пароль для доступа</p>
-    <input id="loginInput" type="password" class="input" placeholder="••••••" autocomplete="off">
-    <button class="btn btn-primary" id="loginBtn">Войти</button>
+    <p>Авторизация через Telegram</p>
+
+    <div id="loginIdle">
+      <button class="btn btn-primary" id="loginTgBtn" style="width:100%">
+        🤖 Войти через Telegram
+      </button>
+      <p class="help" style="margin-top:14px; text-align:center; font-size:13px; color:var(--fg-3)">
+        Только администраторы из whitelist смогут войти.<br>
+        Бот пришлёт запрос на подтверждение.
+      </p>
+    </div>
+
+    <div id="loginPending" style="display:none">
+      <div style="text-align:center; padding:20px 0">
+        <div class="spinner" style="margin:0 auto 16px; width:36px; height:36px; border:3px solid var(--bg-3); border-top-color:var(--accent); border-radius:50%; animation:spin 0.7s linear infinite"></div>
+        <p style="margin:0 0 8px">Откройте бота и подтвердите вход</p>
+        <a id="loginDeeplink" href="#" target="_blank" class="btn btn-ghost btn-sm" style="margin-top:8px">Открыть бота</a>
+        <p class="help" style="margin-top:12px; font-size:12px; color:var(--fg-3)">
+          Ожидаем подтверждения... <span id="loginCountdown">10:00</span>
+        </p>
+      </div>
+      <button class="btn btn-ghost btn-sm" id="loginCancelBtn" style="width:100%">Отмена</button>
+    </div>
+
+    <div id="loginError" style="display:none; margin-top:14px; padding:10px 14px; background:rgba(220,80,80,0.1); border:1px solid rgba(220,80,80,0.3); border-radius:8px; color:#ff8888; font-size:13px"></div>
   </div>
 </div>
+
+<style>
+@keyframes spin { to { transform: rotate(360deg); } }
+</style>
 
 <!-- =========================================================
      APP

@@ -19,9 +19,14 @@ from flask import make_response
 @app.after_request
 def add_cors_headers(response):
     if request.path.startswith('/admin-api/'):
-        response.headers['Access-Control-Allow-Origin'] = '*'
+        origin = request.headers.get('Origin', '')
+        # Allow конкретный origin (нужно для credentials/cookies)
+        if origin:
+            response.headers['Access-Control-Allow-Origin'] = origin
+            response.headers['Access-Control-Allow-Credentials'] = 'true'
+            response.headers['Vary'] = 'Origin'
         response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
-        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, Cookie'
         response.headers['Access-Control-Max-Age'] = '3600'
     return response
 
@@ -1271,6 +1276,227 @@ def reality_target_candidates():
     resp = jsonify({"success": True, "data": REALITY_TARGET_CANDIDATES})
     resp.headers['Access-Control-Allow-Origin'] = '*'
     return resp
+
+
+
+
+# === ADMIN AUTH BLOCK ===
+import secrets as _secrets
+
+try:
+    from config import ADMIN_TG_IDS, ADMIN_SESSION_DAYS, ADMIN_LOGIN_TOKEN_MINUTES
+except ImportError:
+    ADMIN_TG_IDS = [784871620, 1027228622]
+    ADMIN_SESSION_DAYS = 7
+    ADMIN_LOGIN_TOKEN_MINUTES = 10
+
+
+def _now_utc():
+    return datetime.utcnow()
+
+
+def _iso(dt):
+    return dt.isoformat()
+
+
+def _get_client_ip():
+    # Берём X-Forwarded-For если есть (nginx), иначе remote_addr
+    fwd = request.headers.get("X-Forwarded-For", "")
+    if fwd:
+        return fwd.split(",")[0].strip()
+    return request.remote_addr or ""
+
+
+def get_session_by_token(session_token: str):
+    """Вернуть валидную (не отозванную, не истёкшую) сессию или None."""
+    if not session_token:
+        return None
+    try:
+        r = sb.table("admin_sessions").select("*").eq("session_token", session_token).limit(1).execute()
+        if not r.data:
+            return None
+        s = r.data[0]
+        if s.get("is_revoked"):
+            return None
+        exp_raw = s.get("expires_at")
+        try:
+            exp = datetime.fromisoformat(exp_raw.replace("Z", "+00:00")).replace(tzinfo=None)
+        except Exception:
+            return None
+        if exp <= _now_utc():
+            return None
+        # Проверяем что tg_id всё ещё в whitelist (если убрали из конфига — выкидываем)
+        if int(s.get("tg_id") or 0) not in ADMIN_TG_IDS:
+            return None
+        return s
+    except Exception as e:
+        print(f"get_session_by_token error: {e}")
+        return None
+
+
+def touch_session(session_id: int):
+    """Обновляет last_used_at."""
+    try:
+        sb.table("admin_sessions").update({"last_used_at": _iso(_now_utc())}).eq("id", session_id).execute()
+    except Exception:
+        pass
+
+
+# --- Middleware: на все /admin-api/* требуем cookie, кроме /auth/* и OPTIONS ---
+@app.before_request
+def _admin_auth_gate():
+    p = request.path or ""
+    if not p.startswith("/admin-api/"):
+        return None
+    if request.method == "OPTIONS":
+        return None
+    # Auth endpoints — без проверки
+    if p.startswith("/admin-api/auth/"):
+        return None
+    # Дальше проверка cookie
+    token = request.cookies.get("admin_session")
+    s = get_session_by_token(token)
+    if not s:
+        resp = jsonify({"success": False, "error": "unauthorized", "code": "AUTH_REQUIRED"})
+        resp.status_code = 401
+        resp.headers["Access-Control-Allow-Origin"] = request.headers.get("Origin", "*")
+        resp.headers["Access-Control-Allow-Credentials"] = "true"
+        return resp
+    touch_session(s["id"])
+    # Прокидываем в request для возможного логирования
+    request.admin_tg_id = int(s.get("tg_id"))
+    request.admin_username = s.get("tg_username") or ""
+    return None
+
+
+# --- /admin-api/auth/start ---
+@app.route("/admin-api/auth/start", methods=["POST", "OPTIONS"])
+def auth_start():
+    if request.method == "OPTIONS":
+        return make_response("", 204)
+    login_token = _secrets.token_urlsafe(32)
+    expires_at = _now_utc() + timedelta(minutes=ADMIN_LOGIN_TOKEN_MINUTES)
+    try:
+        sb.table("admin_login_attempts").insert({
+            "login_token": login_token,
+            "status": "pending",
+            "expires_at": _iso(expires_at),
+            "ip_address": _get_client_ip(),
+            "user_agent": (request.headers.get("User-Agent") or "")[:500],
+        }).execute()
+    except Exception as e:
+        return jsonify({"success": False, "error": f"db: {e}"}), 500
+
+    # Готовим deeplink в бот
+    try:
+        from config import MAIN_BOT_USERNAME
+    except Exception:
+        MAIN_BOT_USERNAME = "MaxArtVPN_bot"
+    deeplink = f"https://t.me/{MAIN_BOT_USERNAME}?start=login_admin_{login_token}"
+
+    return jsonify({
+        "success": True,
+        "login_token": login_token,
+        "deeplink": deeplink,
+        "expires_in_minutes": ADMIN_LOGIN_TOKEN_MINUTES,
+    })
+
+
+# --- /admin-api/auth/poll ---
+@app.route("/admin-api/auth/poll", methods=["GET", "OPTIONS"])
+def auth_poll():
+    """Опрашивается фронтом каждые 2 сек. Если бот подтвердил вход — выдаём cookie."""
+    if request.method == "OPTIONS":
+        return make_response("", 204)
+    token = request.args.get("token") or ""
+    if not token:
+        return jsonify({"success": False, "error": "token required"}), 400
+    try:
+        r = sb.table("admin_login_attempts").select("*").eq("login_token", token).limit(1).execute()
+        if not r.data:
+            return jsonify({"success": False, "status": "not_found"}), 404
+        att = r.data[0]
+        # Проверим истечение
+        try:
+            exp = datetime.fromisoformat(att["expires_at"].replace("Z", "+00:00")).replace(tzinfo=None)
+        except Exception:
+            exp = _now_utc()
+        if att["status"] == "pending" and exp <= _now_utc():
+            sb.table("admin_login_attempts").update({"status": "expired"}).eq("login_token", token).execute()
+            return jsonify({"success": False, "status": "expired"})
+
+        if att["status"] == "pending":
+            return jsonify({"success": True, "status": "pending"})
+
+        if att["status"] == "rejected":
+            return jsonify({"success": False, "status": "rejected"})
+
+        if att["status"] != "confirmed":
+            return jsonify({"success": False, "status": att["status"]})
+
+        # confirmed → выдаём cookie
+        session_token = att.get("session_token")
+        if not session_token:
+            return jsonify({"success": False, "error": "no session_token in attempt"}), 500
+
+        resp = make_response(jsonify({
+            "success": True,
+            "status": "confirmed",
+            "tg_id": att.get("tg_id"),
+            "tg_username": att.get("tg_username"),
+        }))
+        # Cookie на ADMIN_SESSION_DAYS дней, HttpOnly, Secure (через https), SameSite=Lax
+        max_age = ADMIN_SESSION_DAYS * 86400
+        resp.set_cookie(
+            "admin_session",
+            session_token,
+            max_age=max_age,
+            httponly=True,
+            secure=True,
+            samesite="Lax",
+            path="/",
+        )
+        return resp
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# --- /admin-api/auth/me ---
+@app.route("/admin-api/auth/me", methods=["GET", "OPTIONS"])
+def auth_me():
+    if request.method == "OPTIONS":
+        return make_response("", 204)
+    token = request.cookies.get("admin_session")
+    s = get_session_by_token(token)
+    if not s:
+        return jsonify({"success": False, "error": "not_authenticated"}), 401
+    return jsonify({
+        "success": True,
+        "tg_id": s.get("tg_id"),
+        "tg_username": s.get("tg_username"),
+        "created_at": s.get("created_at"),
+        "expires_at": s.get("expires_at"),
+    })
+
+
+# --- /admin-api/auth/logout ---
+@app.route("/admin-api/auth/logout", methods=["POST", "OPTIONS"])
+def auth_logout():
+    if request.method == "OPTIONS":
+        return make_response("", 204)
+    token = request.cookies.get("admin_session")
+    if token:
+        try:
+            sb.table("admin_sessions").update({"is_revoked": True}).eq("session_token", token).execute()
+        except Exception:
+            pass
+    resp = make_response(jsonify({"success": True}))
+    resp.set_cookie("admin_session", "", max_age=0, path="/")
+    return resp
+
+
+# === END ADMIN AUTH BLOCK ===
+
 
 
 if __name__ == '__main__':

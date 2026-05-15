@@ -171,43 +171,182 @@ async function sbDelete(table, filter) {
 async function proxy(path, opts = {}) {
   const r = await fetch(PROXY_URL + path, {
     headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
     ...opts,
   });
+  if (r.status === 401) {
+    // Сессия истекла — на экран логина
+    showLogin();
+    return { success: false, error: 'unauthorized' };
+  }
   return r.json();
 }
 
-/* ===================== AUTH ===================== */
-function getStoredPass() { return localStorage.getItem('tuvpn_admin_pass') || DEFAULT_PASS; }
-function isLoggedIn() { return localStorage.getItem('tuvpn_admin_session') === '1'; }
-function doLogin() {
-  const v = $('#loginInput').value;
-  if (v === getStoredPass()) {
-    localStorage.setItem('tuvpn_admin_session', '1');
-    showApp();
-  } else {
-    toast('Неверный пароль', 'error');
-    $('#loginInput').value = '';
+/* ===================== AUTH (Telegram) ===================== */
+// === TG ADMIN AUTH ===
+let _tgLoginToken = null;
+let _tgPollTimer = null;
+let _tgCountdownTimer = null;
+let _tgExpiresAt = null;
+
+async function checkAuth() {
+  try {
+    const r = await fetch(PROXY_URL + '/admin-api/auth/me', {
+      credentials: 'include',
+    });
+    if (r.status === 200) {
+      const data = await r.json();
+      if (data.success) return data;
+    }
+  } catch (e) {}
+  return null;
+}
+
+async function startTgLogin() {
+  hideLoginError();
+  try {
+    const r = await fetch(PROXY_URL + '/admin-api/auth/start', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    const data = await r.json();
+    if (!data.success) {
+      showLoginError(data.error || 'Не удалось начать вход');
+      return;
+    }
+    _tgLoginToken = data.login_token;
+    _tgExpiresAt = Date.now() + (data.expires_in_minutes || 10) * 60 * 1000;
+
+    // Переключаем UI
+    $('#loginIdle').style.display = 'none';
+    $('#loginPending').style.display = 'block';
+    const dl = $('#loginDeeplink');
+    dl.href = data.deeplink;
+    // Открываем deeplink сразу
+    window.open(data.deeplink, '_blank');
+
+    // Стартуем polling
+    startPollLoop();
+    startCountdown();
+  } catch (e) {
+    showLoginError('Ошибка сети: ' + e.message);
   }
 }
-function doLogout() {
+
+function startPollLoop() {
+  stopPollLoop();
+  _tgPollTimer = setInterval(pollOnce, 2000);
+}
+
+function stopPollLoop() {
+  if (_tgPollTimer) {
+    clearInterval(_tgPollTimer);
+    _tgPollTimer = null;
+  }
+}
+
+async function pollOnce() {
+  if (!_tgLoginToken) return;
+  try {
+    const r = await fetch(PROXY_URL + '/admin-api/auth/poll?token=' + encodeURIComponent(_tgLoginToken), {
+      credentials: 'include',
+    });
+    const data = await r.json();
+    if (data.status === 'confirmed') {
+      stopPollLoop();
+      stopCountdown();
+      showApp();
+      return;
+    }
+    if (data.status === 'rejected') {
+      stopPollLoop();
+      stopCountdown();
+      cancelTgLogin();
+      showLoginError('Вход отклонён');
+      return;
+    }
+    if (data.status === 'expired' || data.status === 'not_found') {
+      stopPollLoop();
+      stopCountdown();
+      cancelTgLogin();
+      showLoginError('Срок ссылки истёк. Попробуйте снова.');
+      return;
+    }
+    // pending — продолжаем
+  } catch (e) {
+    // молча — следующий поллинг попробует ещё раз
+  }
+}
+
+function startCountdown() {
+  stopCountdown();
+  _tgCountdownTimer = setInterval(() => {
+    const ms = _tgExpiresAt - Date.now();
+    if (ms <= 0) {
+      stopCountdown();
+      $('#loginCountdown').textContent = '0:00';
+      return;
+    }
+    const sec = Math.floor(ms / 1000);
+    const mm = Math.floor(sec / 60);
+    const ss = sec % 60;
+    $('#loginCountdown').textContent = `${mm}:${String(ss).padStart(2, '0')}`;
+  }, 500);
+}
+
+function stopCountdown() {
+  if (_tgCountdownTimer) {
+    clearInterval(_tgCountdownTimer);
+    _tgCountdownTimer = null;
+  }
+}
+
+function cancelTgLogin() {
+  stopPollLoop();
+  stopCountdown();
+  _tgLoginToken = null;
+  $('#loginIdle').style.display = 'block';
+  $('#loginPending').style.display = 'none';
+}
+
+function showLoginError(msg) {
+  const el = $('#loginError');
+  if (!el) return;
+  el.textContent = msg;
+  el.style.display = 'block';
+}
+function hideLoginError() {
+  const el = $('#loginError');
+  if (el) el.style.display = 'none';
+}
+
+async function doLogout() {
   if (!confirm('Выйти из админки?')) return;
-  localStorage.removeItem('tuvpn_admin_session');
+  try {
+    await fetch(PROXY_URL + '/admin-api/auth/logout', {
+      method: 'POST',
+      credentials: 'include',
+    });
+  } catch (e) {}
   location.reload();
 }
-function changePass() {
-  const o = $('#oldPass').value;
-  const n = $('#newPass').value;
-  if (o !== getStoredPass()) { toast('Текущий пароль неверный', 'error'); return; }
-  if (!n || n.length < 4) { toast('Новый пароль слишком короткий', 'error'); return; }
-  localStorage.setItem('tuvpn_admin_pass', n);
-  $('#oldPass').value = ''; $('#newPass').value = '';
-  toast('Пароль обновлён', 'success');
-}
+
 function showApp() {
   $('#loginScreen').classList.remove('show');
+  $('#loginScreen').style.display = 'none';
   $('#app').style.display = 'flex';
   loadAll();
 }
+
+function showLogin() {
+  $('#loginScreen').style.display = 'flex';
+  $('#loginScreen').classList.add('show');
+  $('#app').style.display = 'none';
+  cancelTgLogin();
+}
+
+// === END TG ADMIN AUTH ===
 
 /* ===================== DATA LOAD ===================== */
 async function loadAll() {
@@ -562,8 +701,8 @@ function sparkline(svg, values, color = '#5b8def') {
 /* ===================== BOOT ===================== */
 document.addEventListener('DOMContentLoaded', () => {
   // Login
-  $('#loginBtn').addEventListener('click', doLogin);
-  $('#loginInput').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+  const ltb = $('#loginTgBtn'); if (ltb) ltb.addEventListener('click', startTgLogin);
+  const lcb = $('#loginCancelBtn'); if (lcb) lcb.addEventListener('click', cancelTgLogin);
 
   // Sidebar nav
   $$('.nav-item').forEach(n => n.addEventListener('click', () => goPage(n.dataset.page)));
@@ -600,8 +739,7 @@ document.addEventListener('DOMContentLoaded', () => {
   $('#campaignSubmit').addEventListener('click', saveCampaign);
 
   // Boot
-  if (isLoggedIn()) showApp();
-  else $('#loginScreen').classList.add('show');
+  checkAuth().then(s => { if (s) showApp(); else showLogin(); });
 });
 
 /* =====================================================================
