@@ -371,6 +371,125 @@ def subscription(client_uuid):
     return Response(body, headers=headers)
 
 
+
+
+# === SERVER SYNC (backfill clients) ===
+def get_server_by_id(server_id: int):
+    """Получить сервер из Supabase по id (возвращает dict или None)."""
+    try:
+        r = sb.table("servers").select("*").eq("id", server_id).limit(1).execute()
+        return r.data[0] if r.data else None
+    except Exception as e:
+        print(f"get_server_by_id error: {e}")
+        return None
+
+
+def backfill_server_clients(server: dict) -> dict:
+    """
+    Раскатать все активные подписки на указанный сервер.
+    Использует xui_update_client_on_server (он же делает fallback на add).
+    Возвращает {"total": N, "ok": K, "failed": F, "failures": [...]}.
+    """
+    code = server.get("code") or server.get("country_name") or f"id={server.get('id')}"
+    print(f"[sync] Backfill начат для {code}")
+
+    # Все активные подписки
+    try:
+        subs_r = sb.table("subscriptions").select("user_id,devices,sub_url,expires_at").eq("status", "active").execute()
+        subs = subs_r.data or []
+    except Exception as e:
+        return {"total": 0, "ok": 0, "failed": 0, "failures": [], "error": f"db: {e}"}
+
+    total = len(subs)
+    ok = 0
+    failed = 0
+    failures = []
+    now = datetime.utcnow()
+
+    for sub in subs:
+        try:
+            url = sub.get("sub_url") or ""
+            if "/sub/" not in url:
+                failed += 1
+                failures.append({"user_id": sub.get("user_id"), "error": "no uuid in sub_url"})
+                continue
+            client_uuid = url.split("/sub/")[-1].strip()
+            uid = int(sub["user_id"])
+            devices = int(sub.get("devices") or 1)
+
+            # expires_at → ms
+            exp_raw = sub.get("expires_at")
+            try:
+                exp_dt = datetime.fromisoformat(exp_raw.replace("Z", "+00:00")).replace(tzinfo=None) if exp_raw else (now + timedelta(days=30))
+            except Exception:
+                exp_dt = now + timedelta(days=30)
+            if exp_dt <= now:
+                # уже истекла — пропустим, не имеет смысла раскатывать
+                failed += 1
+                failures.append({"user_id": uid, "error": "subscription expired"})
+                continue
+            expire_ms = int(exp_dt.timestamp() * 1000)
+
+            success = xui_update_client_on_server(server, client_uuid, uid, devices, expire_ms)
+            if success:
+                ok += 1
+            else:
+                failed += 1
+                failures.append({"user_id": uid, "uuid": client_uuid[:8], "error": "xui rejected"})
+        except Exception as e:
+            failed += 1
+            failures.append({"user_id": sub.get("user_id"), "error": str(e)})
+
+    print(f"[sync] Backfill {code}: {ok}/{total} OK, {failed} failed")
+    return {"total": total, "ok": ok, "failed": failed, "failures": failures[:20]}
+
+
+@app.route('/admin-api/servers/<int:server_id>/sync', methods=['POST', 'OPTIONS'])
+def admin_sync_server(server_id):
+    """Синхронизировать один сервер (раскатать все активные подписки на нём)."""
+    if request.method == 'OPTIONS':
+        return make_response('', 204)
+    server = get_server_by_id(server_id)
+    if not server:
+        return jsonify({"success": False, "error": "server not found"}), 404
+    if not server.get("is_active"):
+        return jsonify({"success": False, "error": "server is not active"}), 400
+    try:
+        result = backfill_server_clients(server)
+        return jsonify({"success": True, "server_id": server_id, "code": server.get("code"), **result})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/admin-api/servers/sync_all', methods=['POST', 'OPTIONS'])
+def admin_sync_all_servers():
+    """Синхронизировать все активные серверы."""
+    if request.method == 'OPTIONS':
+        return make_response('', 204)
+    servers = get_active_servers()
+    if not servers:
+        return jsonify({"success": False, "error": "no active servers"}), 400
+    per_server = []
+    for s in servers:
+        try:
+            res = backfill_server_clients(s)
+            per_server.append({
+                "server_id": s["id"],
+                "code": s.get("code"),
+                "country_name": s.get("country_name"),
+                **res,
+            })
+        except Exception as e:
+            per_server.append({
+                "server_id": s["id"],
+                "code": s.get("code"),
+                "error": str(e),
+            })
+    return jsonify({"success": True, "servers": per_server})
+
+
+# === END SERVER SYNC ===
+
 def issue_subscription(uid: int, devices: int, days: int) -> dict:
     """Выдать/продлить подписку на всех активных серверах.
     - Если есть активная подписка — продлевает с тем же UUID
@@ -555,8 +674,58 @@ def servers_api():
                 "created_at": datetime.utcnow().isoformat()
             }
             
-            sb.table('servers').insert(new_server).execute()
-            return jsonify({"success": True, "message": "Сервер добавлен"})
+            ins = sb.table('servers').insert(new_server).execute()
+
+            
+            new_id = ins.data[0]['id'] if ins.data else None
+
+            
+            # === AUTO-SYNC ON CREATE ===
+
+            
+            sync_started = False
+
+            
+            if new_id and new_server.get('is_active'):
+
+            
+                try:
+
+            
+                    created_server = get_server_by_id(new_id)
+
+            
+                    if created_server:
+
+            
+                        threading.Thread(
+
+            
+                            target=backfill_server_clients,
+
+            
+                            args=(created_server,),
+
+            
+                            daemon=True,
+
+            
+                        ).start()
+
+            
+                        sync_started = True
+
+            
+                        print(f'[auto-sync] backfill стартовал для нового сервера id={new_id}')
+
+            
+                except Exception as _e:
+
+            
+                    print(f'[auto-sync] failed to start on POST: {_e}')
+
+            
+            return jsonify({'success': True, 'message': 'Сервер добавлен', 'id': new_id, 'sync_started': sync_started})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
@@ -575,9 +744,54 @@ def server_edit(server_id):
                 if field in data:
                     update_data[field] = data[field]
             update_data['updated_at'] = datetime.utcnow().isoformat()
-            
+
+            # === AUTO-SYNC ON ENABLE ===
+
+            need_sync = False
+
+            try:
+
+                if data.get('is_active'):
+
+                    cur = sb.table('servers').select('is_active').eq('id', server_id).limit(1).execute()
+
+                    was_active = bool(cur.data[0].get('is_active')) if cur.data else False
+
+                    if not was_active:
+
+                        need_sync = True
+
+            except Exception:
+
+                pass
+
             sb.table('servers').update(update_data).eq('id', server_id).execute()
-            return jsonify({"success": True, "message": "Сервер обновлён"})
+
+            if need_sync:
+
+                try:
+
+                    srv = get_server_by_id(int(server_id))
+
+                    if srv:
+
+                        threading.Thread(
+
+                            target=backfill_server_clients,
+
+                            args=(srv,),
+
+                            daemon=True,
+
+                        ).start()
+
+                        print(f'[auto-sync] backfill стартовал после активации сервера id={server_id}')
+
+                except Exception as _e:
+
+                    print(f'[auto-sync] failed to start on PUT: {_e}')
+
+            return jsonify({'success': True, 'message': 'Сервер обновлён', 'sync_started': need_sync})
         
         if request.method == 'DELETE':
             sb.table('servers').delete().eq('id', server_id).execute()

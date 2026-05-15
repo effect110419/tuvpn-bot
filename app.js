@@ -1628,6 +1628,7 @@ function renderServers() {
     <div class="toolbar">
       <span class="counter">Каждая новая подписка автоматически создаётся на всех активных серверах.</span>
       <div class="toolbar-grow"></div>
+      <button class="btn btn-ghost btn-sm" id="syncAllBtn">${ICONS.refresh} Синхр. все</button>
       <button class="btn btn-ghost btn-sm" id="recheckAllBtn">${ICONS.refresh} Проверить все</button>
       <button class="btn btn-primary btn-sm" id="addServerBtn">${ICONS.plus} Добавить сервер <span class="kbd-hint">N</span></button>
     </div>
@@ -1651,6 +1652,7 @@ function renderServers() {
   renderServerGrid();
   $('#addServerBtn').addEventListener('click', () => openServerModal());
   $('#recheckAllBtn').addEventListener('click', recheckAllServers);
+  const sab = $('#syncAllBtn'); if (sab) sab.addEventListener('click', syncAllServers);
 }
 
 function renderServerGrid() {
@@ -1702,6 +1704,7 @@ function renderServerGrid() {
 
       <div class="srv-foot">
         <button class="btn btn-ghost btn-sm" data-act="check">${ICONS.refresh} Проверить</button>
+          <button class="btn btn-ghost btn-sm" data-act="sync">${ICONS.refresh} Синхр.</button>
         <div class="srv-acts">
           <button class="btn btn-ghost btn-sm btn-icon" data-act="edit" title="Редактировать">${ICONS.edit}</button>
         </div>
@@ -1714,6 +1717,7 @@ function renderServerGrid() {
     const sid = card.dataset.sid;
     card.querySelector('[data-act="toggle"]').addEventListener('change', e => toggleServerActive(sid, e.target.checked));
     card.querySelector('[data-act="check"]').addEventListener('click', () => checkServer(sid));
+    const sb = card.querySelector('[data-act="sync"]'); if (sb) sb.addEventListener('click', () => syncServer(sid));
     card.querySelector('[data-act="edit"]').addEventListener('click', () => openServerModal(sid));
   });
 }
@@ -1846,6 +1850,48 @@ async function toggleServerActive(sid, val) {
     if (s) s.is_active = val;
     renderServerGrid(); renderNavCounts();
     toast(val ? 'Сервер активирован' : 'Сервер отключён');
+  } catch (e) {
+    toast('Ошибка: ' + e.message, 'error');
+  }
+}
+
+
+async function syncServer(sid) {
+  const s = state.servers.find(x => String(x.id) === String(sid));
+  if (!s) return;
+  if (!confirm(`Синхронизировать ${s.country_flag || ''} ${s.country_name}?\n\nНа этот сервер будут добавлены все активные подписки, которых там ещё нет. Существующие — обновлены (срок действия).`)) return;
+
+  toast('Синхронизация запущена...');
+  try {
+    const r = await proxy(`/admin-api/servers/${sid}/sync`, { method: 'POST' });
+    if (r.success) {
+      toast(`${s.country_flag || ''} ${s.country_name}: ${r.ok}/${r.total} подписок развёрнуто${r.failed ? `, ошибок: ${r.failed}` : ''}`);
+      if (r.failed && r.failures && r.failures.length) {
+        console.warn('Sync failures:', r.failures);
+      }
+    } else {
+      toast('Ошибка: ' + (r.error || 'unknown'), 'error');
+    }
+  } catch (e) {
+    toast('Ошибка: ' + e.message, 'error');
+  }
+}
+
+async function syncAllServers() {
+  if (!confirm('Синхронизировать все активные серверы?\n\nНа каждый сервер будут раскатаны все активные подписки. Это может занять минуту.')) return;
+  toast('Синхронизация всех серверов...');
+  try {
+    const r = await proxy('/admin-api/servers/sync_all', { method: 'POST' });
+    if (r.success) {
+      const lines = (r.servers || []).map(x => {
+        if (x.error) return `${x.code}: ошибка (${x.error})`;
+        return `${x.code}: ${x.ok}/${x.total}${x.failed ? `, fail ${x.failed}` : ''}`;
+      });
+      toast(lines.join(' · '));
+      console.log('Sync all result:', r);
+    } else {
+      toast('Ошибка: ' + (r.error || 'unknown'), 'error');
+    }
   } catch (e) {
     toast('Ошибка: ' + e.message, 'error');
   }
