@@ -451,20 +451,50 @@ async def start(message: types.Message):
 
     is_new = register_user(user_id, message.from_user.username,
                            first_name, message.from_user.last_name, referrer_id)
-# UTM: process new user from campaign
+# === UTM FIX 2026-05 === — process new user from campaign
     if is_new and campaign:
         try:
             sb.table("users").update({"campaign_code": campaign["code"]}).eq("user_id", user_id).execute()
-            sb.table("campaign_clicks").insert({"campaign_code": campaign["code"], "user_id": user_id, "is_new_user": True}).execute()
-            bonus_days = int(campaign.get("bonus_days", 7))
-            client_uuid, sub_url = await xui_add_client(user_id, 1, bonus_days)
-            if client_uuid:
-                create_db_subscription(user_id, 1, bonus_days, client_uuid, sub_url)
-            welcome = campaign.get("welcome_text", f"🎁 Welcome! {bonus_days} days free trial! 🚀")
-            await message.answer(welcome, reply_markup=main_menu())
+            sb.table("campaign_clicks").insert({
+                "campaign_code": campaign["code"],
+                "user_id": user_id,
+                "is_new_user": True,
+            }).execute()
+            bonus_days = int(campaign.get("bonus_days") or 7)
+
+            # UTM v2 — direct issue_subscription call (без HTTP, без admin auth)
+            try:
+                from proxy import issue_subscription as _issue
+                _res = _issue(user_id, 1, bonus_days)
+                logging.info(f"UTM issue_subscription for {user_id}: {_res}")
+            except Exception as ge:
+                logging.error(f"UTM issue_subscription failed: {ge}")
+
+            # welcome — с дефолтом если null/пусто
+            welcome = (campaign.get("welcome_text") or "").strip()
+            if not welcome:
+                welcome = (
+                    f"🎁 <b>Добро пожаловать{', ' + first_name if first_name else ''}!</b>\n\n"
+                    f"Спасибо что перешёл по ссылке — мы дарим тебе "
+                    f"<b>{bonus_days} дней бесплатного доступа</b> к TuVPN 🚀\n\n"
+                    f"✅ Подписка уже активна\n"
+                    f"📱 Доступно: 1 устройство\n\n"
+                    f"Открой «🔌 Подключиться» в меню ниже."
+                )
+            await message.answer(welcome, reply_markup=main_menu(), parse_mode="HTML")
             return
         except Exception as e:
             logging.error(f"UTM processing: {e}")
+            # Не падаем молча — отвечаем юзеру дефолтным сообщением
+            try:
+                await message.answer(
+                    f"🎁 Добро пожаловать{', ' + first_name if first_name else ''}!\n\n"
+                    f"Спасибо что перешёл к нам. Открой меню и оформи подписку.",
+                    reply_markup=main_menu()
+                )
+            except Exception:
+                pass
+            return
 
     if is_new and referrer_id and referrer_id != user_id:
         try:
@@ -570,7 +600,7 @@ async def connect(callback: types.CallbackQuery):
             ])
             text = (
                 f"🔌 <b>Подключение к TuVPN</b>\n\n"
-                f"⚠️ Ваша подписка <b>истекла</b> {exp.strftime('%d.%m.%Y')}\n\n"
+                f"⚠️ Ваша подписка <b>истекла</b>\n\n"
                 f"Продлите её — и сразу сможете пользоваться."
             )
     else:
