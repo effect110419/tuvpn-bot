@@ -88,7 +88,7 @@ DIRECT_DOMAINS = [
     # T2 Mobile (бывший Tele2)
     # T2 EXPLICIT SUBDOMAINS
     "domain:t2.ru", "domain:tele2.ru",
-    "domain:auth.t2.ru", "domain:appseller.tele2.ru",
+    "domain:auth.t2.ru", "domain:appseller.t2.ru", "domain:appseller.tele2.ru",
     "domain:lk.t2.ru", "domain:msk.t2.ru",
     # Фастфуд / доставка
     "domain:rostics.ru", "domain:burgerkingrus.ru",

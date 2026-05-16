@@ -115,7 +115,7 @@ def _build_outbounds(server: dict, client_uuid: str) -> list:
         },
         {"tag": "direct", "protocol": "freedom"},
         {"tag": "block", "protocol": "blackhole"},
-        {"tag": "dns-out", "protocol": "dns", "proxySettings": {"tag": "proxy"}},
+        {"tag": "dns-out", "protocol": "dns"},  # === DNS/ROUTING FIX 2026-05 === — DNS напрямую, не через VPN
     ]
 
 
@@ -144,7 +144,15 @@ def _build_routing() -> dict:
     # 8. DIRECT — приватные/локальные IP
     if DIRECT_GEOIP:
         rules.append({"outboundTag": "direct", "ip": DIRECT_GEOIP})
-    return {"domainStrategy": "IPIfNonMatch", "rules": rules}
+    # === DNS/ROUTING FIX 2026-05 === — catch-all + AsIs strategy
+    # Catch-all для всего что не попало в правила выше — отправляем через VPN.
+    # Это безопасный дефолт: если новое неизвестное приложение — лучше пусть
+    # идёт через VPN (мы скорее блок обходим, чем выпускаем зарубежный трафик).
+    rules.append({"outboundTag": "proxy", "network": "tcp,udp"})
+    # domainStrategy AsIs: матчим только по домену, не резолвим в IP.
+    # Это критично для российских сервисов — иначе домен резолвится через
+    # сервер (видит VPN IP) и сматчивается в proxy по geoip.
+    return {"domainStrategy": "AsIs", "rules": rules}
 
 
 def _build_policy() -> dict:
