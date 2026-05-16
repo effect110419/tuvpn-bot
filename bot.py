@@ -912,7 +912,22 @@ async def process_email(message: types.Message, state: FSMContext):
 
 @dp.callback_query(lambda c: c.data == "channel")
 async def channel(callback: types.CallbackQuery):
-    await callback.answer("📣 Наш канал появится совсем скоро!", show_alert=True)
+    # === CHANNEL UPDATED ===
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📣 Открыть канал", url="https://t.me/tuvpn_news")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="back")],
+    ])
+    await callback.message.answer(
+        "📣 <b>Канал TuVPN — Новости</b>\n\n"
+        "Здесь мы публикуем:\n"
+        "• Обновления сервиса (новые страны, фичи)\n"
+        "• Полезное про VPN, обход блокировок\n"
+        "• Промокоды для подписчиков\n"
+        "• Технические анонсы\n\n"
+        "Подпишись — будешь в курсе всех новинок 🚀",
+        reply_markup=kb,
+    )
+    await callback.answer()
 
 @dp.callback_query(lambda c: c.data == "about")
 async def about(callback: types.CallbackQuery):
@@ -923,7 +938,7 @@ async def about(callback: types.CallbackQuery):
         "━━━━━━━━━━━━━━━━\n\n"
         "💎 ПОЧЕМУ TUVPN:\n"
         "🏎 Скорость → Без тормозов и просадок\n"
-        "🌍 Серверы: Финляндия 🇫🇮\n"
+        "🌍 Серверы: Финляндия 🇫🇮 · Нидерланды 🇳🇱 · Германия 🇩🇪\n"
         "👁 Без логов → Мы не следим за тобой\n"
         "📲 Устройства → Android, iPhone, ПК\n"
         "🎬 Контент → YouTube, Instagram без ограничений\n"
@@ -936,6 +951,8 @@ async def about(callback: types.CallbackQuery):
         "▪️ Данные не хранятся\n"
         "▪️ Соединение защищено\n\n"
         "━━━━━━━━━━━━━━━━\n"
+        "📣 Канал с новостями: @tuvpn_news\n"
+        "💬 Поддержка: @TuVPNSupport_bot\n\n"
         "🌊 TuVPN — свободный интернет для всех! 🚀",
         reply_markup=kb
     )

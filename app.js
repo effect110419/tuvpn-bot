@@ -3,17 +3,7 @@
    ===================================================================== */
 
 /* ===================== CONFIG ===================== */
-const SUPABASE_URL = 'https://avjvojscvmsdzllaeise.supabase.co';
-const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF2anZvanNjdm1zZHpsbGFlaXNlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc5OTMyODYsImV4cCI6MjA5MzU2OTI4Nn0.vgXKUWmLOj4XRltygxtBjWvUD4pVRd8C1nQtagzJAV0';
 const PROXY_URL = 'https://admin.tuvpn.ru';
-const DEFAULT_PASS = '110419';
-
-const SB_HEADERS = {
-  apikey: SUPABASE_KEY,
-  Authorization: 'Bearer ' + SUPABASE_KEY,
-  'Content-Type': 'application/json',
-};
-
 /* ===================== STATE ===================== */
 const state = {
   users: [], subs: [], payments: [], promos: [], promoUses: [],
@@ -135,38 +125,76 @@ function toast(msg, type = 'success', opts = {}) {
   return id;
 }
 
-/* ===================== SUPABASE API ===================== */
+/* ===================== DB PROXY ===================== */
+// === DB PROXY (replaces direct Supabase) ===
+// Frontend больше не ходит в Supabase напрямую. Все запросы идут через
+// backend /admin-api/db/<table>/, защищённый cookie + admin whitelist.
+
 async function sbGet(table, query = '') {
-  const url = `${SUPABASE_URL}/rest/v1/${table}${query ? '?' + query : ''}`;
-  const r = await fetch(url, { headers: SB_HEADERS });
-  if (!r.ok) throw new Error(`${table}: HTTP ${r.status}`);
-  return r.json();
-}
-async function sbInsert(table, data) {
-  const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
-    method: 'POST',
-    headers: { ...SB_HEADERS, Prefer: 'return=representation' },
-    body: JSON.stringify(data),
+  const url = `${PROXY_URL}/admin-api/db/${table}${query ? '?' + query : ''}`;
+  const r = await fetch(url, {
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
   });
-  if (!r.ok) throw new Error(`${table} insert: HTTP ${r.status} — ${await r.text()}`);
-  return r.json();
-}
-async function sbUpdate(table, filter, data) {
-  const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${filter}`, {
-    method: 'PATCH',
-    headers: { ...SB_HEADERS, Prefer: 'return=minimal' },
-    body: JSON.stringify(data),
-  });
-  if (!r.ok) throw new Error(`${table} update: HTTP ${r.status} — ${await r.text()}`);
-}
-async function sbDelete(table, filter) {
-  const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${filter}`, {
-    method: 'DELETE',
-    headers: { ...SB_HEADERS, Prefer: 'return=minimal' },
-  });
-  if (!r.ok) throw new Error(`${table} delete: HTTP ${r.status}`);
+  if (r.status === 401) {
+    showLogin();
+    return [];
+  }
+  const body = await r.json();
+  if (!body.success) {
+    console.error(`sbGet(${table}) failed:`, body);
+    return [];
+  }
+  return body.data || [];
 }
 
+async function sbInsert(table, data) {
+  const r = await fetch(`${PROXY_URL}/admin-api/db/${table}`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  if (r.status === 401) { showLogin(); return null; }
+  const body = await r.json();
+  if (!body.success) {
+    console.error(`sbInsert(${table}) failed:`, body);
+    return null;
+  }
+  return body.data;
+}
+
+async function sbUpdate(table, filter, data) {
+  const r = await fetch(`${PROXY_URL}/admin-api/db/${table}?${filter}`, {
+    method: 'PATCH',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  if (r.status === 401) { showLogin(); return null; }
+  const body = await r.json();
+  if (!body.success) {
+    console.error(`sbUpdate(${table}) failed:`, body);
+    return null;
+  }
+  return body.data;
+}
+
+async function sbDelete(table, filter) {
+  const r = await fetch(`${PROXY_URL}/admin-api/db/${table}?${filter}`, {
+    method: 'DELETE',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+  });
+  if (r.status === 401) { showLogin(); return null; }
+  const body = await r.json();
+  if (!body.success) {
+    console.error(`sbDelete(${table}) failed:`, body);
+    return null;
+  }
+  return body.data;
+}
+// === END DB PROXY ===
 /* Proxy fetcher (for /admin-api/*) */
 async function proxy(path, opts = {}) {
   const r = await fetch(PROXY_URL + path, {

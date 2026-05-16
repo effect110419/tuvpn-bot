@@ -1568,6 +1568,203 @@ def auth_logout():
 
 
 
+
+
+# === GENERIC DB PROXY ===
+# Generic CRUD для админки: фронт ходит сюда вместо прямого Supabase
+# Защищено auth middleware /admin-api/* + cookie + whitelist админов
+
+# Whitelist таблиц и разрешённых методов
+# methods: 'r' = read, 'w' = write (insert/update/delete)
+_DB_PROXY_TABLES = {
+    "users": "rw",
+    "subscriptions": "rw",
+    "payments": "rw",
+    "promocodes": "rw",
+    "promocode_uses": "r",
+    "referrals": "rw",
+    "support_tickets": "rw",
+    "support_messages": "rw",
+    "support_admins": "rw",
+    "servers": "rw",
+    "campaigns": "rw",
+    "campaign_clicks": "r",
+    "user_devices": "rw",
+    "server_installations": "r",
+    # Не добавлены намеренно: admin_sessions, admin_login_attempts
+    # (они никогда не должны быть доступны через generic API)
+}
+
+_DB_PROXY_MAX_LIMIT = 5000  # защита от случайных тяжёлых запросов
+
+
+def _db_proxy_check(table: str, mode: str):
+    """Проверка whitelist'а. Возвращает (allowed, error_response)."""
+    if table not in _DB_PROXY_TABLES:
+        return False, (jsonify({"success": False, "error": "table_not_allowed", "table": table}), 403)
+    allowed_modes = _DB_PROXY_TABLES[table]
+    if mode == "r" and "r" not in allowed_modes:
+        return False, (jsonify({"success": False, "error": "read_not_allowed"}), 403)
+    if mode == "w" and "w" not in allowed_modes:
+        return False, (jsonify({"success": False, "error": "write_not_allowed"}), 403)
+    return True, None
+
+
+def _db_proxy_log(table: str, op: str):
+    """Минимальное логирование действий админа на таблицах."""
+    admin = getattr(request, "admin_tg_id", None)
+    if admin:
+        app.logger.info(f"[admin-db] tg_id={admin} {op} table={table}")
+
+
+@app.route("/admin-api/db/<table>", methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"])
+def db_proxy(table):
+    """Generic CRUD через Supabase Python SDK."""
+    if request.method == "OPTIONS":
+        return make_response("", 204)
+
+    # Проверка whitelist
+    mode = "r" if request.method == "GET" else "w"
+    ok, err = _db_proxy_check(table, mode)
+    if not ok:
+        return err
+
+    try:
+        # ── GET: SELECT с произвольным PostgREST-like query ──
+        if request.method == "GET":
+            q = sb.table(table).select(request.args.get("select", "*"))
+
+            # Парсим query string. PostgREST синтаксис:
+            #   ?status=eq.active&order=created_at.desc&limit=10
+            for key, val in request.args.items():
+                if key in ("select", "order", "limit", "offset", "count"):
+                    continue
+                # Формат: field=eq.value, field=in.(a,b,c), field=like.*foo*
+                if "." in val:
+                    op, _, v = val.partition(".")
+                    op = op.lower()
+                    if op == "eq":
+                        q = q.eq(key, v)
+                    elif op == "neq":
+                        q = q.neq(key, v)
+                    elif op == "gt":
+                        q = q.gt(key, v)
+                    elif op == "gte":
+                        q = q.gte(key, v)
+                    elif op == "lt":
+                        q = q.lt(key, v)
+                    elif op == "lte":
+                        q = q.lte(key, v)
+                    elif op == "like":
+                        q = q.like(key, v)
+                    elif op == "ilike":
+                        q = q.ilike(key, v)
+                    elif op == "is":
+                        q = q.is_(key, v if v != "null" else None)
+                    elif op == "in":
+                        # in.(a,b,c) → ['a','b','c']
+                        v_clean = v.strip("()")
+                        q = q.in_(key, v_clean.split(","))
+                    else:
+                        # Неизвестный оператор — игнорим (можно сделать строже)
+                        pass
+                else:
+                    # Без оператора — считаем eq
+                    q = q.eq(key, val)
+
+            # order=field.desc[,field.asc]
+            if request.args.get("order"):
+                for clause in request.args["order"].split(","):
+                    clause = clause.strip()
+                    if "." in clause:
+                        field, _, direction = clause.partition(".")
+                        q = q.order(field, desc=(direction.lower() == "desc"))
+                    else:
+                        q = q.order(clause)
+
+            # limit/offset
+            try:
+                limit = int(request.args.get("limit", 1000))
+                limit = min(limit, _DB_PROXY_MAX_LIMIT)
+            except (TypeError, ValueError):
+                limit = 1000
+            try:
+                offset = int(request.args.get("offset", 0))
+            except (TypeError, ValueError):
+                offset = 0
+
+            if offset > 0:
+                q = q.range(offset, offset + limit - 1)
+            else:
+                q = q.limit(limit)
+
+            r = q.execute()
+            return jsonify({"success": True, "data": r.data or []})
+
+        # ── POST: INSERT ──
+        if request.method == "POST":
+            body = request.get_json(silent=True) or {}
+            _db_proxy_log(table, "INSERT")
+            r = sb.table(table).insert(body).execute()
+            return jsonify({"success": True, "data": r.data or []})
+
+        # ── PATCH: UPDATE с фильтром в query string ──
+        if request.method == "PATCH":
+            body = request.get_json(silent=True) or {}
+            # Должен быть хотя бы один фильтр
+            filters = [(k, v) for k, v in request.args.items() if k not in ("select",)]
+            if not filters:
+                return jsonify({"success": False, "error": "filter_required"}), 400
+            q = sb.table(table).update(body)
+            for key, val in filters:
+                if "." in val:
+                    op, _, v = val.partition(".")
+                    if op == "eq":
+                        q = q.eq(key, v)
+                    elif op == "in":
+                        v_clean = v.strip("()")
+                        q = q.in_(key, v_clean.split(","))
+                    else:
+                        q = q.eq(key, v)
+                else:
+                    q = q.eq(key, val)
+            _db_proxy_log(table, f"UPDATE filters={filters}")
+            r = q.execute()
+            return jsonify({"success": True, "data": r.data or []})
+
+        # ── DELETE ──
+        if request.method == "DELETE":
+            filters = [(k, v) for k, v in request.args.items() if k not in ("select",)]
+            if not filters:
+                return jsonify({"success": False, "error": "filter_required"}), 400
+            q = sb.table(table).delete()
+            for key, val in filters:
+                if "." in val:
+                    op, _, v = val.partition(".")
+                    if op == "eq":
+                        q = q.eq(key, v)
+                    elif op == "in":
+                        v_clean = v.strip("()")
+                        q = q.in_(key, v_clean.split(","))
+                    else:
+                        q = q.eq(key, v)
+                else:
+                    q = q.eq(key, val)
+            _db_proxy_log(table, f"DELETE filters={filters}")
+            r = q.execute()
+            return jsonify({"success": True, "data": r.data or []})
+
+    except Exception as e:
+        app.logger.error(f"db_proxy error on table={table}: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+    return jsonify({"success": False, "error": "method_not_allowed"}), 405
+
+
+# === END GENERIC DB PROXY ===
+
+
+
 if __name__ == '__main__':
     import threading
     threading.Thread(target=healthcheck_loop, daemon=True).start()
