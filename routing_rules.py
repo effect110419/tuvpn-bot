@@ -60,6 +60,70 @@ DIRECT_DOMAINS = [
     "domain:wink.rt.ru",
     "domain:premier.one",
     "domain:music.yandex.ru", "domain:music.vk.com",
+    # === EXTENDED RU DOMAINS 2026-05 ===
+    # Госуслуги — расширение (главный домен уже выше, эти строки для надёжности)
+    "domain:epgu.gosuslugi.ru", "domain:do.gosuslugi.ru",
+    "domain:docs.gosuslugi.ru", "domain:cabinet.gosuslugi.ru",
+    "domain:lk.gosuslugi.ru", "domain:web.gosuslugi.ru",
+    "domain:pos.gosuslugi.ru",
+    "domain:oms.ru", "domain:vetrf.ru", "domain:mvd.ru",
+    "domain:cdek.ru", "domain:dpd.ru", "domain:boxberry.ru",
+    "domain:rusprofile.ru", "domain:nalog.gov.ru",
+    # Ozon — расширение
+    "domain:ozby.ru", "domain:ozon.travel", "domain:ozon-cdn.com",
+    "domain:ozon.tech", "domain:o3.ru",
+    # Яндекс сервисы — полное покрытие (yandex.ru уже есть = ловит все *.yandex.ru,
+    # но дополнительно прописываем альтернативные домены и CDN)
+    "domain:yandex.net", "domain:ya.cc",
+    "domain:taxi.yandex.ru", "domain:go.yandex",
+    "domain:maps.yandex.ru", "domain:disk.yandex.ru",
+    "domain:cloud.yandex.ru", "domain:cloud.yandex.com",
+    "domain:practicum.yandex.ru",
+    "domain:kassa.yandex.ru", "domain:metrika.yandex.ru",
+    "domain:direct.yandex.ru", "domain:webmaster.yandex.ru",
+    "domain:dialogs.yandex.ru", "domain:passport.yandex.ru",
+    "domain:id.yandex.ru", "domain:mail.yandex.ru",
+    "domain:afisha.yandex.ru", "domain:plus.yandex.ru",
+    "domain:auto.ru", "domain:realty.yandex.ru",
+    # T2 Mobile (бывший Tele2)
+    "domain:t2.ru", "domain:tele2.ru",
+    # Фастфуд / доставка
+    "domain:rostics.ru", "domain:burgerkingrus.ru",
+    "domain:dodopizza.ru", "domain:dodois.io",
+    "domain:tanuki.ru", "domain:papajohns.ru",
+    "domain:macdonalds.ru", "domain:vkusno-i-tochka.ru",
+    "domain:teremok.ru", "domain:shokoladnitsa.ru",
+    # Мобильные операторы
+    "domain:mts.ru", "domain:mts-bank.ru", "domain:mtsbank.ru",
+    "domain:mts.tv", "domain:mtsmusic.ru",
+    "domain:megafon.ru", "domain:megafon.tv",
+    "domain:beeline.ru", "domain:beeline.tv",
+    "domain:rt.ru",
+    # Каршеринг и такси
+    "domain:delimobil.ru", "domain:belkacar.ru",
+    "domain:citydrive.ru", "domain:carsharing.ru",
+    # Сбер услуги
+    "domain:sberprime.ru", "domain:sberlogistics.ru",
+    "domain:sberhealth.ru", "domain:sberauto.com",
+    "domain:sbol.ru", "domain:sber.ru",
+    "domain:sberdevices.ru", "domain:salutejazz.ru",
+    "domain:sberid.ru", "domain:sberbusiness.live",
+    # Тинькофф расширенно
+    "domain:tinkoff.travel", "domain:tinkoff.club",
+    "domain:tinkoff-mobile.ru", "domain:tinkoffjournal.ru",
+    # Стриминги и видео РФ (для надёжности, многие уже есть)
+    "domain:start.ru", "domain:more.tv", "domain:kion.ru",
+    "domain:smotrim.ru", "domain:1tv.ru", "domain:ren.tv",
+    # СМИ РФ
+    "domain:ria.ru", "domain:tass.ru", "domain:rbc.ru",
+    "domain:lenta.ru", "domain:kommersant.ru",
+    "domain:gazeta.ru", "domain:vedomosti.ru",
+    "domain:meduza.io",
+    # Прочее популярное
+    "domain:hh.ru", "domain:superjob.ru", "domain:rabota.ru",
+    "domain:cian.ru", "domain:irr.ru",
+    "domain:drom.ru",
+    "domain:2gis.ru", "domain:zoon.ru",
 ]
 
 # Только проверенные категории geosite (точно есть в стандартной базе)
