@@ -86,7 +86,10 @@ DIRECT_DOMAINS = [
     "domain:afisha.yandex.ru", "domain:plus.yandex.ru",
     "domain:auto.ru", "domain:realty.yandex.ru",
     # T2 Mobile (бывший Tele2)
+    # T2 EXPLICIT SUBDOMAINS
     "domain:t2.ru", "domain:tele2.ru",
+    "domain:auth.t2.ru", "domain:appseller.tele2.ru",
+    "domain:lk.t2.ru", "domain:msk.t2.ru",
     # Фастфуд / доставка
     "domain:rostics.ru", "domain:burgerkingrus.ru",
     "domain:dodopizza.ru", "domain:dodois.io",
