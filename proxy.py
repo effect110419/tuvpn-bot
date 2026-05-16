@@ -967,6 +967,71 @@ def yookassa_webhook():
     metadata = parsed["metadata"] or {}
     app.logger.info(f"Webhook ЮКассы: event={event}, payment_id={payment_id}")
 
+    # === YOOKASSA WEBHOOK SECURITY ===
+    # 1) Двойная сверка через API ЮКассы — нельзя доверять только webhook body
+    verified = yookassa_client.get_payment_info(payment_id)
+    if not verified:
+        app.logger.error(f"[SECURITY] Не удалось верифицировать платёж {payment_id} через API ЮКассы — отклоняем")
+        return jsonify({"error": "verification_failed"}), 403
+    # Сверяем что статус, сумма и metadata совпадают
+    if verified.get("status") != parsed.get("status"):
+        app.logger.error(f"[SECURITY] Status mismatch для {payment_id}: webhook={parsed.get('status')}, api={verified.get('status')}")
+        return jsonify({"error": "status_mismatch"}), 403
+    try:
+        if abs(float(verified.get("amount") or 0) - float(parsed.get("amount") or 0)) > 0.01:
+            app.logger.error(f"[SECURITY] Amount mismatch для {payment_id}: webhook={parsed.get('amount')}, api={verified.get('amount')}")
+            return jsonify({"error": "amount_mismatch"}), 403
+    except Exception:
+        pass
+    verified_meta = verified.get("metadata") or {}
+    if str(verified_meta.get("user_id") or "") != str(metadata.get("user_id") or ""):
+        app.logger.error(f"[SECURITY] user_id mismatch для {payment_id}: webhook={metadata.get('user_id')}, api={verified_meta.get('user_id')}")
+        return jsonify({"error": "user_id_mismatch"}), 403
+    # Используем metadata из API, не из webhook — API source of truth
+    metadata = verified_meta or metadata
+
+    # 2) Idempotency: если этот payment уже обработан как succeeded — не выдаём подписку второй раз
+    already_processed = False
+    try:
+        chk = sb.table("payments").select("status,paid_at").eq("provider_payment_id", payment_id).limit(1).execute()
+        if chk.data:
+            row = chk.data[0]
+            if row.get("status") == "succeeded" and row.get("paid_at"):
+                already_processed = True
+                app.logger.info(f"[idempotency] Payment {payment_id} уже обработан — пропускаем выдачу подписки")
+    except Exception as _e:
+        app.logger.error(f"[idempotency] check error: {_e}")
+
+    # 3) Проверка суммы (защита от подмены тарифа)
+    if parsed.get("status") == "succeeded" and not already_processed:
+        try:
+            from config import PRICES
+        except ImportError:
+            PRICES = None
+        if PRICES:
+            try:
+                d = int(metadata.get("devices") or 0)
+                m = int(metadata.get("months") or 0)
+                expected_price = None
+                # PRICES может быть dict[(devices, months)] = price ИЛИ dict[devices][months] = price
+                if isinstance(PRICES, dict):
+                    if (d, m) in PRICES:
+                        expected_price = PRICES[(d, m)]
+                    elif d in PRICES and isinstance(PRICES[d], dict) and m in PRICES[d]:
+                        expected_price = PRICES[d][m]
+                if expected_price is not None:
+                    paid = float(parsed.get("amount") or 0)
+                    # Разрешаем платёж быть НЕ МЕНЬШЕ ожидаемого минус 50% (если применён промокод-скидка)
+                    # Это не идеально, но защищает от платежа в 1 рубль за годовую подписку
+                    min_acceptable = float(expected_price) * 0.5
+                    if paid < min_acceptable:
+                        app.logger.error(f"[SECURITY] Price too low for {payment_id}: paid={paid}, expected_min={min_acceptable} (full={expected_price}, devices={d}, months={m})")
+                        return jsonify({"error": "price_below_minimum"}), 403
+            except Exception as _e:
+                app.logger.error(f"[SECURITY] price check error: {_e}")
+    # === END YOOKASSA WEBHOOK SECURITY ===
+
+
     # Обновляем платёж в БД
     existing = sb.table("payments").select("*").eq("provider_payment_id", payment_id).limit(1).execute()
     payment_row = {
@@ -1024,8 +1089,12 @@ def yookassa_webhook():
                 days += bonus_days_from_promo
                 app.logger.info(f"Промокод {promo_code} даёт +{bonus_days_from_promo} дн. user_id={uid}")
 
-            result = issue_subscription(uid, devices, days)
-            app.logger.info(f"Выдача подписки по платежу {payment_id}: {result}")
+            if already_processed:
+                app.logger.info(f"[idempotency] skip issue_subscription для {payment_id}")
+                result = {"success": True, "skipped": True}
+            else:
+                result = issue_subscription(uid, devices, days)
+                app.logger.info(f"Выдача подписки по платежу {payment_id}: {result}")
 
             # Записываем использование промокода (после успешной выдачи)
             if promo_id and result.get("success"):
