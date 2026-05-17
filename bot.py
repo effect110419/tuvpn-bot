@@ -400,6 +400,14 @@ PRICES = {
     2: {"1": 249, "3": 649, "12": 2299},
     5: {"1": 599, "3": 1599, "12": 5499},
 }
+
+# === TG STARS PAYMENT ===
+# Цены в Stars: коэффициент ~0.54 от рубля (т.к. юзер платит ~2₽ за 1⭐)
+PRICES_STARS = {
+    1: {"1": 80,  "3": 215,  "12": 755},
+    2: {"1": 135, "3": 350,  "12": 1240},
+    5: {"1": 325, "3": 865,  "12": 2970},
+}
 DAYS = {"1": 30, "3": 90, "12": 365}
 
 def main_menu():
@@ -691,15 +699,20 @@ async def choose_payment(callback: types.CallbackQuery):
     price = PRICES[devices][months]
     days = DAYS[months]
     months_label = {"1": "1 месяц", "3": "3 месяца", "12": "1 год"}[months]
+    # === TG STARS PAYMENT ===
+    stars_price = PRICES_STARS[devices][months]
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💳 Банковская карта РФ", callback_data=f"pay_card_{devices}_{months}")],
+        [InlineKeyboardButton(text=f"⭐ Telegram Stars — {stars_price}⭐", callback_data=f"pay_stars_{devices}_{months}")],
         [InlineKeyboardButton(text="◀️ Назад", callback_data=f"devices_{devices}")],
     ])
     await callback.message.answer(
         f"📋 Оплата подписки\n\n"
         f"📦 {months_label} / {devices} уст. / {price} ₽ / {days} дней\n\n"
-        f"Выберите способ оплаты:",
-        reply_markup=kb
+        f"Выберите способ оплаты:\n\n"
+        f"<i>💡 Оплата Stars работает только в мобильном Telegram (iOS, Android) и Desktop. В Telegram Web — недоступна.</i>",
+        reply_markup=kb,
+        parse_mode="HTML"
     )
     await callback.answer()
 
@@ -850,6 +863,144 @@ async def _ask_email(message, state: FSMContext):
         f"Чек будет отправлен на указанный email.",
         reply_markup=kb,
     )
+
+
+# === TG STARS PAYMENT ===
+@dp.callback_query(lambda c: c.data.startswith("pay_stars_"))
+async def pay_stars(callback: types.CallbackQuery, state: FSMContext):
+    """Создаёт Telegram-инвойс на оплату звёздами."""
+    parts = callback.data.split("_")
+    devices = int(parts[2])
+    months = parts[3]
+    stars_amount = PRICES_STARS[devices][months]
+    rub_price = PRICES[devices][months]
+    days = DAYS[months]
+    months_label = {"1": "1 месяц", "3": "3 месяца", "12": "1 год"}[months]
+
+    # payload — в нём передадим user_id + параметры подписки
+    user_id = callback.from_user.id
+    payload = f"tuvpn_stars:{user_id}:{devices}:{months}:{days}"
+
+    try:
+        await bot.send_invoice(
+            chat_id=user_id,
+            title=f"TuVPN — {months_label}, {devices} устр.",
+            description=(
+                f"Подписка TuVPN на {months_label} ({days} дней)\n"
+                f"До {devices} устройств. Оплата звёздами Telegram."
+            ),
+            payload=payload,
+            currency="XTR",
+            prices=[types.LabeledPrice(label="TuVPN Subscription", amount=stars_amount)],
+            start_parameter=f"tuvpn-{devices}-{months}",
+        )
+        await callback.answer()
+    except Exception as e:
+        logging.error(f"send_invoice failed: {e}")
+        await callback.message.answer(f"❌ Не удалось создать инвойс: {e}")
+        await callback.answer()
+
+
+@dp.pre_checkout_query()
+async def process_pre_checkout(pre_q: types.PreCheckoutQuery):
+    """Telegram обязательно запрашивает подтверждение готовности до списания звёзд."""
+    try:
+        await bot.answer_pre_checkout_query(pre_q.id, ok=True)
+    except Exception as e:
+        logging.error(f"pre_checkout failed: {e}")
+        try:
+            await bot.answer_pre_checkout_query(pre_q.id, ok=False, error_message="Внутренняя ошибка, попробуйте позже")
+        except Exception:
+            pass
+
+
+@dp.message(lambda m: m.successful_payment is not None)
+async def process_successful_payment(message: types.Message):
+    """Ловит успешную оплату звёздами. Выдаёт подписку, уведомляет админов."""
+    sp = message.successful_payment
+    user_id = message.from_user.id
+    first_name = message.from_user.first_name or ""
+
+    if sp.currency != "XTR":
+        # Неожиданно, но ладно — не Stars-оплата, не наш случай
+        return
+
+    # payload: tuvpn_stars:<uid>:<devices>:<months>:<days>
+    try:
+        parts = sp.invoice_payload.split(":")
+        devices = int(parts[2])
+        months = parts[3]
+        days = int(parts[4])
+    except Exception as e:
+        logging.error(f"bad payload: {sp.invoice_payload}, error: {e}")
+        await message.answer("⚠ Платёж получен, но не удалось распознать параметры. Свяжитесь с поддержкой.")
+        return
+
+    stars_amount = sp.total_amount  # уже в Stars (XTR)
+    months_label = {"1": "1 месяц", "3": "3 месяца", "12": "1 год"}[months]
+
+    # Записываем платёж в БД
+    try:
+        sb.table("payments").insert({
+            "user_id": user_id,
+            "provider_payment_id": sp.telegram_payment_charge_id or sp.provider_payment_charge_id or f"stars_{user_id}_{int(datetime.now().timestamp())}",
+            "amount": stars_amount,
+            "status": "succeeded",
+            "paid_at": datetime.now().isoformat(),
+            "metadata": {
+                "currency": "XTR",
+                "provider": "telegram_stars",
+                "devices": devices,
+                "months": months,
+                "stars": stars_amount,
+                "telegram_payment_charge_id": sp.telegram_payment_charge_id,
+            },
+        }).execute()
+    except Exception as e:
+        logging.error(f"payment insert failed: {e}")
+
+    # Выдаём подписку через issue_subscription
+    try:
+        from proxy import issue_subscription as _issue
+        result = _issue(user_id, devices, days)
+        logging.info(f"Stars issue_subscription for {user_id}: {result}")
+    except Exception as e:
+        logging.error(f"Stars issue_subscription failed: {e}")
+        await message.answer("⚠ Оплата прошла, но не удалось активировать подписку. Свяжитесь с @TuVPNSupport_bot")
+        return
+
+    # Уведомляем юзера
+    try:
+        await message.answer(
+            f"✅ <b>Оплата получена!</b>\n\n"
+            f"📦 {months_label}, {devices} устр.\n"
+            f"💫 Списано: <b>{stars_amount}⭐</b>\n\n"
+            f"Подписка активирована. Открой раздел <b>«🔌 Подключиться»</b> в меню — там ссылка и инструкция.",
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+
+    # Уведомляем админов
+    admin_text = (
+        f"💰 <b>Новая оплата (Stars)!</b>\n\n"
+        f"👤 user_id: <code>{user_id}</code>\n"
+        f"👤 Имя: {first_name}\n"
+        f"📦 {months_label}, {devices} уст.\n"
+        f"💫 Сумма: <b>{stars_amount}⭐</b>\n"
+        f"🆔 Платёж: <code>{sp.telegram_payment_charge_id or 'stars'}</code>"
+    )
+    try:
+        admins_res = sb.table("support_admins").select("user_id").eq("is_active", True).execute()
+        for a in (admins_res.data or []):
+            try:
+                await bot.send_message(a["user_id"], admin_text, parse_mode="HTML")
+            except Exception as e:
+                logging.error(f"notify admin {a.get('user_id')} failed: {e}")
+    except Exception as e:
+        logging.error(f"Не удалось уведомить админов о Stars-оплате: {e}")
+
+
 
 
 @dp.callback_query(lambda c: c.data == "cancel_buy")
