@@ -238,31 +238,53 @@ async def xui_extend_client(client_uuid, user_id, devices, days):
 # РЕФЕРАЛЬНАЯ СИСТЕМА
 # ══════════════════════════════
 async def give_referral_bonus(user_id, days, reason):
+    """Начислить дни существующей подписке через issue_subscription (все серверы).
+    Если активной подписки нет — копим в users.bonus_days."""
     try:
         sub = get_subscription(user_id)
-        user = get_user(user_id)
-        client_uuid = user.get("client_uuid") if user else None
         if sub:
-            new_expires = extend_db_subscription(sub["id"], user_id, days)
-            if client_uuid and new_expires:
-                remaining = max(1, (new_expires - datetime.now()).days)
-                await xui_extend_client(client_uuid, user_id, sub["devices"], remaining)
-        await bot.send_message(user_id,
-            f"🎁 Вам начислено {days} дней бонуса!\nПричина: {reason}"
-        )
+            from proxy import issue_subscription as _issue
+            _res = _issue(user_id, sub.get("devices", 1), days)
+            logging.info(f"referral bonus issued for {user_id}: {_res}")
+        else:
+            try:
+                u = sb.table("users").select("bonus_days").eq("user_id", user_id).limit(1).execute()
+                cur = (u.data[0].get("bonus_days") if u.data else 0) or 0
+                sb.table("users").update({"bonus_days": cur + days}).eq("user_id", user_id).execute()
+                logging.info(f"referral bonus accumulated for {user_id}: +{days} (total {cur + days})")
+            except Exception as e:
+                logging.error(f"accumulate bonus_days failed: {e}")
+        try:
+            text_lines = [
+                f"🎁 Вам начислено <b>{days} дней бонуса</b>!",
+                "",
+                f"Причина: {reason}",
+            ]
+            await bot.send_message(user_id, "\n".join(text_lines), parse_mode="HTML")
+        except Exception:
+            pass
     except Exception as e:
         logging.error(f"give_referral_bonus: {e}")
 
+
 async def give_new_user_bonus(user_id, days=7):
+    """Выдать новому юзеру подписку через issue_subscription — на все активные серверы."""
     try:
-        client_uuid, sub_url = await xui_add_client(user_id, 1, days)
-        if client_uuid:
-            create_db_subscription(user_id, 1, days, client_uuid, sub_url)
-            await bot.send_message(user_id,
-                f"🎁 Вам начислено {days} дней бесплатного доступа!\n\n"
-                f"Ваша ссылка подписки:\n{sub_url}\n\n"
-                f"Нажмите /start для подключения!"
-            )
+        from proxy import issue_subscription as _issue
+        res = _issue(user_id, 1, days)
+        logging.info(f"new user bonus for {user_id}: {res}")
+        if res.get("success"):
+            try:
+                text_lines = [
+                    f"🎁 Вам начислено <b>{days} дней</b> бесплатного доступа!",
+                    "",
+                    "Откройте <b>«🔌 Подключиться»</b> в меню — там ссылка и инструкция.",
+                ]
+                await bot.send_message(user_id, "\n".join(text_lines), parse_mode="HTML")
+            except Exception:
+                pass
+        else:
+            logging.error(f"give_new_user_bonus issue failed: {res}")
     except Exception as e:
         logging.error(f"give_new_user_bonus: {e}")
 
