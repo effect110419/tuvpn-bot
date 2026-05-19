@@ -264,45 +264,117 @@ def make_device_name(ua: str, dtype: str) -> str:
     return name
 
 
+# === DEVICE TRACKING FIX 2026-05 ===
+# Окно "активности" устройства: запись считается активной если last_seen в этом окне
+DEVICE_ACTIVITY_WINDOW_DAYS = 7
+
+
+def _normalize_ua(ua: str) -> str:
+    """Нормализует User-Agent для устойчивой идентификации.
+
+    Happ Plus формирует UA вида:
+        Happ/3.20.4/Android/17782185961531805598
+        Happ/4.9.0/ios/2605051739563
+    Последний токен — это уникальный device-id (Happ внутренний),
+    он стабилен для одного устройства и одной установки приложения.
+    Поэтому он — лучший идентификатор устройства.
+    Если такого токена нет — fallback на полный UA.
+    """
+    if not ua:
+        return "unknown"
+    # Берём первые 4 поля Happ-UA, если они есть
+    parts = ua.split("/")
+    if len(parts) >= 4 and parts[0].lower().startswith("happ"):
+        return "/".join(parts[:4])  # Happ/version/platform/deviceId
+    # Для остальных клиентов (v2RayTun и т.д.) — целиком
+    return ua[:200]
+
+
 def track_device(client_uuid: str, client_ip: str, user_agent: str) -> dict:
     """
     Регистрирует/обновляет устройство при обращении к подписке.
     Возвращает {"allowed": bool, "reason": str, "device_id": int|None}.
 
-    Логика:
-    - Находим подписку по client_uuid
-    - Если устройство с таким (uuid, ip) уже есть и активно — обновляем last_seen
-    - Если новое устройство:
-        * считаем активные устройства этого юзера
-        * если меньше лимита (subscription.devices) — добавляем
-        * если уже равно лимиту — отказываем
+    Логика 2026-05:
+    1. Устройство идентифицируется по (client_uuid, normalized_user_agent).
+       IP может меняться (мобильный интернет, Wi-Fi/4G переключения) — НЕ считаем это новым устройством.
+    2. Подсчёт активных устройств — только тех, у кого last_seen в последние
+       DEVICE_ACTIVITY_WINDOW_DAYS дней. Старые записи остаются в БД, но не
+       блокируют новых подключений.
+    3. Игнорируем запросы от Telegram-бота (превью ссылки в чате).
+    4. На любую ошибку — разрешаем (lose mode), чтобы не сломать сервис юзерам.
     """
     try:
+        # Игнорируем preview-запросы от Telegram (когда юзер кидает ссылку в чат)
+        if user_agent and ("TelegramBot" in user_agent or "TwitterBot" in user_agent):
+            return {"allowed": True, "reason": "preview_ignored", "device_id": None}
+
         # Находим подписку
-        sub_q = sb.table("subscriptions").select("*").eq("status", "active").like("sub_url", f"%{client_uuid}").limit(1).execute()
+        sub_q = (
+            sb.table("subscriptions")
+            .select("*").eq("status", "active")
+            .like("sub_url", f"%{client_uuid}")
+            .limit(1).execute()
+        )
         if not sub_q.data:
             return {"allowed": False, "reason": "subscription_not_found", "device_id": None}
         sub = sub_q.data[0]
         user_id = sub["user_id"]
         device_limit = sub.get("devices", 1)
 
-        # Ищем существующее устройство с тем же IP и uuid
-        existing = sb.table("user_devices").select("*").eq("user_id", user_id).eq("client_uuid", client_uuid).eq("ip_address", client_ip).limit(1).execute()
-        if existing.data:
-            dev = existing.data[0]
-            # Просто обновляем last_seen и реактивируем если было выключено
-            sb.table("user_devices").update({
-                "last_seen": datetime.utcnow().isoformat(),
-                "is_active": True,
-                "user_agent": user_agent,
-            }).eq("id", dev["id"]).execute()
-            return {"allowed": True, "reason": "updated", "device_id": dev["id"]}
+        normalized_ua = _normalize_ua(user_agent)
+        now_iso = datetime.utcnow().isoformat()
 
-        # Новое устройство — проверим лимит
-        active_count_q = sb.table("user_devices").select("id", count="exact").eq("user_id", user_id).eq("is_active", True).execute()
-        active_count = active_count_q.count or 0
+        # Ищем существующее устройство по (client_uuid, нормализованный UA).
+        # client_uuid + UA — стабильный fingerprint одного устройства.
+        # Берём все девайсы юзера и фильтруем в Python (Supabase не умеет
+        # точное сравнение по подстроке UA из-за нормализации).
+        all_devs_q = (
+            sb.table("user_devices").select("*")
+            .eq("user_id", user_id)
+            .eq("client_uuid", client_uuid)
+            .execute()
+        )
+        all_devs = all_devs_q.data or []
+
+        existing_dev = None
+        for d in all_devs:
+            if _normalize_ua(d.get("user_agent") or "") == normalized_ua:
+                existing_dev = d
+                break
+
+        if existing_dev:
+            # Это уже знакомое устройство — обновляем (IP мог смениться)
+            sb.table("user_devices").update({
+                "ip_address": client_ip,
+                "last_seen": now_iso,
+                "is_active": True,
+                "user_agent": (user_agent or "")[:500],
+            }).eq("id", existing_dev["id"]).execute()
+            return {"allowed": True, "reason": "refreshed", "device_id": existing_dev["id"]}
+
+        # Новое устройство — проверим лимит, считая только активных за окно
+        from datetime import timedelta
+        cutoff = (datetime.utcnow() - timedelta(days=DEVICE_ACTIVITY_WINDOW_DAYS)).isoformat()
+
+        active_recent_q = (
+            sb.table("user_devices").select("user_agent")
+            .eq("user_id", user_id)
+            .eq("is_active", True)
+            .gte("last_seen", cutoff)
+            .execute()
+        )
+        # Уникальные устройства по нормализованному UA
+        unique_recent_uas = set()
+        for d in (active_recent_q.data or []):
+            unique_recent_uas.add(_normalize_ua(d.get("user_agent") or ""))
+        active_count = len(unique_recent_uas)
+
         if active_count >= device_limit:
-            app.logger.warning(f"Device limit exceeded: user={user_id} limit={device_limit} active={active_count} IP={client_ip}")
+            app.logger.warning(
+                f"Device limit exceeded: user={user_id} limit={device_limit} "
+                f"unique_active={active_count} IP={client_ip} UA={normalized_ua}"
+            )
             return {"allowed": False, "reason": "limit_exceeded", "device_id": None}
 
         # Добавляем новое устройство
@@ -316,15 +388,16 @@ def track_device(client_uuid: str, client_ip: str, user_agent: str) -> dict:
             "client_uuid": client_uuid,
             "ip_address": client_ip,
             "user_agent": (user_agent or "")[:500],
-            "connected_at": datetime.utcnow().isoformat(),
-            "last_seen": datetime.utcnow().isoformat(),
+            "connected_at": now_iso,
+            "last_seen": now_iso,
             "is_active": True,
         }).execute()
         dev_id = new_dev.data[0]["id"] if new_dev.data else None
-        app.logger.info(f"New device tracked: user={user_id} IP={client_ip} type={dtype} id={dev_id}")
+        app.logger.info(f"New device tracked: user={user_id} IP={client_ip} type={dtype} UA={normalized_ua} id={dev_id}")
         return {"allowed": True, "reason": "added", "device_id": dev_id}
     except Exception as e:
         app.logger.error(f"track_device error: {e}")
+        # Lose mode: при любой ошибке — разрешаем, чтобы не блокировать юзеров
         return {"allowed": True, "reason": "error_allow_anyway", "device_id": None}
 
 
