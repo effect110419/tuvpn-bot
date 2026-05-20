@@ -97,9 +97,11 @@ def extend_db_subscription(sub_id, user_id, days):
 # ══════════════════════════════
 
 def get_user_devices(user_id):
-    """Получить список активных устройств пользователя"""
+    """Получить список активных устройств пользователя (свежие сверху)."""
     try:
-        r = sb.table("user_devices").select("*").eq("user_id", user_id).eq("is_active", True).execute()
+        r = (sb.table("user_devices").select("*")
+             .eq("user_id", user_id).eq("is_active", True)
+             .order("connected_at", desc=False).execute())
         return r.data
     except Exception as e:
         logging.error(f"get_user_devices: {e}")
@@ -835,32 +837,92 @@ async def _ask_promo(message, state: FSMContext, devices, months, price, months_
 
 
 async def _ask_email(message, state: FSMContext):
-    """Запрашивает email у пользователя для чека.
-    Должна вызываться ПОСЛЕ обработки промокода (или его пропуска)."""
+    """БЕЗ запроса email. Сразу создаёт платёж ЮКассы с техническим email
+    и показывает кнопку «Оплатить». Email больше не спрашиваем у юзера."""
     data = await state.get_data()
     devices = data.get("devices")
+    months = data.get("months")
+    base_price = data.get("price")
+    final_price = data.get("final_price", base_price)
     months_label = data.get("months_label")
-    final_price = data.get("final_price", data.get("price"))
+    promo_id = data.get("promo_id")
     promo_code = data.get("promo_code")
-    bonus_days = data.get("bonus_days_from_promo", 0)
+    promo_type = data.get("promo_type")
+    promo_value = data.get("promo_value")
+    bonus_days_from_promo = data.get("bonus_days_from_promo", 0)
+
+    user_id = message.chat.id
+    # Технический email — юзер его не вводит, чек формируется в «Мой налог»
+    email = f"user_{user_id}@tuvpn.ru"
+    description = f"Подписка TuVPN: {months_label}, {devices} уст."
+    if promo_code:
+        description += f" (промо {promo_code})"
+
+    try:
+        payment = yookassa_client.create_payment(
+            amount=final_price,
+            description=description,
+            user_id=user_id,
+            devices=devices,
+            months=int(months),
+            email=email,
+            promo_id=promo_id,
+            promo_code=promo_code,
+            promo_type=promo_type,
+            promo_value=promo_value,
+            bonus_days_from_promo=bonus_days_from_promo,
+        )
+    except Exception as e:
+        logging.error(f"Ошибка создания платежа: {e}")
+        await message.answer("⚠️ Не удалось создать платёж. Попробуйте позже или напишите в @TuVPNSupport_bot")
+        await state.clear()
+        return
+
+    # Записываем платёж в БД (pending)
+    try:
+        payment_meta = {
+            "base_price": base_price, "final_price": final_price,
+            "promo_id": promo_id, "promo_code": promo_code,
+            "promo_type": promo_type, "promo_value": promo_value,
+            "bonus_days_from_promo": bonus_days_from_promo,
+        }
+        sb.table("payments").insert({
+            "provider": "yookassa",
+            "provider_payment_id": payment["payment_id"],
+            "user_id": user_id,
+            "amount": final_price,
+            "currency": "RUB",
+            "status": payment["status"],
+            "email": email,
+            "devices": devices,
+            "months": int(months),
+            "description": description,
+            "confirmation_url": payment["confirmation_url"],
+            "metadata": payment_meta,
+        }).execute()
+    except Exception as e:
+        logging.error(f"Не удалось записать платёж в БД: {e}")
+
+    await state.clear()
 
     promo_line = ""
     if promo_code:
-        promo_type = data.get("promo_type")
         if promo_type == "percent":
-            promo_line = f"\n🎁 Промокод <b>{promo_code}</b>: скидка {data.get('promo_value')}%"
-        elif promo_type == "days":
-            promo_line = f"\n🎁 Промокод <b>{promo_code}</b>: +{bonus_days} дней"
+            promo_line = f"\n🎁 Промокод {promo_code}: −{promo_value}%"
+        else:
+            promo_line = f"\n🎁 Промокод {promo_code}: +{promo_value} дн."
 
-    await state.set_state(BuyStates.waiting_email)
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="❌ Отменить", callback_data="cancel_buy")],
+        [InlineKeyboardButton(text="💳 Оплатить", url=payment["confirmation_url"])],
+        [InlineKeyboardButton(text="◀️ Главное меню", callback_data="back")],
     ])
     await message.answer(
-        f"📧 <b>Введите ваш email для отправки чека</b>\n\n"
+        f"✅ <b>Платёж создан!</b>\n\n"
         f"📦 {months_label} / {devices} уст.{promo_line}\n"
         f"💰 К оплате: <b>{final_price} ₽</b>\n\n"
-        f"Чек будет отправлен на указанный email.",
+        f"Нажмите «💳 Оплатить» чтобы перейти к оплате.\n"
+        f"После успешной оплаты ссылка для подключения появится в разделе «🔌 Подключиться».\n\n"
+        f"💡 Если передумали — просто закройте этот экран, платёж не пройдёт без оплаты в течение 30 минут.",
         reply_markup=kb,
     )
 
@@ -1502,26 +1564,43 @@ async def my_devices(callback: types.CallbackQuery):
         except Exception:
             return "—"
 
+    # === HWID DEVICES UI 2026-05 ===
+    def _fmt_date(iso_str):
+        if not iso_str:
+            return "—"
+        try:
+            dt = _dt.fromisoformat(iso_str.replace("Z", "+00:00"))
+            return dt.strftime("%d.%m.%Y")
+        except Exception:
+            return "—"
+
     lines = [f"📱 <b>Мои устройства ({len(devices)}/{device_limit})</b>", ""]
     for i, d in enumerate(devices, 1):
         name = d.get("device_name") or "📱 Устройство"
-        ip = d.get("ip_address") or "—"
-        try:
-            parts = ip.split(".")
-            ip_short = f"{parts[0]}.{parts[1]}.x.x" if len(parts) == 4 else ip
-        except Exception:
-            ip_short = ip
+        device_os = d.get("device_os") or ""
+        os_version = d.get("os_version") or ""
+        os_line = ""
+        if device_os:
+            os_line = f"{device_os}"
+            if os_version:
+                os_line += f" {os_version}"
+        added = _fmt_date(d.get("connected_at"))
         last_seen = _fmt_ago(d.get("last_seen"))
+
         lines.append(f"<b>{i}.</b> {name}")
-        lines.append(f"   📡 <code>{ip_short}</code> · 🕐 {last_seen}")
+        detail = []
+        if os_line:
+            detail.append(f"📟 {os_line}")
+        detail.append(f"📅 добавлено {added}")
+        lines.append("   " + " · ".join(detail))
+        lines.append(f"   🕐 активно: {last_seen}")
         lines.append("")
 
     lines.append("ℹ️ Если устройство больше не используется — удалите его, чтобы освободить слот.")
-    lines.append("⚠️ Учитываются <b>IP-адреса</b>: если устройство меняет сеть (Wi-Fi → 4G) — может появиться как новое.")
 
     device_buttons = []
     for d in devices:
-        short_name = (d.get("device_name") or "Устройство").split("·")[0].strip()
+        short_name = (d.get("device_name") or "Устройство").strip()[:25]
         device_buttons.append([
             InlineKeyboardButton(
                 text=f"❌ Удалить · {short_name}",

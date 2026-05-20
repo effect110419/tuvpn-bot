@@ -379,7 +379,7 @@ function showLogin() {
 /* ===================== DATA LOAD ===================== */
 async function loadAll() {
   try {
-    const [users, subs, payments, promos, promoUses, refs, tickets, supportAdmins, campaigns, campaignClicks] = await Promise.all([
+    const [users, subs, payments, promos, promoUses, refs, tickets, supportAdmins, campaigns, campaignClicks, userDevices] = await Promise.all([
       sbGet('users', 'select=*&order=created_at.desc'),
       sbGet('subscriptions', 'select=*&order=created_at.desc'),
       sbGet('payments', 'select=*&order=created_at.desc'),
@@ -390,8 +390,9 @@ async function loadAll() {
       sbGet('support_admins', 'select=*'),
       sbGet('campaigns', 'select=*&order=created_at.desc'),
       sbGet('campaign_clicks', 'select=*&order=created_at.desc'),
+      sbGet('user_devices', 'select=*&is_active=eq.true'),
     ]);
-    Object.assign(state, { users, subs, payments, promos, promoUses, refs, tickets, supportAdmins, campaigns, campaignClicks, loaded: true });
+    Object.assign(state, { users, subs, payments, promos, promoUses, refs, tickets, supportAdmins, campaigns, campaignClicks, userDevices, loaded: true });
 
     // Servers via proxy
     try {
@@ -2483,6 +2484,7 @@ function clearCampaignModal() {
   $('#campSource').value = 'vk';
   $('#campType').value = 'post';
   $('#campCreator').value = '';
+  if ($('#campSourceUrl')) $('#campSourceUrl').value = '';
   $('#campCost').value = '';
   $('#campBonusDays').value = '7';
   $('#campWelcome').value = '';
@@ -2525,6 +2527,7 @@ async function saveCampaign() {
   }
 
   try {
+    const sourceUrl = ($('#campSourceUrl')?.value || '').trim() || null;
     const campaignData = {
       code,
       name,
@@ -2536,6 +2539,7 @@ async function saveCampaign() {
       welcome_text: welcomeText,
       note,
       is_active: isActive,
+      source_url: sourceUrl,
     };
 
     const created = await sbInsert('campaigns', campaignData);
@@ -2554,11 +2558,129 @@ async function saveCampaign() {
   }
 }
 
+/* === CAMPAIGN DETAILS 2026-05 === */
 function showCampaignDetails(campaignCode) {
-  // This would open a detailed sheet with campaign analytics
-  // For now, just copy the campaign URL
-  const testUrl = `https://t.me/MaxArtVPN_bot?start=${campaignCode}`;
-  navigator.clipboard?.writeText(testUrl);
-  toast(`UTM-ссылка ${campaignCode} скопирована в буфер обмена`);
+  const c = (state.campaigns || []).find(x => x.code === campaignCode);
+  if (!c) { toast('Кампания не найдена', 'error'); return; }
+
+  // Воронка
+  const campUsers = (state.users || []).filter(u => u.campaign_code === campaignCode);
+  const userIds = new Set(campUsers.map(u => u.user_id));
+  const clicks = (state.campaignClicks || []).filter(cl => cl.campaign_code === campaignCode).length;
+  const registered = campUsers.length;
+
+  const campDevices = (state.userDevices || []).filter(d => userIds.has(d.user_id));
+  const connectedUserIds = new Set(campDevices.map(d => d.user_id));
+  const connectedUsers = connectedUserIds.size;
+  const totalDevices = campDevices.length;
+
+  const campPayments = (state.payments || []).filter(p => p.campaign_code === campaignCode && p.status === 'succeeded');
+  const paidUsers = new Set(campPayments.map(p => p.user_id)).size;
+
+  // Разбивка устройств по моделям
+  const modelCounts = {};
+  campDevices.forEach(d => {
+    const m = d.device_model || (d.device_type === 'ios' ? 'iPhone/iPad' : d.device_type === 'android' ? 'Android' : 'Устройство');
+    modelCounts[m] = (modelCounts[m] || 0) + 1;
+  });
+  const modelsHtml = Object.keys(modelCounts).length
+    ? Object.entries(modelCounts).sort((a,b)=>b[1]-a[1]).map(([m,n]) =>
+        `<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--bd)">
+           <span>${esc(m)}</span><span class="mono" style="color:var(--accent)">${n}</span>
+         </div>`).join('')
+    : '<div class="text-muted">Пока нет подключённых устройств</div>';
+
+  const pct = (n, base) => base > 0 ? Math.round(n / base * 100) : 0;
+  const funnelRow = (label, val, base, color) => `
+    <div style="display:flex;align-items:center;gap:10px;padding:6px 0">
+      <div style="width:130px;color:var(--fg-2)">${label}</div>
+      <div style="flex:1;background:var(--bg-3);border-radius:6px;overflow:hidden;height:22px;position:relative">
+        <div style="width:${base>0?pct(val,base):0}%;background:${color};height:100%;min-width:2px"></div>
+        <div style="position:absolute;top:0;left:8px;line-height:22px;font-size:12px;font-weight:600">${val}${base>0?' ('+pct(val,base)+'%)':''}</div>
+      </div>
+    </div>`;
+
+  const tgLink = `https://t.me/MaxArtVPN_bot?start=${c.code}`;
+  const sourceUrl = c.source_url || '';
+
+  const body = `
+    <div class="field-row">
+      <div class="field"><label class="label">Код кампании</label>
+        <input class="input mono" value="${esc(c.code)}" disabled></div>
+      <div class="field"><label class="label">Название</label>
+        <input class="input" value="${esc(c.name || '')}" disabled></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label class="label">Источник</label>
+        <input class="input" value="${esc(getSourceLabel(c.source))}" disabled></div>
+      <div class="field"><label class="label">Бонус дней</label>
+        <input class="input mono" value="${c.bonus_days ?? ''}" disabled></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label class="label">У кого купили</label>
+        <input class="input" value="${esc(c.creator || '—')}" disabled></div>
+      <div class="field"><label class="label">Стоимость, ₽</label>
+        <input class="input mono" value="${c.cost ?? 0}" disabled></div>
+    </div>
+    <div class="field">
+      <label class="label">UTM-ссылка для размещения</label>
+      <div style="display:flex;gap:8px">
+        <input class="input mono" id="cdTgLink" value="${tgLink}" readonly>
+        <button class="btn btn-ghost" onclick="navigator.clipboard?.writeText('${tgLink}');toast('Ссылка скопирована')">Копировать</button>
+      </div>
+    </div>
+    ${sourceUrl ? `
+    <div class="field">
+      <label class="label">Канал/группа размещения</label>
+      <div style="display:flex;gap:8px">
+        <input class="input" value="${esc(sourceUrl)}" disabled>
+        <a class="btn btn-primary" href="${esc(sourceUrl)}" target="_blank" rel="noopener">Открыть →</a>
+      </div>
+    </div>` : ''}
+
+    <div class="divider"></div>
+    <div class="card-title" style="margin-bottom:8px">📊 Воронка</div>
+    ${funnelRow('Перешли', clicks, clicks || registered, 'var(--accent-3, #888)')}
+    ${funnelRow('Зарегались', registered, clicks || registered, 'var(--accent, #4c7be5)')}
+    ${funnelRow('Подключили', connectedUsers, registered, '#2ecc71')}
+    ${funnelRow('Оплатили', paidUsers, registered, '#f1c40f')}
+
+    <div class="divider"></div>
+    <div class="card-title" style="margin-bottom:8px">📱 Подключённые устройства (${totalDevices})</div>
+    ${modelsHtml}
+
+    ${c.welcome_text ? `<div class="divider"></div>
+    <div class="field"><label class="label">Welcome-текст</label>
+      <textarea class="textarea" rows="3" disabled>${esc(c.welcome_text)}</textarea></div>` : ''}
+    ${c.note ? `<div class="field"><label class="label">Заметки</label>
+      <textarea class="textarea" rows="2" disabled>${esc(c.note)}</textarea></div>` : ''}
+  `;
+
+  // Рисуем модал: обёртка modal-bg (id на ней) + вложенный .modal
+  let modal = document.getElementById('campaignViewModal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.className = 'modal-bg';
+    modal.id = 'campaignViewModal';
+    // Закрытие по клику на фон (вне .modal)
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) closeModal('campaignViewModal');
+    });
+    document.body.appendChild(modal);
+  }
+  modal.innerHTML = `
+    <div class="modal lg">
+      <div class="modal-head">
+        <div class="modal-title">👁 Кампания: ${esc(c.name || c.code)}</div>
+        <button class="icon-btn" onclick="closeModal('campaignViewModal')">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+        </button>
+      </div>
+      <div class="modal-body">${body}</div>
+      <div class="modal-foot">
+        <button class="btn btn-ghost" onclick="closeModal('campaignViewModal')">Закрыть</button>
+      </div>
+    </div>`;
+  openModal('campaignViewModal');
 }
 

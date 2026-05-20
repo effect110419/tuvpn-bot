@@ -252,11 +252,18 @@ def detect_device_type(ua: str) -> str:
     return "unknown"
 
 
-def make_device_name(ua: str, dtype: str) -> str:
-    """Формирует читаемое имя устройства."""
-    icons = {"ios": "🍏 iPhone/iPad", "android": "🤖 Android", "pc": "💻 ПК", "unknown": "📱 Устройство"}
-    name = icons.get(dtype, "📱 Устройство")
-    # Достаём версию из UA если есть
+def make_device_name(ua: str, dtype: str, device_model: str = None) -> str:
+    """Формирует читаемое имя устройства.
+    Если есть реальная модель из заголовка Happ (x-device-model) — используем её.
+    Иначе fallback на платформу + версию из UA.
+    """
+    icons = {"ios": "🍏", "android": "🤖", "pc": "💻", "unknown": "📱"}
+    icon = icons.get(dtype, "📱")
+    if device_model and device_model.strip():
+        return f"{icon} {device_model.strip()}"
+    # Fallback — старая логика
+    labels = {"ios": "iPhone/iPad", "android": "Android", "pc": "ПК", "unknown": "Устройство"}
+    name = f"{icon} {labels.get(dtype, 'Устройство')}"
     import re as _re
     m = _re.search(r"(iOS|Android|Windows|Mac OS X)[ /]?(\d+[\d._]*)", ua or "", _re.IGNORECASE)
     if m:
@@ -290,7 +297,10 @@ def _normalize_ua(ua: str) -> str:
     return ua[:200]
 
 
-def track_device(client_uuid: str, client_ip: str, user_agent: str) -> dict:
+# === HWID DEVICE TRACKING 2026-05 ===
+def track_device(client_uuid: str, client_ip: str, user_agent: str,
+                 hwid: str = None, device_model: str = None,
+                 device_os: str = None, os_version: str = None) -> dict:
     """
     Регистрирует/обновляет устройство при обращении к подписке.
     Возвращает {"allowed": bool, "reason": str, "device_id": int|None}.
@@ -325,10 +335,10 @@ def track_device(client_uuid: str, client_ip: str, user_agent: str) -> dict:
         normalized_ua = _normalize_ua(user_agent)
         now_iso = datetime.utcnow().isoformat()
 
-        # Ищем существующее устройство по (client_uuid, нормализованный UA).
-        # client_uuid + UA — стабильный fingerprint одного устройства.
-        # Берём все девайсы юзера и фильтруем в Python (Supabase не умеет
-        # точное сравнение по подстроке UA из-за нормализации).
+        # Идентификатор устройства: HWID (приоритет) → fallback на нормализованный UA.
+        # HWID стабилен и не меняется при смене сети — лучший fingerprint.
+        device_key = (hwid or "").strip() or normalized_ua
+
         all_devs_q = (
             sb.table("user_devices").select("*")
             .eq("user_id", user_id)
@@ -337,20 +347,35 @@ def track_device(client_uuid: str, client_ip: str, user_agent: str) -> dict:
         )
         all_devs = all_devs_q.data or []
 
+        def _dev_key(d):
+            return (d.get("hwid") or "").strip() or _normalize_ua(d.get("user_agent") or "")
+
         existing_dev = None
         for d in all_devs:
-            if _normalize_ua(d.get("user_agent") or "") == normalized_ua:
+            if _dev_key(d) == device_key:
                 existing_dev = d
                 break
 
         if existing_dev:
-            # Это уже знакомое устройство — обновляем (IP мог смениться)
-            sb.table("user_devices").update({
+            # Знакомое устройство — обновляем (IP/модель/ОС могли уточниться)
+            upd = {
                 "ip_address": client_ip,
                 "last_seen": now_iso,
                 "is_active": True,
                 "user_agent": (user_agent or "")[:500],
-            }).eq("id", existing_dev["id"]).execute()
+            }
+            if hwid: upd["hwid"] = hwid[:100]
+            if device_model: upd["device_model"] = device_model[:100]
+            if device_os: upd["device_os"] = device_os[:50]
+            if os_version: upd["os_version"] = os_version[:50]
+            # Обновим красивое имя если модель появилась
+            if device_model:
+                dtype = detect_device_type(user_agent) if not device_os else (
+                    "ios" if "ios" in (device_os or "").lower() else
+                    "android" if "android" in (device_os or "").lower() else
+                    detect_device_type(user_agent))
+                upd["device_name"] = make_device_name(user_agent, dtype, device_model)
+            sb.table("user_devices").update(upd).eq("id", existing_dev["id"]).execute()
             return {"allowed": True, "reason": "refreshed", "device_id": existing_dev["id"]}
 
         # Новое устройство — проверим лимит, считая только активных за окно
@@ -358,17 +383,18 @@ def track_device(client_uuid: str, client_ip: str, user_agent: str) -> dict:
         cutoff = (datetime.utcnow() - timedelta(days=DEVICE_ACTIVITY_WINDOW_DAYS)).isoformat()
 
         active_recent_q = (
-            sb.table("user_devices").select("user_agent")
+            sb.table("user_devices").select("user_agent,hwid")
             .eq("user_id", user_id)
             .eq("is_active", True)
             .gte("last_seen", cutoff)
             .execute()
         )
-        # Уникальные устройства по нормализованному UA
-        unique_recent_uas = set()
+        # Уникальные устройства по device_key (HWID или нормализованный UA)
+        unique_keys = set()
         for d in (active_recent_q.data or []):
-            unique_recent_uas.add(_normalize_ua(d.get("user_agent") or ""))
-        active_count = len(unique_recent_uas)
+            k = (d.get("hwid") or "").strip() or _normalize_ua(d.get("user_agent") or "")
+            unique_keys.add(k)
+        active_count = len(unique_keys)
 
         if active_count >= device_limit:
             app.logger.warning(
@@ -378,8 +404,13 @@ def track_device(client_uuid: str, client_ip: str, user_agent: str) -> dict:
             return {"allowed": False, "reason": "limit_exceeded", "device_id": None}
 
         # Добавляем новое устройство
-        dtype = detect_device_type(user_agent)
-        dname = make_device_name(user_agent, dtype)
+        if device_os:
+            dtype = ("ios" if "ios" in device_os.lower() else
+                     "android" if "android" in device_os.lower() else
+                     detect_device_type(user_agent))
+        else:
+            dtype = detect_device_type(user_agent)
+        dname = make_device_name(user_agent, dtype, device_model)
         new_dev = sb.table("user_devices").insert({
             "user_id": user_id,
             "device_name": dname,
@@ -388,6 +419,10 @@ def track_device(client_uuid: str, client_ip: str, user_agent: str) -> dict:
             "client_uuid": client_uuid,
             "ip_address": client_ip,
             "user_agent": (user_agent or "")[:500],
+            "hwid": (hwid or None) and hwid[:100],
+            "device_model": (device_model or None) and device_model[:100],
+            "device_os": (device_os or None) and device_os[:50],
+            "os_version": (os_version or None) and os_version[:50],
             "connected_at": now_iso,
             "last_seen": now_iso,
             "is_active": True,
@@ -413,9 +448,16 @@ def subscription(client_uuid):
                  request.headers.get('X-Forwarded-For', '').split(',')[0].strip() or
                  request.remote_addr or "unknown")
     user_agent = request.headers.get('User-Agent', '')
+    # Заголовки Happ для идентификации устройства
+    hwid = request.headers.get('X-Hwid', '') or request.headers.get('x-hwid', '')
+    device_model = request.headers.get('X-Device-Model', '') or request.headers.get('x-device-model', '')
+    device_os = request.headers.get('X-Device-Os', '') or request.headers.get('x-device-os', '')
+    os_version = request.headers.get('X-Ver-Os', '') or request.headers.get('x-ver-os', '')
 
     # Регистрация устройства / проверка лимита
-    track_result = track_device(client_uuid, client_ip, user_agent)
+    track_result = track_device(client_uuid, client_ip, user_agent,
+                                hwid=hwid, device_model=device_model,
+                                device_os=device_os, os_version=os_version)
     if not track_result["allowed"]:
         if track_result["reason"] == "limit_exceeded":
             app.logger.info(f"Subscription blocked (limit): {client_uuid} from {client_ip}")

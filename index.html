@@ -464,7 +464,7 @@
      MODAL: Create Campaign
      ========================================================= -->
 <div class="modal-bg" id="campaignModalBg"></div>
-<div class="modal" id="campaignModal">
+<div class="modal-bg" id="campaignModal"><div class="modal lg">
   <div class="modal-head">
     <h3 id="campaignModalTitle">Новая кампания</h3>
     <button class="icon-btn" data-close>
@@ -522,6 +522,14 @@
 
     <div class="field-row">
       <div class="field">
+        <label class="label">🔗 Ссылка на канал/группу</label>
+        <input id="campSourceUrl" type="url" class="input" placeholder="https://t.me/somechannel" maxlength="300">
+        <span class="help-text">Куда вы купили размещение — чтобы быстро открыть и проверить пост</span>
+      </div>
+    </div>
+
+    <div class="field-row">
+      <div class="field">
         <label class="label">Бонус дней</label>
         <input id="campBonusDays" type="number" class="input mono" placeholder="7" min="1" max="365" value="7">
         <span class="help-text">Сколько дней пробной подписки выдавать</span>
@@ -549,7 +557,7 @@
     <button class="btn btn-ghost" data-close>Отмена</button>
     <button class="btn btn-primary" id="campaignSubmit">Создать кампанию</button>
   </div>
-</div>
+</div></div>
 
 <!-- =========================================================
      SLIDE SHEET: user detail

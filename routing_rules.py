@@ -47,6 +47,31 @@ DIRECT_DOMAINS = [
     "domain:vk.com", "domain:vk.ru",
     "domain:ok.ru",
     "domain:max.ru", "domain:oneme.ru",
+    # === VPN-DETECT FIX 2026-05 ===
+    # Полная инфраструктура МАКС / VK (мессенджер дёргает много поддоменов)
+    "domain:platform-api.max.ru", "domain:api.oneme.ru",
+    "domain:okcdn.ru", "domain:calls.okcdn.ru",
+    "domain:mycdn.me", "domain:userapi.com",
+    "domain:vk-cdn.net", "domain:vkuser.net", "domain:vkuseraudio.net",
+    "domain:vk-portal.net", "domain:vkcdn.ru",
+    # === IP-ОПРЕДЕЛИТЕЛИ — КРИТИЧНО ===
+    # Российские приложения (МАКС, Озон Банк, Яндекс) проверяют внешний IP
+    # через эти сервисы. Если идут через VPN → видят зарубежный IP → "у вас VPN".
+    # Направляя DIRECT, приложение видит реальный российский IP.
+    "domain:ipify.org", "domain:api.ipify.org", "domain:api64.ipify.org",
+    "domain:ifconfig.me", "domain:ifconfig.co", "domain:ifconfig.io",
+    "domain:checkip.amazonaws.com", "domain:checkip.dyndns.org",
+    "domain:myip.com", "domain:api.myip.com",
+    "domain:ipinfo.io", "domain:ip-api.com", "domain:pro.ip-api.com",
+    "domain:icanhazip.com", "domain:wtfismyip.com",
+    "domain:ipecho.net", "domain:myexternalip.com",
+    "domain:whatismyipaddress.com", "domain:whatismyip.com",
+    "domain:2ip.ru", "domain:2ip.io", "domain:ip.me",
+    "domain:ipaddress.com", "domain:iplogger.org", "domain:iplogger.ru",
+    "domain:geoplugin.net", "domain:freegeoip.app", "domain:ipapi.co",
+    "domain:getip.pro", "domain:ipwho.is", "domain:ipwhois.app",
+    "domain:seeip.org", "domain:api.seeip.org",
+    "domain:ipdata.co", "domain:ipgeolocation.io",
     "domain:rutube.ru",
     "domain:yappy.media",
     "domain:dzen.ru", "domain:zen.yandex.ru",
