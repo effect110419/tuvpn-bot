@@ -2249,7 +2249,8 @@ function renderMarketing() {
   const campaigns = state.campaigns || [];
   const campaignClicks = state.campaignClicks || [];
   const organicUsers = state.users.filter(u => !u.campaign_code);
-  const organicPayments = state.payments.filter(p => !p.campaign_code);
+  // === MARKETING FIXES 2026-05 === только реально оплаченные (succeeded)
+  const organicPayments = state.payments.filter(p => !p.campaign_code && p.status === 'succeeded');
   const totalOrganicRevenue = organicPayments.reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0);
 
   // Campaign stats calculation
@@ -2257,7 +2258,7 @@ function renderMarketing() {
     const clicks = campaignClicks.filter(c => c.campaign_code === campaign.code);
     const newUsers = clicks.filter(c => c.is_new_user);
     const campaignUsers = state.users.filter(u => u.campaign_code === campaign.code);
-    const campaignPayments = state.payments.filter(p => p.campaign_code === campaign.code);
+    const campaignPayments = state.payments.filter(p => p.campaign_code === campaign.code && p.status === 'succeeded');
     const revenue = campaignPayments.reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0);
     const cost = parseFloat(campaign.cost) || 0;
     const roi = cost > 0 ? ((revenue - cost) / cost * 100) : (revenue > 0 ? Infinity : 0);
@@ -2559,6 +2560,7 @@ async function saveCampaign() {
 }
 
 /* === CAMPAIGN DETAILS 2026-05 === */
+/* === MARKETING FIXES 2026-05 === */
 function showCampaignDetails(campaignCode) {
   const c = (state.campaigns || []).find(x => x.code === campaignCode);
   if (!c) { toast('Кампания не найдена', 'error'); return; }
@@ -2577,18 +2579,26 @@ function showCampaignDetails(campaignCode) {
   const campPayments = (state.payments || []).filter(p => p.campaign_code === campaignCode && p.status === 'succeeded');
   const paidUsers = new Set(campPayments.map(p => p.user_id)).size;
 
-  // Разбивка устройств по моделям
-  const modelCounts = {};
+  // Устройства по пользователям: { user_id: [модели...] }
+  const byUser = {};
   campDevices.forEach(d => {
     const m = d.device_model || (d.device_type === 'ios' ? 'iPhone/iPad' : d.device_type === 'android' ? 'Android' : 'Устройство');
-    modelCounts[m] = (modelCounts[m] || 0) + 1;
+    (byUser[d.user_id] = byUser[d.user_id] || []).push(m);
   });
-  const modelsHtml = Object.keys(modelCounts).length
-    ? Object.entries(modelCounts).sort((a,b)=>b[1]-a[1]).map(([m,n]) =>
-        `<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--bd)">
-           <span>${esc(m)}</span><span class="mono" style="color:var(--accent)">${n}</span>
-         </div>`).join('')
-    : '<div class="text-muted">Пока нет подключённых устройств</div>';
+  let devicesHtml;
+  if (totalDevices === 0) {
+    devicesHtml = '<div class="text-muted">Пока нет подключённых устройств</div>';
+  } else {
+    devicesHtml = Object.entries(byUser).map(([uid, models]) => {
+      const u = (state.users || []).find(x => String(x.user_id) === String(uid));
+      const name = displayName(u || { user_id: uid });
+      const modelsLine = models.map(m => `<span class="pill pill-muted" style="margin:2px 4px 2px 0;display:inline-block">${esc(m)}</span>`).join('');
+      return `<div style="padding:8px 0;border-bottom:1px solid var(--border-hi)">
+        <div style="font-weight:600;margin-bottom:4px">${esc(name)} <span class="text-muted mono" style="font-size:11px">(${models.length})</span></div>
+        <div>${modelsLine}</div>
+      </div>`;
+    }).join('');
+  }
 
   const pct = (n, base) => base > 0 ? Math.round(n / base * 100) : 0;
   const funnelRow = (label, val, base, color) => `
@@ -2608,7 +2618,7 @@ function showCampaignDetails(campaignCode) {
       <div class="field"><label class="label">Код кампании</label>
         <input class="input mono" value="${esc(c.code)}" disabled></div>
       <div class="field"><label class="label">Название</label>
-        <input class="input" value="${esc(c.name || '')}" disabled></div>
+        <input class="input" id="cdName" value="${esc(c.name || '')}"></div>
     </div>
     <div class="field-row">
       <div class="field"><label class="label">Источник</label>
@@ -2618,9 +2628,9 @@ function showCampaignDetails(campaignCode) {
     </div>
     <div class="field-row">
       <div class="field"><label class="label">У кого купили</label>
-        <input class="input" value="${esc(c.creator || '—')}" disabled></div>
+        <input class="input" id="cdCreator" value="${esc(c.creator || '')}"></div>
       <div class="field"><label class="label">Стоимость, ₽</label>
-        <input class="input mono" value="${c.cost ?? 0}" disabled></div>
+        <input class="input mono" id="cdCost" type="number" min="0" step="100" value="${c.cost ?? 0}"></div>
     </div>
     <div class="field">
       <label class="label">UTM-ссылка для размещения</label>
@@ -2629,25 +2639,24 @@ function showCampaignDetails(campaignCode) {
         <button class="btn btn-ghost" onclick="navigator.clipboard?.writeText('${tgLink}');toast('Ссылка скопирована')">Копировать</button>
       </div>
     </div>
-    ${sourceUrl ? `
     <div class="field">
-      <label class="label">Канал/группа размещения</label>
+      <label class="label">🔗 Ссылка на канал/группу</label>
       <div style="display:flex;gap:8px">
-        <input class="input" value="${esc(sourceUrl)}" disabled>
-        <a class="btn btn-primary" href="${esc(sourceUrl)}" target="_blank" rel="noopener">Открыть →</a>
+        <input class="input" id="cdSourceUrl" value="${esc(sourceUrl)}" placeholder="https://t.me/...">
+        ${sourceUrl ? `<a class="btn btn-primary" href="${esc(sourceUrl)}" target="_blank" rel="noopener">Открыть →</a>` : ''}
       </div>
-    </div>` : ''}
+    </div>
 
     <div class="divider"></div>
     <div class="card-title" style="margin-bottom:8px">📊 Воронка</div>
-    ${funnelRow('Перешли', clicks, clicks || registered, 'var(--accent-3, #888)')}
+    ${funnelRow('Перешли', clicks, clicks || registered, '#8a8f98')}
     ${funnelRow('Зарегались', registered, clicks || registered, 'var(--accent, #4c7be5)')}
     ${funnelRow('Подключили', connectedUsers, registered, '#2ecc71')}
     ${funnelRow('Оплатили', paidUsers, registered, '#f1c40f')}
 
     <div class="divider"></div>
-    <div class="card-title" style="margin-bottom:8px">📱 Подключённые устройства (${totalDevices})</div>
-    ${modelsHtml}
+    <div class="card-title" style="margin-bottom:8px">📱 Подключённые устройства · всего ${totalDevices} (юзеров: ${connectedUsers})</div>
+    ${devicesHtml}
 
     ${c.welcome_text ? `<div class="divider"></div>
     <div class="field"><label class="label">Welcome-текст</label>
@@ -2656,13 +2665,11 @@ function showCampaignDetails(campaignCode) {
       <textarea class="textarea" rows="2" disabled>${esc(c.note)}</textarea></div>` : ''}
   `;
 
-  // Рисуем модал: обёртка modal-bg (id на ней) + вложенный .modal
   let modal = document.getElementById('campaignViewModal');
   if (!modal) {
     modal = document.createElement('div');
     modal.className = 'modal-bg';
     modal.id = 'campaignViewModal';
-    // Закрытие по клику на фон (вне .modal)
     modal.addEventListener('click', (e) => {
       if (e.target === modal) closeModal('campaignViewModal');
     });
@@ -2677,10 +2684,52 @@ function showCampaignDetails(campaignCode) {
         </button>
       </div>
       <div class="modal-body">${body}</div>
-      <div class="modal-foot">
-        <button class="btn btn-ghost" onclick="closeModal('campaignViewModal')">Закрыть</button>
+      <div class="modal-foot modal-foot-spread">
+        <button class="btn btn-danger" onclick="deleteCampaign('${esc(c.code)}')">🗑 Удалить</button>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-ghost" onclick="closeModal('campaignViewModal')">Закрыть</button>
+          <button class="btn btn-primary" onclick="updateCampaign('${esc(c.code)}')">💾 Сохранить</button>
+        </div>
       </div>
     </div>`;
   openModal('campaignViewModal');
+}
+
+async function updateCampaign(code) {
+  const c = (state.campaigns || []).find(x => x.code === code);
+  if (!c) { toast('Кампания не найдена', 'error'); return; }
+  const name = ($('#cdName')?.value || '').trim();
+  const creator = ($('#cdCreator')?.value || '').trim() || null;
+  const cost = parseFloat($('#cdCost')?.value) || 0;
+  const sourceUrl = ($('#cdSourceUrl')?.value || '').trim() || null;
+  if (!name) { toast('Название не может быть пустым', 'error'); return; }
+  try {
+    await sbUpdate('campaigns', `code=eq.${encodeURIComponent(code)}`, {
+      name, creator, cost, source_url: sourceUrl,
+    });
+    // Обновляем в локальном state
+    Object.assign(c, { name, creator, cost, source_url: sourceUrl });
+    toast('Кампания обновлена', 'success');
+    closeModal('campaignViewModal');
+    renderMarketing();
+  } catch (e) {
+    toast('Ошибка сохранения: ' + e.message, 'error');
+  }
+}
+
+async function deleteCampaign(code) {
+  const c = (state.campaigns || []).find(x => x.code === code);
+  if (!c) { toast('Кампания не найдена', 'error'); return; }
+  const ok = confirm(`Удалить кампанию «${c.name || code}»?\n\nЭто действие нельзя отменить. Уже зарегистрированные по ней пользователи останутся, но статистика кампании пропадёт.`);
+  if (!ok) return;
+  try {
+    await sbDelete('campaigns', `code=eq.${encodeURIComponent(code)}`);
+    state.campaigns = (state.campaigns || []).filter(x => x.code !== code);
+    toast('Кампания удалена', 'success');
+    closeModal('campaignViewModal');
+    renderMarketing();
+  } catch (e) {
+    toast('Ошибка удаления: ' + e.message, 'error');
+  }
 }
 
