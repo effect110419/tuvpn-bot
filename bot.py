@@ -4,9 +4,12 @@ import uuid
 import json
 import aiohttp
 from datetime import datetime, timedelta
-from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import (InlineKeyboardMarkup, InlineKeyboardButton,
+                           ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove)
+from aiogram.exceptions import TelegramBadRequest
+import base64 as _b64
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -412,6 +415,47 @@ PRICES_STARS = {
 }
 DAYS = {"1": 30, "3": 90, "12": 365}
 
+# === UX BIG PATCH 2026-05 ===
+async def safe_edit(callback, text, kb=None):
+    """Редактирует сообщение (чистый чат). Если нельзя — шлёт новое.
+    Универсальный хелпер для навигации по inline-меню."""
+    try:
+        await callback.message.edit_text(
+            text, reply_markup=kb, disable_web_page_preview=True
+        )
+    except TelegramBadRequest:
+        try:
+            await callback.message.answer(
+                text, reply_markup=kb, disable_web_page_preview=True
+            )
+        except Exception:
+            pass
+    except Exception:
+        try:
+            await callback.message.answer(
+                text, reply_markup=kb, disable_web_page_preview=True
+            )
+        except Exception:
+            pass
+
+
+def happ_deeplink(sub_url: str) -> str:
+    """Deeplink для импорта подписки в Happ одним тапом."""
+    try:
+        b = _b64.b64encode(sub_url.encode()).decode()
+        return f"happ://add/{b}"
+    except Exception:
+        return ""
+
+
+def make_howto_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🍏 У меня iPhone / iPad", callback_data="howto_ios")],
+        [InlineKeyboardButton(text="🤖 У меня Android", callback_data="howto_android")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="back")],
+    ])
+
+
 def main_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⚡️ Подключиться", callback_data="connect")],
@@ -427,6 +471,12 @@ def main_menu():
 @dp.message(Command("start"))
 async def start(message: types.Message):
     args = message.text.split()
+    # Стираем устаревшую нижнюю reply-клавиатуру у юзера (если осталась)
+    try:
+        _rm = await message.answer("\u2063", reply_markup=ReplyKeyboardRemove())
+        await _rm.delete()
+    except Exception:
+        pass
 
     # === ADMIN LOGIN DEEPLINK ===
     if len(args) > 1 and args[1].startswith("login_admin_"):
@@ -576,14 +626,18 @@ async def start(message: types.Message):
         await message.answer(text, reply_markup=main_menu())
         return
 
+    # === UX BIG PATCH 2026-05 === онбординг новичка за руку + reply-меню
     await message.answer(
         f"Привет{', ' + first_name if first_name else ''}! 👋\n\n"
-        f"🌊 <b>TuVPN</b> — просто включи и пользуйся.\n\n"
-        f"⚡️ Подписка активна сразу после оплаты\n"
-        f"💰 Честные цены без переплат\n"
-        f"🎬 Instagram, YouTube, Telegram — всё открыто\n"
-        f"🔒 VLESS+Reality — современный незаметный протокол\n\n"
-        f"Нажмите «🛒 Оформить подписку» чтобы начать.",
+        f"🌊 <b>TuVPN</b> — быстрый и стабильный доступ к любым сайтам и сервисам.\n\n"
+        f"<b>Как начать за 2 минуты:</b>\n"
+        f"1️⃣ Оформи подписку (от 149 ₽/мес)\n"
+        f"2️⃣ Установи приложение и вставь ссылку\n"
+        f"3️⃣ Готово — пользуйся 🚀\n\n"
+        f"🎬 YouTube, Instagram, Telegram — всё открыто\n"
+        f"🔒 Современный незаметный протокол\n"
+        f"💰 Честные цены без переплат\n\n"
+        f"Жми <b>«🛒 Оформить подписку»</b> — это займёт минуту.",
         reply_markup=main_menu()
     )
 
@@ -645,7 +699,7 @@ async def connect(callback: types.CallbackQuery):
             f"❌ У вас пока нет активной подписки\n\n"
             f"Чтобы пользоваться TuVPN — оформите подписку. Это займёт 1 минуту, а после оплаты ссылка появится прямо здесь."
         )
-    await callback.message.answer(text, reply_markup=kb, disable_web_page_preview=True)
+    await safe_edit(callback, text, kb)
     await callback.answer()
 
 
@@ -657,7 +711,7 @@ async def buy(callback: types.CallbackQuery):
         [InlineKeyboardButton(text="🔹 5 устройств", callback_data="devices_5")],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="back")],
     ])
-    await callback.message.answer("🛒 На сколько устройств нужен VPN?", reply_markup=kb)
+    await safe_edit(callback, "🛒 <b>На сколько устройств нужен VPN?</b>\n\nВыберите количество — цена зависит от него.", kb)
     await callback.answer()
 
 @dp.callback_query(lambda c: c.data.startswith("devices_"))
@@ -685,11 +739,12 @@ async def choose_period(callback: types.CallbackQuery):
         [InlineKeyboardButton(text=label_12, callback_data=f"period_{devices}_12")],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="buy")],
     ])
-    await callback.message.answer(
+    await safe_edit(
+        callback,
         f"🌊 <b>Оформление подписки TuVPN</b>\n\n"
         f"🔹 Устройств: <b>{devices}</b>\n"
         f"Выберите период — чем дольше, тем выгоднее:",
-        reply_markup=kb
+        kb
     )
     await callback.answer()
 
@@ -1197,7 +1252,7 @@ async def channel(callback: types.CallbackQuery):
 @dp.callback_query(lambda c: c.data == "about")
 async def about(callback: types.CallbackQuery):
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="back")]])
-    await callback.message.answer(
+    await safe_edit(callback,
         "🌊 TuVPN — твой надёжный щит в сети\n\n"
         "Стабильный • Быстрый • Безопасный\n\n"
         "━━━━━━━━━━━━━━━━\n\n"
@@ -1219,7 +1274,7 @@ async def about(callback: types.CallbackQuery):
         "📣 Канал с новостями: @tuvpn_news\n"
         "💬 Поддержка: @TuVPNSupport_bot\n\n"
         "🌊 TuVPN — свободный интернет для всех! 🚀",
-        reply_markup=kb
+        kb
     )
     await callback.answer()
 
@@ -1261,7 +1316,8 @@ async def referral(callback: types.CallbackQuery):
         [InlineKeyboardButton(text="📤 Поделиться ссылкой", switch_inline_query=ref_link)],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="back")],
     ])
-    await callback.message.answer(
+    await safe_edit(
+        callback,
         f"🤝 <b>Позови друга — получи дни в подарок!</b>\n\n"
         f"{stats_block}"
         f"Твой друг получит <b>7 дней TuVPN бесплатно</b> 🎁\n\n"
@@ -1271,45 +1327,66 @@ async def referral(callback: types.CallbackQuery):
         f"🔗 <b>Твоя ссылка:</b>\n"
         f"<code>{ref_link}</code>\n\n"
         f"👆 Нажмите чтобы скопировать",
-        reply_markup=kb,
-        disable_web_page_preview=True
+        kb
     )
     await callback.answer()
 
 @dp.callback_query(lambda c: c.data == "howto")
 async def howto(callback: types.CallbackQuery):
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="back")]])
-    await callback.message.answer(
+    # === UX BIG PATCH 2026-05 === сначала выбор платформы
+    await safe_edit(
+        callback,
         "📲 <b>Как подключиться к TuVPN</b>\n\n"
         "Подключение занимает 2 минуты.\n"
-        "Выберите своё устройство и следуйте инструкции:\n\n"
-        "━━━━━━━━━━━━━━━━━━━\n"
-        "🍏 <b>iPhone / iPad</b>\n"
-        "━━━━━━━━━━━━━━━━━━━\n\n"
-        "1️⃣ Установите приложение <b>Happ</b>\n"
-        "👉 <a href=\"https://apps.apple.com/ru/app/happ-proxy-utility-plus/id6746188973\">Открыть в App Store</a>\n\n"
-        "2️⃣ Вернитесь в бот → нажмите <b>«🔌 Подключиться»</b>\n\n"
-        "3️⃣ Скопируйте ссылку подписки (она появится в сообщении)\n\n"
-        "4️⃣ Откройте Happ → нажмите <b>➕</b> в правом верхнем углу\n\n"
-        "5️⃣ Выберите <b>«Добавить из буфера обмена»</b>\n\n"
-        "6️⃣ Нажмите большую круглую кнопку для подключения 🟢\n\n"
-        "━━━━━━━━━━━━━━━━━━━\n"
-        "🤖 <b>Android</b>\n"
-        "━━━━━━━━━━━━━━━━━━━\n\n"
-        "1️⃣ Установите приложение <b>v2RayTun</b>\n"
-        "👉 <a href=\"https://play.google.com/store/apps/details?id=com.v2raytun.android\">Открыть в Google Play</a>\n\n"
-        "2️⃣ Вернитесь в бот → нажмите <b>«🔌 Подключиться»</b>\n\n"
-        "3️⃣ Скопируйте ссылку подписки\n\n"
-        "4️⃣ Откройте v2RayTun → нажмите <b>➕</b>\n\n"
-        "5️⃣ Выберите <b>«Импорт из буфера обмена»</b>\n\n"
-        "6️⃣ Нажмите кнопку подключения 🟢\n\n"
-        "━━━━━━━━━━━━━━━━━━━\n\n"
-        "❓ <b>Что-то пошло не так?</b>\n"
-        "Напишите нам в @TuVPNSupport_bot — поможем разобраться 🙌",
-        reply_markup=kb,
-        disable_web_page_preview=True
+        "Выберите своё устройство:",
+        make_howto_kb()
     )
     await callback.answer()
+
+
+@dp.callback_query(lambda c: c.data == "howto_ios")
+async def howto_ios(callback: types.CallbackQuery):
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔗 Получить ссылку подключения", callback_data="connection_link")],
+        [InlineKeyboardButton(text="◀️ Другое устройство", callback_data="howto")],
+        [InlineKeyboardButton(text="🏠 В меню", callback_data="back")],
+    ])
+    await safe_edit(
+        callback,
+        "🍏 <b>Подключение на iPhone / iPad</b>\n\n"
+        "1️⃣ Установите приложение <b>Happ</b>\n"
+        "👉 <a href=\"https://apps.apple.com/ru/app/happ-proxy-utility-plus/id6746188973\">Открыть в App Store</a>\n\n"
+        "2️⃣ Нажмите «🔗 Получить ссылку подключения» ниже\n\n"
+        "3️⃣ Скопируйте ссылку (или нажмите «Открыть в Happ»)\n\n"
+        "4️⃣ В Happ нажмите <b>➕</b> → <b>«Добавить из буфера обмена»</b>\n\n"
+        "5️⃣ Нажмите большую круглую кнопку 🟢\n\n"
+        "❓ Не получилось? Напишите @TuVPNSupport_bot",
+        kb
+    )
+    await callback.answer()
+
+
+@dp.callback_query(lambda c: c.data == "howto_android")
+async def howto_android(callback: types.CallbackQuery):
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔗 Получить ссылку подключения", callback_data="connection_link")],
+        [InlineKeyboardButton(text="◀️ Другое устройство", callback_data="howto")],
+        [InlineKeyboardButton(text="🏠 В меню", callback_data="back")],
+    ])
+    await safe_edit(
+        callback,
+        "🤖 <b>Подключение на Android</b>\n\n"
+        "1️⃣ Установите приложение <b>v2RayTun</b>\n"
+        "👉 <a href=\"https://play.google.com/store/apps/details?id=com.v2raytun.android\">Открыть в Google Play</a>\n\n"
+        "2️⃣ Нажмите «🔗 Получить ссылку подключения» ниже\n\n"
+        "3️⃣ Скопируйте ссылку\n\n"
+        "4️⃣ В v2RayTun нажмите <b>➕</b> → <b>«Импорт из буфера обмена»</b>\n\n"
+        "5️⃣ Нажмите кнопку подключения 🟢\n\n"
+        "❓ Не получилось? Напишите @TuVPNSupport_bot",
+        kb
+    )
+    await callback.answer()
+
 
 @dp.callback_query(lambda c: c.data == "support")
 async def support(callback: types.CallbackQuery):
@@ -1317,26 +1394,71 @@ async def support(callback: types.CallbackQuery):
         [InlineKeyboardButton(text="✉️ Написать в поддержку", url="https://t.me/TuVPNSupport_bot")],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="back")],
     ])
-    await callback.message.answer(
+    await safe_edit(
+        callback,
         "🛠 <b>Помощь TuVPN</b>\n\n"
-        "На связи и готовы решить любой вопрос — будь то проблемы с подключением, оплатой или просто совет.\n\n"
+        "На связи и готовы решить любой вопрос — подключение, оплата или совет.\n\n"
         "✉️ Напишите нам — ответим как можно скорее.\n\n"
         "👉 @TuVPNSupport_bot",
-        reply_markup=kb
+        kb
     )
     await callback.answer()
 
 @dp.callback_query(lambda c: c.data == "back")
 async def back(callback: types.CallbackQuery):
-    await callback.message.answer("Главное меню:", reply_markup=main_menu())
+    await safe_edit(callback, "🏠 <b>Главное меню</b>\n\nВыберите действие:", main_menu())
     await callback.answer()
+
+# === UX BIG PATCH 2026-05 === /status + роутинг reply-кнопок
+async def _send_status(message, user_id, first_name=""):
+    sub = get_subscription(user_id)
+    if not sub:
+        await message.answer(
+            "❌ <b>У вас нет активной подписки</b>\n\nНажмите «🛒 Купить» чтобы оформить.",
+            reply_markup=main_menu()
+        )
+        return
+    try:
+        from datetime import datetime as _dt
+        exp = _dt.fromisoformat(sub["expires_at"].replace("Z", "+00:00"))
+        if exp.tzinfo is not None:
+            exp = exp.replace(tzinfo=None)
+        days_left = max(0, (exp - _dt.now()).days)
+    except Exception:
+        days_left = 0
+    devices_count = count_active_devices(user_id)
+    if days_left > 0:
+        await message.answer(
+            f"✅ <b>Подписка активна</b>\n\n"
+            f"📅 Осталось дней: <b>{days_left}</b>\n"
+            f"📆 До: {exp.strftime('%d.%m.%Y')}\n"
+            f"📱 Устройств: <b>{devices_count}/{sub.get('devices', 1)}</b>",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔗 Ссылка подключения", callback_data="connection_link")],
+                [InlineKeyboardButton(text="🔄 Продлить", callback_data="buy")],
+            ])
+        )
+    else:
+        await message.answer(
+            "⚠️ <b>Подписка истекла</b>\n\nПродлите чтобы восстановить доступ.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔄 Продлить", callback_data="buy")],
+            ])
+        )
+
+
+@dp.message(Command("status"))
+async def cmd_status(message: types.Message):
+    await _send_status(message, message.from_user.id, message.from_user.first_name or "")
+
+
 
 async def main():
     from aiogram.types import BotCommand
     logging.basicConfig(level=logging.INFO)
     await bot.set_my_commands([
         BotCommand(command="start", description="🏠 Главное меню"),
-        BotCommand(command="menu", description="📋 Меню"),
+        BotCommand(command="status", description="✅ Статус подписки"),
     ])
     asyncio.create_task(check_expired())
     await dp.start_polling(bot)
@@ -1515,13 +1637,17 @@ async def connection_link(callback: types.CallbackQuery):
         [InlineKeyboardButton(text="📲 Как настроить", callback_data="howto")],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="connect")],
     ])
-    
-    await callback.message.answer(
-        f"🔗 <b>Ваша ссылка для подключения:</b>\n"
+    await safe_edit(
+        callback,
+        f"🔗 <b>Ваша ссылка для подключения</b>\n\n"
         f"<code>{sub['sub_url']}</code>\n\n"
         f"👆 Нажмите на ссылку чтобы скопировать.\n\n"
-        f"📲 Если впервые подключаетесь — нажмите «Как настроить».",
-        reply_markup=kb
+        f"<b>Дальше всё просто:</b>\n"
+        f"1️⃣ Откройте приложение (Happ / v2RayTun)\n"
+        f"2️⃣ Нажмите ➕ → «Добавить из буфера обмена»\n"
+        f"3️⃣ Нажмите кнопку подключения 🟢\n\n"
+        f"❓ Не получается? Нажмите «Как настроить» ниже.",
+        kb
     )
     await callback.answer()
 
@@ -1657,11 +1783,12 @@ async def add_devices(callback: types.CallbackQuery):
             [InlineKeyboardButton(text="◀️ Назад", callback_data="my_devices")],
         ])
         
-        await callback.message.answer(
+        await safe_edit(
+            callback,
             f"📱 <b>Добавить устройства</b>\n\n"
             f"⚠️ Вы используете все доступные слоты: <b>{current_devices}/{device_limit}</b>\n\n"
-            f"Чтобы подключить больше устройств, расширьте подписку или удалите неиспользуемые устройства.",
-            reply_markup=kb
+            f"Чтобы подключить больше устройств, расширьте подписку или удалите неиспользуемые.",
+            kb
         )
     else:
         available_slots = device_limit - current_devices
@@ -1671,12 +1798,13 @@ async def add_devices(callback: types.CallbackQuery):
             [InlineKeyboardButton(text="◀️ Назад", callback_data="my_devices")],
         ])
         
-        await callback.message.answer(
+        await safe_edit(
+            callback,
             f"📱 <b>Добавить устройства</b>\n\n"
             f"✅ Доступно слотов: <b>{available_slots}</b>\n"
             f"📊 Использовано: <b>{current_devices}/{device_limit}</b>\n\n"
-            f"Получите ссылку подключения и настройте новое устройство. Или расширьте подписку для большего количества устройств.",
-            reply_markup=kb
+            f"Получите ссылку подключения и настройте новое устройство.",
+            kb
         )
     
     await callback.answer()
@@ -1733,20 +1861,21 @@ async def profile(callback: types.CallbackQuery):
         [InlineKeyboardButton(text="◀️ Назад", callback_data="back")],
     ])
     
-    await callback.message.answer(
-        f"👤 <b>Профиль пользователя</b>\n\n"
-        f"👨‍💻 <b>{display_name}</b>\n"
-        f"🆔 {username}\n"
-        f"🔢 ID: <code>{user_id}</code>\n\n"
-        f"🔐 <b>Подписка:</b>\n"
+    # === UX BIG PATCH 2026-05 === чище: статус крупно, статистику свернули
+    extra = ""
+    if bonus_days > 0:
+        extra += f"\n🎁 Бонусных дней в копилке: <b>{bonus_days}</b>"
+    if stats['referrals_count'] > 0:
+        extra += f"\n👥 Приглашено друзей: <b>{stats['referrals_count']}</b>"
+
+    await safe_edit(
+        callback,
+        f"👤 <b>{display_name}</b>  ·  {username}\n\n"
+        f"🔐 <b>Подписка</b>\n"
         f"{sub_status}\n"
-        f"{device_info}\n\n"
-        f"📊 <b>Статистика:</b>\n"
-        f"💳 Платежей: {stats['payments_count']}\n"
-        f"💸 Потрачено: {stats['total_paid']:.0f} ₽\n"
-        f"👥 Приглашено: {stats['referrals_count']} друзей\n"
-        f"{balance_info}",
-        reply_markup=kb
+        f"{device_info}"
+        f"{extra}",
+        kb
     )
     await callback.answer()
 

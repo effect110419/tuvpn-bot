@@ -276,25 +276,67 @@ def make_device_name(ua: str, dtype: str, device_model: str = None) -> str:
 DEVICE_ACTIVITY_WINDOW_DAYS = 7
 
 
-def _normalize_ua(ua: str) -> str:
-    """Нормализует User-Agent для устойчивой идентификации.
+def _is_preview_ua(ua: str) -> bool:
+    """True если UA — это превью-бот/краулер (превью ссылки в чате, не реальный клиент)."""
+    if not ua:
+        return False
+    low = ua.lower()
+    preview_markers = (
+        "telegrambot", "twitterbot", "vkshare", "facebookexternalhit",
+        "whatsapp", "bot", "preview", "crawler", "spider",
+    )
+    vpn_markers = ("happ", "v2ray", "v2box", "streisand", "shadowrocket",
+                   "nekobox", "hiddify", "sing-box", "clash")
+    has_vpn = any(m in low for m in vpn_markers)
+    if has_vpn:
+        return False  # реальный VPN-клиент — не превью
+    # голый Mozilla/браузер без VPN-клиента — это превью/браузерный заход
+    if "mozilla" in low or any(m in low for m in preview_markers):
+        return True
+    return False
 
-    Happ Plus формирует UA вида:
-        Happ/3.20.4/Android/17782185961531805598
-        Happ/4.9.0/ios/2605051739563
-    Последний токен — это уникальный device-id (Happ внутренний),
-    он стабилен для одного устройства и одной установки приложения.
-    Поэтому он — лучший идентификатор устройства.
-    Если такого токена нет — fallback на полный UA.
+
+def _detect_platform(ua: str) -> str:
+    """Извлекает платформу из UA в любом формате."""
+    low = (ua or "").lower()
+    if "ios" in low or "iphone" in low or "ipad" in low or "mac os" in low or "macos" in low:
+        return "ios"
+    if "android" in low:
+        return "android"
+    if "windows" in low or "win64" in low or "win32" in low or "nt 10" in low:
+        return "win"
+    if "linux" in low:
+        return "linux"
+    return "unknown"
+
+
+def _detect_client(ua: str) -> str:
+    """Извлекает имя клиента из UA."""
+    low = (ua or "").lower()
+    for c in ("happ", "v2raytun", "v2rayng", "v2box", "streisand",
+              "shadowrocket", "nekobox", "hiddify", "sing-box", "clash"):
+        if c in low:
+            return c.replace("-", "")
+    return "client"
+
+
+def _normalize_ua(ua: str) -> str:
+    """Стабильный идентификатор устройства: client/platform.
+    Не зависит от версии приложения и внутреннего device-id, которые
+    меняются при обновлении/переустановке. Один физический телефон с одним
+    VPN-клиентом = один ключ.
+    Примеры:
+        Happ/3.20.4/Android/177...   -> happ/android
+        Happ/4.10.1/ios/260...       -> happ/ios
+        Happ/2.0 iPhone iOS 17.5     -> happ/ios
+        v2raytun/android             -> v2raytun/android
+        V2Box 9.8.9;IOS 26.4.2       -> v2box/ios
     """
     if not ua:
         return "unknown"
-    # Берём первые 4 поля Happ-UA, если они есть
-    parts = ua.split("/")
-    if len(parts) >= 4 and parts[0].lower().startswith("happ"):
-        return "/".join(parts[:4])  # Happ/version/platform/deviceId
-    # Для остальных клиентов (v2RayTun и т.д.) — целиком
-    return ua[:200]
+    client = _detect_client(ua)
+    platform = _detect_platform(ua)
+    return f"{client}/{platform}"
 
 
 # === HWID DEVICE TRACKING 2026-05 ===
@@ -315,8 +357,8 @@ def track_device(client_uuid: str, client_ip: str, user_agent: str,
     4. На любую ошибку — разрешаем (lose mode), чтобы не сломать сервис юзерам.
     """
     try:
-        # Игнорируем preview-запросы от Telegram (когда юзер кидает ссылку в чат)
-        if user_agent and ("TelegramBot" in user_agent or "TwitterBot" in user_agent):
+        # Игнорируем preview-запросы (превью ссылки в чате/соцсетях, не реальный клиент)
+        if _is_preview_ua(user_agent):
             return {"allowed": True, "reason": "preview_ignored", "device_id": None}
 
         # Находим подписку
@@ -335,8 +377,9 @@ def track_device(client_uuid: str, client_ip: str, user_agent: str,
         normalized_ua = _normalize_ua(user_agent)
         now_iso = datetime.utcnow().isoformat()
 
-        # Идентификатор устройства: HWID (приоритет) → fallback на нормализованный UA.
-        # HWID стабилен и не меняется при смене сети — лучший fingerprint.
+        # Идентификатор устройства: HWID (приоритет) → fallback на платформу (UA).
+        # HWID стабилен (железо); платформа стабильна при обновлении приложения.
+        device_key_ua_platform = normalized_ua  # = client/platform
         device_key = (hwid or "").strip() or normalized_ua
 
         all_devs_q = (
@@ -377,6 +420,32 @@ def track_device(client_uuid: str, client_ip: str, user_agent: str,
                 upd["device_name"] = make_device_name(user_agent, dtype, device_model)
             sb.table("user_devices").update(upd).eq("id", existing_dev["id"]).execute()
             return {"allowed": True, "reason": "refreshed", "device_id": existing_dev["id"]}
+
+        # РЕКОНСИЛЯЦИЯ: пришёл hwid, точного матча нет, но есть осиротевшая
+        # запись БЕЗ hwid той же платформы — это то же устройство (Happ обновился
+        # и начал слать hwid). Обновляем её, а не плодим дубль.
+        if hwid:
+            for d in all_devs:
+                if (d.get("hwid") or "").strip():
+                    continue
+                if _normalize_ua(d.get("user_agent") or "") == device_key_ua_platform:
+                    upd2 = {
+                        "hwid": hwid[:100],
+                        "ip_address": client_ip,
+                        "last_seen": now_iso,
+                        "is_active": True,
+                        "user_agent": (user_agent or "")[:500],
+                    }
+                    if device_model: upd2["device_model"] = device_model[:100]
+                    if device_os: upd2["device_os"] = device_os[:50]
+                    if os_version: upd2["os_version"] = os_version[:50]
+                    if device_model:
+                        _dt2 = ("ios" if "ios" in (device_os or "").lower() else
+                                "android" if "android" in (device_os or "").lower() else
+                                detect_device_type(user_agent))
+                        upd2["device_name"] = make_device_name(user_agent, _dt2, device_model)
+                    sb.table("user_devices").update(upd2).eq("id", d["id"]).execute()
+                    return {"allowed": True, "reason": "reconciled_hwid", "device_id": d["id"]}
 
         # Новое устройство — проверим лимит, считая только активных за окно
         from datetime import timedelta
