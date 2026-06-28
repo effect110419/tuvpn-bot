@@ -18,6 +18,8 @@ from config import *
 import yookassa_client
 import re
 
+SUPERADMIN_ID = 784871620
+
 
 class BuyStates(StatesGroup):
     waiting_promo = State()
@@ -1100,14 +1102,9 @@ async def process_successful_payment(message: types.Message):
         f"🆔 Платёж: <code>{sp.telegram_payment_charge_id or 'stars'}</code>"
     )
     try:
-        admins_res = sb.table("support_admins").select("user_id").eq("is_active", True).execute()
-        for a in (admins_res.data or []):
-            try:
-                await bot.send_message(a["user_id"], admin_text, parse_mode="HTML")
-            except Exception as e:
-                logging.error(f"notify admin {a.get('user_id')} failed: {e}")
+        await bot.send_message(SUPERADMIN_ID, admin_text, parse_mode="HTML")
     except Exception as e:
-        logging.error(f"Не удалось уведомить админов о Stars-оплате: {e}")
+        logging.error(f"Не удалось уведомить суперадмина о Stars-оплате: {e}")
 
 
 

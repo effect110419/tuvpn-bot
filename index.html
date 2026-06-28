@@ -3,10 +3,17 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta name="theme-color" content="#08090d">
+<meta name="theme-color" content="#060a14">
 <title>TuVPN — Admin</title>
 <link rel="stylesheet" href="styles.css">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js" defer></script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" crossorigin="">
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" crossorigin="">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" defer crossorigin=""></script>
+<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js" defer crossorigin=""></script>
+
 </head>
 <body>
 
@@ -24,8 +31,7 @@
         🤖 Войти через Telegram
       </button>
       <p class="help" style="margin-top:14px; text-align:center; font-size:13px; color:var(--fg-3)">
-        Только администраторы из whitelist смогут войти.<br>
-        Бот пришлёт запрос на подтверждение.
+        Для входа потребуется подтверждение от владельца.
       </p>
     </div>
 
@@ -48,11 +54,65 @@
 <style>
 @keyframes spin { to { transform: rotate(360deg); } }
 </style>
+<style>
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Стили для пагинации */
+.loading-indicator {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  gap: 12px;
+  color: var(--fg-3);
+  font-size: 14px;
+}
+
+.loading-indicator .spinner {
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--bg-3);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+.load-more-container {
+  padding: 24px;
+  text-align: center;
+  border-top: 1px solid var(--border);
+  margin-top: 24px;
+}
+
+.load-more-container .btn {
+  margin-bottom: 12px;
+  min-width: 140px;
+}
+
+.pagination-info {
+  font-size: 12px;
+  color: var(--fg-3);
+  margin-top: 8px;
+}
+
+.load-more-container.loading .btn {
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.load-more-container.loading .btn svg {
+  animation: spin 0.7s linear infinite;
+}
+</style>
 
 <!-- =========================================================
      APP
      ========================================================= -->
 <div class="app" id="app" style="display:none">
+
+  <!-- Backdrop для мобильной шторки сайдбара -->
+  <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
+
 
   <!-- SIDEBAR -->
   <aside class="sidebar">
@@ -93,13 +153,6 @@
         <span class="nav-count" id="navPaymentsCount">—</span>
       </div>
 
-      <div class="nav-section">Пользователи</div>
-      <div class="nav-item" data-page="devices">
-        <span class="nav-ico"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="20" x="5" y="2" rx="2" ry="2"/><path d="M12 18h.01"/></svg></span>
-        <span>Устройства</span>
-        <span class="nav-count" id="navDevicesCount">—</span>
-      </div>
-
       <div class="nav-section">Маркетинг</div>
       <div class="nav-item" data-page="promos">
         <span class="nav-ico"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12v10H4V12"/><path d="M2 7h20v5H2z"/><path d="M12 22V7"/><path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7Z"/><path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7Z"/></svg></span>
@@ -116,11 +169,17 @@
         <span>Рефералы</span>
         <span class="nav-count" id="navRefsCount">—</span>
       </div>
-
-      <div class="nav-item" data-page="broadcasts">
-        <span class="nav-ico"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.17 12a19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 3.08 1h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.09 8.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 21 16z"/></svg></span>
-        <span>Рассылки</span>
-        <span class="nav-count" id="navBroadcastsCount">—</span>
+      <div class="nav-item" data-page="analytics">
+        <span class="nav-ico"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" x2="18" y1="20" y2="10"/><line x1="12" x2="12" y1="20" y2="4"/><line x1="6" x2="6" y1="20" y2="14"/></svg></span>
+        <span>Аналитика</span>
+      </div>
+      <div class="nav-item" data-page="broadcast">
+        <span class="nav-ico"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 3 3 9-3 9 19-9Z"/><path d="M6 12h16"/></svg></span>
+        <span>Рассылка</span>
+      </div>
+      <div class="nav-item" data-page="monitor">
+        <span class="nav-ico"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg></span>
+        <span>Мониторинг</span>
       </div>
 
       <div class="nav-section">Поддержка</div>
@@ -140,13 +199,27 @@
         <span class="nav-ico"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg></span>
         <span>Настройки</span>
       </div>
+      <div class="nav-section">Система</div>
+      <div class="nav-item" data-page="finance" onclick="goPage('finance')">
+        <span class="nav-ico">💰</span>
+        <span>Финансы</span>
+      </div>
     </nav>
 
+          <div class="nav-section">Инструменты</div>
+      <div class="nav-item superadmin-only" data-page="audit" style="display:none">
+        <span class="nav-ico"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.35-4.35"/></svg></span>
+        <span>Диагностика</span>
+      </div>
+      <div class="nav-item superadmin-only" data-page="watchlist" style="display:none">
+        <span class="nav-ico">&#11088;</span>
+        <span>VIP-мониторинг</span>
+      </div>
     <div class="sidebar-footer">
-      <div class="avatar-me" id="meAva">A</div>
+      <div class="avatar-me">A</div>
       <div class="me-meta">
-        <div class="me-name" id="meName">Admin</div>
-        <div class="me-sub" id="meSub">online</div>
+        <div class="me-name">Admin</div>
+        <div class="me-sub">online</div>
       </div>
       <button class="icon-btn" id="logoutBtn" title="Выйти">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/></svg>
@@ -159,6 +232,9 @@
 
     <!-- TOPBAR -->
     <div class="topbar">
+      <button class="mobile-burger" id="mobileBurger" aria-label="Меню">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" x2="21" y1="6" y2="6"/><line x1="3" x2="21" y1="12" y2="12"/><line x1="3" x2="21" y1="18" y2="18"/></svg>
+      </button>
       <div class="crumbs">
         <span id="crumbSec">Главное</span>
         <span class="sep">/</span>
@@ -168,11 +244,11 @@
         <span class="live-dot" id="liveDot">обновлено сейчас</span>
         <button class="btn btn-ghost btn-sm" id="reloadBtn" title="Обновить (R)">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
-          Обновить
+          <span class="label-desktop">Обновить</span>
         </button>
-        <button class="btn btn-primary btn-sm" id="quickGrantBtn">
+        <button class="btn btn-primary btn-sm" id="quickGrantBtn" data-perm="users.grant_sub" title="Выдать подписку">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
-          Выдать подписку
+          <span class="label-desktop">Выдать подписку</span>
         </button>
       </div>
     </div>
@@ -182,16 +258,65 @@
       <!-- Pages rendered by app.js -->
       <div class="page active" id="page-dashboard"></div>
       <div class="page" id="page-users"></div>
-      <div class="page" id="page-devices"></div>
-      <div class="page" id="page-subs"></div>
+      <div class="page" id="page-users">
+        <!-- Контент пользователей -->
+        <div id="usersContent"></div>
+        
+        <!-- Индикатор загрузки -->
+        <div class="loading-indicator" id="usersLoading" style="display: none;">
+          <div class="spinner"></div>
+          <span>Загрузка пользователей...</span>
+        </div>
+        
+        <!-- Кнопка "Загрузить еще" -->
+        <div class="load-more-container" id="usersLoadMoreContainer" style="display: none;">
+          <button class="btn btn-ghost" id="usersLoadMoreBtn">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 5v14"/>
+              <path d="m19 12-7 7-7-7"/>
+            </svg>
+            Загрузить еще
+          </button>
+          <div class="pagination-info" id="usersPaginationInfo"></div>
+        </div>
+      </div>
+      <div class="page" id="page-subs">
+        <!-- Контент подписок -->
+        <div id="subsContent"></div>
+        
+        <!-- Индикатор загрузки -->
+        <div class="loading-indicator" id="subsLoading" style="display: none;">
+          <div class="spinner"></div>
+          <span>Загрузка подписок...</span>
+        </div>
+        
+        <!-- Кнопка "Загрузить еще" -->
+        <div class="load-more-container" id="subsLoadMoreContainer" style="display: none;">
+          <button class="btn btn-ghost" id="subsLoadMoreBtn">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 5v14"/>
+              <path d="m19 12-7 7-7-7"/>
+            </svg>
+            Загрузить еще
+          </button>
+          <div class="pagination-info" id="subsPaginationInfo"></div>
+        </div>
+      </div>
       <div class="page" id="page-payments"></div>
       <div class="page" id="page-promos"></div>
       <div class="page" id="page-marketing"></div>
-      <div class="page" id="page-broadcasts"></div>
       <div class="page" id="page-referrals"></div>
       <div class="page" id="page-tickets"></div>
       <div class="page" id="page-servers"></div>
       <div class="page" id="page-settings"></div>
+      <div class="page" id="page-broadcast"></div>
+      <div class="page" id="page-logs"></div>
+      <div class="page" id="page-monitor"></div>
+      <div class="page" id="page-map"></div>
+      <div class="page" id="page-analytics"></div>
+      <div class="page" id="page-finance"></div>
+      <div class="page" id="page-audit"></div>
+      <div class="page" id="page-watchlist"></div>
     </div>
   </div>
 </div>
@@ -221,7 +346,7 @@
 <div class="modal-bg" id="grantModal">
   <div class="modal">
     <div class="modal-head">
-      <div class="modal-title">Выдать / продлить подписку</div>
+      <div class="modal-title">Выдать / изменить подписку</div>
       <button class="icon-btn" data-close>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
       </button>
@@ -232,32 +357,44 @@
         <input id="grantUid" class="input mono" placeholder="784871620" inputmode="numeric">
         <div class="help" id="grantUserHint">Пользователь должен сначала запустить бот.</div>
       </div>
-      <div class="field-row">
-        <div class="field">
-          <label class="label">Устройств</label>
-          <select class="select" id="grantDevices">
-            <option value="1">1 устройство</option>
-            <option value="2">2 устройства</option>
-            <option value="5">5 устройств</option>
-          </select>
+
+      <div class="field" style="border:1px solid var(--border); border-radius:8px; padding:12px; margin-bottom:10px">
+        <label style="display:flex; gap:8px; align-items:center; cursor:pointer; margin-bottom:8px">
+          <input type="checkbox" id="grantDevicesEnable">
+          <b>Изменить лимит устройств</b>
+        </label>
+        <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:8px" id="grantDevicesPresets">
+          <button type="button" class="btn btn-ghost btn-sm grant-dev-preset" data-val="1" disabled>1</button>
+          <button type="button" class="btn btn-ghost btn-sm grant-dev-preset" data-val="2" disabled>2</button>
+          <button type="button" class="btn btn-ghost btn-sm grant-dev-preset" data-val="5" disabled>5</button>
+          <button type="button" class="btn btn-ghost btn-sm grant-dev-preset" data-val="10" disabled>10</button>
+          <button type="button" class="btn btn-ghost btn-sm grant-dev-preset" data-val="20" disabled>20</button>
         </div>
-        <div class="field">
-          <label class="label">Срок</label>
-          <select class="select" id="grantDays">
-            <option value="7">7 дней (триал)</option>
-            <option value="30" selected>30 дней</option>
-            <option value="90">90 дней</option>
-            <option value="365">365 дней</option>
-          </select>
-        </div>
+        <input type="number" class="input mono" id="grantDevices" min="1" max="999" value="1" disabled placeholder="Число устройств">
+        <div class="help" style="margin-top:6px">Срок не изменится, только лимит. Можно любое число.</div>
       </div>
-      <div class="help">Если подписка активна — срок продлится. Бонусные дни применятся автоматически.</div>
+
+      <div class="field" style="border:1px solid var(--border); border-radius:8px; padding:12px; margin-bottom:10px">
+        <label style="display:flex; gap:8px; align-items:center; cursor:pointer; margin-bottom:8px">
+          <input type="checkbox" id="grantDaysEnable" checked>
+          <b>Продлить срок</b>
+        </label>
+        <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:8px">
+          <button type="button" class="btn btn-ghost btn-sm grant-days-preset" data-val="7">7д</button>
+          <button type="button" class="btn btn-ghost btn-sm grant-days-preset" data-val="30">30д</button>
+          <button type="button" class="btn btn-ghost btn-sm grant-days-preset" data-val="90">90д</button>
+          <button type="button" class="btn btn-ghost btn-sm grant-days-preset" data-val="180">180д</button>
+          <button type="button" class="btn btn-ghost btn-sm grant-days-preset" data-val="365">365д</button>
+        </div>
+        <input type="number" class="input mono" id="grantDays" min="1" max="9999" value="30" placeholder="Число дней">
+        <div class="help" style="margin-top:6px">Бонусные дни применятся автоматически.</div>
+      </div>
     </div>
     <div class="modal-foot">
       <button class="btn btn-ghost" data-close>Отмена</button>
-      <button class="btn btn-success" id="grantSubmit">
+      <button class="btn btn-success" id="grantSubmit" data-perm="users.grant_sub">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-        Выдать
+        Применить
       </button>
     </div>
   </div>
@@ -365,8 +502,53 @@
 
       <div class="field-row-3">
         <div class="field">
-          <label class="label">Флаг</label>
-          <input id="srvFlag" class="input" placeholder="🇫🇮" maxlength="4">
+          <label class="label">Флаг / Страна</label>
+          <select id="srvFlag" class="select">
+            <option value="">— выбрать страну —</option>
+            <option value="🇫🇮" data-cc="FI">🇫🇮 Финляндия</option>
+            <option value="🇳🇱" data-cc="NL">🇳🇱 Нидерланды</option>
+            <option value="🇩🇪" data-cc="DE">🇩🇪 Германия</option>
+            <option value="🇸🇪" data-cc="SE">🇸🇪 Швеция</option>
+            <option value="🇫🇷" data-cc="FR">🇫🇷 Франция</option>
+            <option value="🇬🇧" data-cc="GB">🇬🇧 Великобритания</option>
+            <option value="🇺🇸" data-cc="US">🇺🇸 США</option>
+            <option value="🇨🇦" data-cc="CA">🇨🇦 Канада</option>
+            <option value="🇪🇸" data-cc="ES">🇪🇸 Испания</option>
+            <option value="🇮🇹" data-cc="IT">🇮🇹 Италия</option>
+            <option value="🇵🇱" data-cc="PL">🇵🇱 Польша</option>
+            <option value="🇨🇭" data-cc="CH">🇨🇭 Швейцария</option>
+            <option value="🇦🇹" data-cc="AT">🇦🇹 Австрия</option>
+            <option value="🇳🇴" data-cc="NO">🇳🇴 Норвегия</option>
+            <option value="🇩🇰" data-cc="DK">🇩🇰 Дания</option>
+            <option value="🇮🇪" data-cc="IE">🇮🇪 Ирландия</option>
+            <option value="🇧🇪" data-cc="BE">🇧🇪 Бельгия</option>
+            <option value="🇨🇿" data-cc="CZ">🇨🇿 Чехия</option>
+            <option value="🇱🇻" data-cc="LV">🇱🇻 Латвия</option>
+            <option value="🇱🇹" data-cc="LT">🇱🇹 Литва</option>
+            <option value="🇪🇪" data-cc="EE">🇪🇪 Эстония</option>
+            <option value="🇹🇷" data-cc="TR">🇹🇷 Турция</option>
+            <option value="🇦🇪" data-cc="AE">🇦🇪 ОАЭ</option>
+            <option value="🇯🇵" data-cc="JP">🇯🇵 Япония</option>
+            <option value="🇸🇬" data-cc="SG">🇸🇬 Сингапур</option>
+            <option value="🇭🇰" data-cc="HK">🇭🇰 Гонконг</option>
+            <option value="🇰🇷" data-cc="KR">🇰🇷 Ю.Корея</option>
+            <option value="🇮🇳" data-cc="IN">🇮🇳 Индия</option>
+            <option value="🇧🇷" data-cc="BR">🇧🇷 Бразилия</option>
+            <option value="🇦🇺" data-cc="AU">🇦🇺 Австралия</option>
+            <option value="🇰🇿" data-cc="KZ">🇰🇿 Казахстан</option>
+            <option value="🇦🇲" data-cc="AM">🇦🇲 Армения</option>
+            <option value="🇬🇪" data-cc="GE">🇬🇪 Грузия</option>
+            <option value="🇷🇺" data-cc="RU">🇷🇺 Россия</option>
+            <option value="🇺🇦" data-cc="UA">🇺🇦 Украина</option>
+            <option value="🇷🇸" data-cc="RS">🇷🇸 Сербия</option>
+            <option value="🇷🇴" data-cc="RO">🇷🇴 Румыния</option>
+            <option value="🇧🇬" data-cc="BG">🇧🇬 Болгария</option>
+            <option value="🇭🇺" data-cc="HU">🇭🇺 Венгрия</option>
+            <option value="🇵🇹" data-cc="PT">🇵🇹 Португалия</option>
+            <option value="🇬🇷" data-cc="GR">🇬🇷 Греция</option>
+            <option value="🇮🇸" data-cc="IS">🇮🇸 Исландия</option>
+            <option value="🌍" data-cc="XX">🌍 Другая</option>
+          </select>
         </div>
         <div class="field" style="grid-column: span 2">
           <label class="label">Страна</label>
@@ -400,6 +582,11 @@
         <div class="field">
           <label class="label">Пароль панели</label>
           <input id="srvPanelPass" type="password" class="input mono" placeholder="••••••">
+        </div>
+        <div class="field">
+          <label class="label">API Token <span class="muted" style="font-weight:normal">(для 3X-UI 3.x — если есть)</span></label>
+          <input id="srvApiToken" class="input mono" placeholder="оставь пустым для 2.x">
+          <div class="help">Включает Bearer-авторизацию. Без токена используется session-cookie (для старых 2.x панелей).</div>
         </div>
       </div>
       <div class="field-row-3">
@@ -600,5 +787,375 @@
 <div class="toast-wrap" id="toastWrap"></div>
 
 <script src="app.js" defer></script>
+
+<!-- ===== МОДАЛ РАССЫЛКИ ===== -->
+<div class="modal-bg" id="broadcastModal">
+  <div class="modal lg">
+    <div class="modal-head">
+      <div class="modal-title">Создать рассылку</div>
+      <button class="icon-btn" data-close>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="field">
+        <label class="label">Кому отправить</label>
+        <div class="aud-grid" id="bcAudGrid">
+          <label class="aud-card" data-aud="all">
+            <input type="radio" name="bcAud" value="all" checked>
+            <div class="aud-card-body"><div class="aud-card-ico">📢</div><div class="aud-card-title">Все пользователи</div><div class="aud-card-sub">Каждому юзеру в боте</div></div>
+          </label>
+          <label class="aud-card" data-aud="active">
+            <input type="radio" name="bcAud" value="active">
+            <div class="aud-card-body"><div class="aud-card-ico">✅</div><div class="aud-card-title">С активной подпиской</div><div class="aud-card-sub">Только платящие сейчас</div></div>
+          </label>
+          <label class="aud-card" data-aud="inactive">
+            <input type="radio" name="bcAud" value="inactive">
+            <div class="aud-card-body"><div class="aud-card-ico">⏸</div><div class="aud-card-title">Без активной подписки</div><div class="aud-card-sub">Триальщики и истёкшие</div></div>
+          </label>
+          <label class="aud-card" data-aud="utm_no_device">
+            <input type="radio" name="bcAud" value="utm_no_device">
+            <div class="aud-card-body"><div class="aud-card-ico">🎯</div><div class="aud-card-title">UTM без устройства</div><div class="aud-card-sub">Перешли по рекламе, но не подключились</div></div>
+          </label>
+          <label class="aud-card" data-aud="expired_unpaid_14d">
+            <input type="radio" name="bcAud" value="expired_unpaid_14d">
+            <div class="aud-card-body"><div class="aud-card-ico">💤</div><div class="aud-card-title">Истёкшие · не платили 14д</div><div class="aud-card-sub">Кому пора напомнить</div></div>
+          </label>
+          <label class="aud-card" data-aud="expires_6h">
+            <input type="radio" name="bcAud" value="expires_6h">
+            <div class="aud-card-body"><div class="aud-card-ico">⏰</div><div class="aud-card-title">Истекают через 6 часов</div><div class="aud-card-sub">Срочно напомнить продлить</div></div>
+          </label>
+          <label class="aud-card" data-aud="custom_list">
+            <input type="radio" name="bcAud" value="custom_list">
+            <div class="aud-card-body"><div class="aud-card-ico">👤</div><div class="aud-card-title">Конкретные пользователи</div><div class="aud-card-sub">Выбрать из списка вручную</div></div>
+          </label>
+        </div>
+      </div>
+      <div class="aud-extra" id="bcExtraUtm" style="display:none">
+        <div class="field"><label class="label">Кампания</label><select id="bcCampaignFilter" class="select"><option value="all">Любая кампания</option></select></div>
+      </div>
+      <div class="aud-extra" id="bcExtraCustom" style="display:none">
+        <div class="field"><label class="label">Поиск пользователей</label><input id="bcUserSearch" class="input" placeholder="имя, @username или id"><div class="bc-user-list" id="bcUserList"></div></div>
+        <div class="field"><label class="label">Выбрано (<span id="bcSelectedCount">0</span>)</label><div class="bc-selected" id="bcSelectedList"></div></div>
+      </div>
+      <div class="field"><label class="label">Текст сообщения</label><textarea id="bcMessageText" class="input textarea" rows="6" placeholder="Привет!"></textarea><div class="help">HTML: &lt;b&gt;, &lt;i&gt;, &lt;a&gt;</div></div>
+      <div class="field-row">
+        <div class="field"><label class="label">Бонусные дни</label><input id="bcBonusDays" type="number" min="0" max="365" class="input" placeholder="0"></div>
+        <div class="field"><label class="label">Шаблон</label><select id="bcTemplate" class="select"><option value="">—</option><option value="fix">Починка</option><option value="apology">Извинение</option><option value="renew">Продление</option><option value="expire_soon">⏰ Истекает скоро (PROMO20)</option><option value="news">Новость</option><option value="howto">Инструкция</option></select></div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" data-close>Отмена</button>
+      <button class="btn btn-primary" id="bcPreviewBtn">Предпросмотр →</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== МОДАЛ ПРЕДПРОСМОТРА РАССЫЛКИ ===== -->
+<div class="modal-bg" id="broadcastPreviewModal">
+  <div class="modal">
+    <div class="modal-head">
+      <h3 class="modal-title">Подтверждение рассылки</h3>
+      <button class="icon-btn" data-close>✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="bc-preview-card">
+        <div class="bc-preview-label">Сообщение</div>
+        <div class="bc-preview-text" id="bcPreviewText"></div>
+      </div>
+      <div class="bc-preview-meta">
+        <div class="bc-meta-row"><span>Получателей</span><b id="bcPreviewCount">—</b></div>
+        <div class="bc-meta-row"><span>Аудитория</span><b id="bcPreviewAud">—</b></div>
+        <div class="bc-meta-row" id="bcPreviewBonusRow" style="display:none"><span>Бонус каждому</span><b id="bcPreviewBonus">—</b></div>
+      </div>
+      <div class="bc-warn">⚠️ Сообщение будет отправлено сразу всем получателям. Действие необратимо.</div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" data-close>Назад</button>
+      <button class="btn btn-primary" id="bcSendBtn">Отправить рассылку</button>
+    </div>
+  </div>
+</div>
+
+
+<!-- ===== МОДАЛ: пользователи в точке карты ===== -->
+<div class="modal-bg" id="mapPointModal">
+  <div class="modal">
+    <div class="modal-head">
+      <div style="flex:1; min-width:0">
+        <div class="modal-title" id="mapPointTitle">Локация</div>
+        <div class="map-point-sub" id="mapPointSub">—</div>
+      </div>
+      <button class="icon-btn" data-close>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+      </button>
+    </div>
+    <div class="modal-body map-point-body">
+      <div id="mapPointList"></div>
+    </div>
+  </div>
+</div>
+
+
+<!-- ===== ТИКЕТ-ЧАТ ===== -->
+<div class="modal-bg" id="ticketChatModal">
+  <div class="modal xl ticket-modal">
+    <div class="modal-head ticket-head">
+      <div class="ticket-head-main">
+        <div class="ticket-head-title">
+          <span class="ticket-num" id="ticketChatNum">#0</span>
+          <span class="ticket-head-status" id="ticketChatStatus"></span>
+        </div>
+        <div class="ticket-head-user" id="ticketChatUser">—</div>
+        <div class="ticket-head-meta" id="ticketChatMeta">—</div>
+      </div>
+      <button class="icon-btn" data-close>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+      </button>
+    </div>
+    <div class="modal-body ticket-body" id="ticketChatBody">
+      <div class="ticket-msgs" id="ticketChatMsgs"></div>
+    </div>
+    <div class="ticket-foot">
+      <div class="ticket-actions" id="ticketChatActions"></div>
+      <div class="ticket-input-wrap">
+        <textarea class="ticket-input" id="ticketChatInput" placeholder="Напишите ответ... (Enter — отправить, Shift+Enter — новая строка)" rows="2"></textarea>
+        <button class="btn btn-primary" id="ticketChatSendBtn">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" x2="11" y1="2" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+          Отправить
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== РЕГИСТРАЦИЯ ЧЕКА ===== -->
+<div class="modal-bg" id="receiptRegisterModal">
+  <div class="modal">
+    <div class="modal-head">
+      <div class="modal-title">Зарегистрировать чек</div>
+      <button class="icon-btn" data-close>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div id="receiptInfoBlock" class="receipt-info"></div>
+      <div class="field">
+        <label class="label">Ссылка на чек из «Мой налог»</label>
+        <input id="receiptUrlInput" class="input mono" placeholder="https://lknpd.nalog.ru/api/v1/receipt/...">
+        <div class="help">Скопируй ссылку чека из приложения «Мой налог» после регистрации продажи.</div>
+      </div>
+      <div class="field">
+        <label class="label">Превью сообщения юзеру</label>
+        <div class="receipt-preview" id="receiptPreviewBox">—</div>
+        <div class="help">Сообщение которое получит пользователь (если включено уведомление)</div>
+      </div>
+      <div class="field">
+        <label style="display:flex;gap:8px;align-items:center;cursor:pointer">
+          <input type="checkbox" id="receiptSendSms">
+          <span>Отправить уведомление пользователю</span>
+        </label>
+        <div class="help" style="margin-top:4px;margin-left:24px;font-size:12px">Если выключено — чек отмечается в системе, SMS не отправляется</div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" data-close>Отмена</button>
+      <button class="btn btn-primary" id="receiptSendBtn">Пометить чек</button>
+    </div>
+  </div>
+</div>
+
+
+
+
+<!-- ===== FIN: РАСХОД ===== -->
+<div class="modal-bg" id="finExpenseModal">
+  <div class="modal lg">
+    <div class="modal-head">
+      <div class="modal-title" id="finExpenseModalTitle">Добавить расход</div>
+      <button class="icon-btn" data-close>✕</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="finExpenseId">
+      <div class="field-row">
+        <div class="field"><label class="label">Дата</label><input id="finExpenseDate" type="date" class="input"></div>
+        <div class="field"><label class="label">Категория</label>
+          <select id="finExpenseCategory" class="select">
+            <option value="servers">🖥 Серверы</option>
+            <option value="domains">🌐 Домены</option>
+            <option value="ads">📢 Реклама</option>
+            <option value="dev">💻 Разработка</option>
+            <option value="other">🔧 Прочее</option>
+          </select>
+        </div>
+      </div>
+      <div class="field"><label class="label">Описание</label><input id="finExpenseDesc" class="input" placeholder="Аренда сервера DE-2 на месяц"></div>
+      <div class="field"><label class="label">Общая сумма, ₽</label><input id="finExpenseAmount" type="number" step="0.01" class="input" placeholder="0.00"></div>
+      <div class="field" style="display:flex;gap:8px;align-items:center">
+        <input id="finExpenseRecurring" type="checkbox">
+        <label for="finExpenseRecurring" class="label" style="margin:0;cursor:pointer">Регулярный</label>
+        <select id="finExpensePeriod" class="select" style="margin-left:8px;width:auto">
+          <option value="monthly">в месяц</option>
+          <option value="yearly">в год</option>
+        </select>
+      </div>
+      <div class="field">
+        <label class="label">Из каких средств?</label>
+        <div id="finExpenseFunding" class="fund-list"></div>
+        <div id="finExpenseFundingTotal" class="fund-total"></div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" data-close>Отмена</button>
+      <button class="btn btn-primary" id="finExpenseSaveBtn">Сохранить</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== FIN: ВЛОЖЕНИЕ ===== -->
+<div class="modal-bg" id="finInvestmentModal">
+  <div class="modal">
+    <div class="modal-head">
+      <div class="modal-title">Добавить вложение</div>
+      <button class="icon-btn" data-close>✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="field"><label class="label">Кто вложил</label>
+        <select id="finInvSourceId" class="select"></select>
+      </div>
+      <div class="field"><label class="label">Сумма, ₽</label><input id="finInvAmount" type="number" step="0.01" class="input"></div>
+      <div class="field"><label class="label">Дата</label><input id="finInvDate" type="date" class="input"></div>
+      <div class="field"><label class="label">Заметка</label><input id="finInvNote" class="input" placeholder="опционально"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" data-close>Отмена</button>
+      <button class="btn btn-primary" id="finInvSaveBtn">Сохранить</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== FIN: ПЛАНОВЫЙ ===== -->
+<div class="modal-bg" id="finPlannedModal">
+  <div class="modal">
+    <div class="modal-head">
+      <div class="modal-title">Добавить плановую покупку</div>
+      <button class="icon-btn" data-close>✕</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="finPlanId">
+      <div class="field"><label class="label">Категория</label>
+        <select id="finPlanCategory" class="select">
+          <option value="servers">🖥 Серверы</option>
+          <option value="domains">🌐 Домены</option>
+          <option value="ads">📢 Реклама</option>
+          <option value="dev">💻 Разработка</option>
+          <option value="other">🔧 Прочее</option>
+        </select>
+      </div>
+      <div class="field"><label class="label">Что купить</label><input id="finPlanDesc" class="input" placeholder="Новый сервер в UK"></div>
+      <div class="field"><label class="label">Планируемая дата</label><input id="finPlanDate" type="date" class="input"></div>
+      <div class="field"><label class="label">Оценка стоимости, ₽</label><input id="finPlanAmount" type="number" step="0.01" class="input"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" data-close>Отмена</button>
+      <button class="btn btn-primary" id="finPlanSaveBtn">Сохранить</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== ROLE ===== -->
+<div class="modal-bg" id="roleModal">
+  <div class="modal lg">
+    <div class="modal-head">
+      <div class="modal-title" id="roleModalTitle">Новая роль</div>
+      <button class="icon-btn" data-close>✕</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="roleId">
+      <div class="field"><label class="label">Название</label><input id="roleName" class="input" placeholder="Например: Менеджер поддержки"></div>
+      <div class="field"><label class="label">Описание</label><input id="roleDesc" class="input" placeholder="опционально"></div>
+      <div class="field"><label class="label">Права</label><div id="rolePermsHost"></div></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" data-close>Отмена</button>
+      <button class="btn btn-primary" id="roleSaveBtn">Сохранить</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== ADMIN ===== -->
+<div class="modal-bg" id="adminModal">
+  <div class="modal lg">
+    <div class="modal-head">
+      <div class="modal-title" id="adminModalTitle">Новый админ</div>
+      <button class="icon-btn" data-close>✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="field"><label class="label">Telegram ID</label><input id="adminUserId" type="number" class="input"></div>
+      <div class="field"><label class="label">Полное имя</label><input id="adminFullName" class="input"></div>
+      <div class="field"><label class="label">@username</label><input id="adminUsername" class="input" placeholder="без @"></div>
+      <div class="field"><label class="label">Роль</label><select id="adminRole" class="select"></select></div>
+      <div class="field" style="display:flex;gap:8px;align-items:center">
+        <input id="adminActive" type="checkbox" checked>
+        <label for="adminActive" class="label" style="margin:0;cursor:pointer">Активен</label>
+      </div>
+      <div class="field"><label class="label">Доп. права (поверх роли)</label>
+        <div class="help">Зелёный + = добавить право сверх роли. Красный − = отозвать право из роли.</div>
+        <div id="adminPermsHost"></div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" data-close>Отмена</button>
+      <button class="btn btn-primary" id="adminSaveBtn">Сохранить</button>
+    </div>
+  </div>
+</div>
+
+
+<!-- ===== Модалка "Недостаточно прав" ===== -->
+<div class="modal-bg" id="noPermModal">
+  <div class="modal" style="max-width:420px">
+    <div class="modal-head">
+      <div class="modal-title">⛔ Недостаточно прав</div>
+      <button class="icon-btn" data-close>✕</button>
+    </div>
+    <div class="modal-body" style="text-align:center; padding:24px 16px">
+      <div style="font-size:42px; margin-bottom:10px">🔒</div>
+      <div style="font-size:15px; color:var(--fg); margin-bottom:6px">У вас нет права на действие:</div>
+      <div style="font-size:16px; color:var(--accent); font-weight:600; margin-bottom:10px"><span id="noPermAction">—</span></div>
+      <div style="font-size:11px; color:var(--fg-3); font-family:var(--font-mono, monospace); margin-bottom:14px"><span id="noPermKey"></span></div>
+      <div style="font-size:13px; color:var(--fg-3)">Обратитесь к администратору, если считаете это ошибкой.</div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-primary" data-close style="width:100%">Понятно</button>
+    </div>
+  </div>
+</div>
+
+
+<!-- ===== ИСТОЧНИКИ ===== -->
+<div class="modal-bg" id="finSourcesModal">
+  <div class="modal">
+    <div class="modal-head">
+      <div class="modal-title">⚙ Финансовые источники</div>
+      <button class="icon-btn" data-close>✕</button>
+    </div>
+    <div class="modal-body">
+      <div id="finSourcesList" style="margin-bottom:18px"></div>
+      <div class="card" style="background:rgba(255,255,255,0.03); padding:12px">
+        <div class="card-title" style="font-size:13px; margin-bottom:8px">Добавить новый источник</div>
+        <div class="field"><label class="label">Имя</label><input id="finSrcNewName" class="input" placeholder="Иван"></div>
+        <div class="field"><label class="label">Код (латиницей, без пробелов)</label><input id="finSrcNewCode" class="input mono" placeholder="ivan"></div>
+        <div class="field"><label class="label">Telegram ID (опционально)</label><input id="finSrcNewTgId" type="number" class="input"></div>
+        <button class="btn btn-primary btn-sm" id="finSrcAddBtn" style="width:100%">+ Добавить</button>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" data-close>Закрыть</button>
+    </div>
+  </div>
+</div>
+
+    <script src="audit_frontend.js" defer></script>
 </body>
 </html>

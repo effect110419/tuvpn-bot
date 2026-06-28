@@ -1,0 +1,12 @@
+[Unit]
+Description=TuVPN News Bot — генерация постов для канала
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/root/tuvpn
+ExecStart=/usr/bin/python3 /root/tuvpn/news_bot.py
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tuvpn-news

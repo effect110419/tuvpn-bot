@@ -1887,13 +1887,14 @@ def watchlist_batch_audit():
     if request.method == 'OPTIONS':
         return make_response('', 204)
     try:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
         wl_r = sb.table("watchlist").select("user_id").execute()
         uids = [row["user_id"] for row in (wl_r.data or [])]
-        results = []
-        for uid in uids:
+
+        def _audit_one(uid):
             try:
                 report = _build_audit_report(uid)
-                results.append({
+                return {
                     "user_id": uid,
                     "score": report["score"],
                     "issues": report["issues"],
@@ -1901,14 +1902,23 @@ def watchlist_batch_audit():
                     "server_checks": report["server_checks"],
                     "sub_url_check": report["sub_url_check"],
                     "ts": report["ts"],
-                })
+                }
             except Exception as e:
-                results.append({
+                return {
                     "user_id": uid, "score": "error",
                     "issues": [str(e)], "active_sub": None,
                     "server_checks": [], "sub_url_check": None,
                     "ts": datetime.utcnow().isoformat() + "Z",
-                })
+                }
+
+        results = []
+        if uids:
+            with ThreadPoolExecutor(max_workers=min(len(uids), 4)) as pool:
+                futures = {pool.submit(_audit_one, uid): uid for uid in uids}
+                for fut in as_completed(futures):
+                    results.append(fut.result())
+            results.sort(key=lambda r: r["user_id"])
+
         return jsonify({"success": True, "results": results, "ts": datetime.utcnow().isoformat() + "Z"})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
@@ -2429,11 +2439,9 @@ def yookassa_webhook():
                     f"⚠️ Не забудь сформировать чек в «Мой налог»"
                 )
                 try:
-                    admins_res = sb.table("support_admins").select("user_id").eq("is_active", True).execute()
-                    for a in (admins_res.data or []):
-                        notify_user(a["user_id"], admin_text)
+                    notify_user(SUPERADMIN_ID, admin_text)
                 except Exception as e:
-                    app.logger.error(f"Не удалось уведомить админов: {e}")
+                    app.logger.error(f"Не удалось уведомить суперадмина: {e}")
         except Exception as e:
             app.logger.error(f"Ошибка выдачи подписки по {payment_id}: {e}")
 
@@ -2883,10 +2891,12 @@ def _db_proxy_check(table: str, mode: str):
 
 # ==================== BROADCASTS ====================
 
-def _get_recipient_ids(audience, campaign_filter=None, target_user_id=None):
+def _get_recipient_ids(audience, campaign_filter=None, target_user_id=None, target_user_ids=None):
     """Возвращает список user_id для указанной аудитории рассылки."""
     if audience == "single":
         return [target_user_id] if target_user_id else []
+    if audience == "custom_list":
+        return [int(x) for x in (target_user_ids or []) if x]
 
     users_r = sb.table("users").select("user_id,campaign_code").execute()
     all_users = users_r.data or []
@@ -2924,8 +2934,6 @@ def _get_recipient_ids(audience, campaign_filter=None, target_user_id=None):
         dev_set = {d["user_id"] for d in (dev_r.data or [])}
         camp_users = [u["user_id"] for u in all_users if u.get("campaign_code")]
         return [uid for uid in camp_users if uid not in dev_set]
-    elif audience == "custom_list":
-        return all_ids  # caller передаёт свой список
     else:  # all
         return all_ids
 
@@ -2952,7 +2960,8 @@ def broadcast_preview():
         audience = data.get("audience", "all")
         campaign_filter = data.get("campaign_filter") or "all"
         target_user_id = data.get("target_user_id")
-        ids = _get_recipient_ids(audience, campaign_filter, target_user_id)
+        target_user_ids = data.get("target_user_ids")
+        ids = _get_recipient_ids(audience, campaign_filter, target_user_id, target_user_ids)
         return jsonify({"success": True, "count": len(ids)})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
@@ -2969,12 +2978,13 @@ def broadcast_send():
         message_text = (data.get("message_text") or "").strip()
         campaign_filter = data.get("campaign_filter") or "all"
         target_user_id = data.get("target_user_id")
+        target_user_ids = data.get("target_user_ids")
         bonus_days = int(data.get("bonus_days") or 0)
 
         if not message_text:
             return jsonify({"success": False, "error": "message_text required"}), 400
 
-        ids = _get_recipient_ids(audience, campaign_filter, target_user_id)
+        ids = _get_recipient_ids(audience, campaign_filter, target_user_id, target_user_ids)
 
         sent = 0
         blocked = 0

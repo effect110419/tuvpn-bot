@@ -26,6 +26,8 @@ from supabase import create_client, Client
 
 from config import SUPPORT_BOT_TOKEN, SUPABASE_URL, SUPABASE_KEY, MAIN_BOT_USERNAME, FALLBACK_ADMIN_IDS
 
+SUPERADMIN_ID = 784871620
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -260,13 +262,11 @@ async def get_user_tickets(user_id: int, limit: int = 10) -> list:
 # УВЕДОМЛЕНИЯ АДМИНАМ
 # ============================================================
 async def notify_admins(text: str, ticket_id: Optional[int] = None, ticket_status: str = "open"):
-    admins = await get_admins(active_only=True)
     kb = admin_ticket_kb(ticket_id, ticket_status) if ticket_id else None
-    for admin in admins:
-        try:
-            await bot.send_message(chat_id=admin["user_id"], text=text, reply_markup=kb)
-        except Exception as e:
-            log.warning(f"Не отправилось админу {admin['user_id']}: {e}")
+    try:
+        await bot.send_message(chat_id=SUPERADMIN_ID, text=text, reply_markup=kb)
+    except Exception as e:
+        log.warning(f"Не отправилось суперадмину {SUPERADMIN_ID}: {e}")
 
 
 def format_user_info(user: dict) -> str:
