@@ -678,17 +678,31 @@ def subscription(client_uuid):
     device_os = request.headers.get('X-Device-Os', '') or request.headers.get('x-device-os', '')
     os_version = request.headers.get('X-Ver-Os', '') or request.headers.get('x-ver-os', '')
 
-    # Регистрация устройства / проверка лимита
-    track_result = track_device(client_uuid, client_ip, user_agent,
-                                hwid=hwid, device_model=device_model,
-                                device_os=device_os, os_version=os_version)
-    if not track_result["allowed"]:
-        if track_result["reason"] == "limit_exceeded":
-            app.logger.info(f"Subscription blocked (limit): {client_uuid} from {client_ip}")
-            return Response("Device limit exceeded for this subscription", status=403)
-        # Если subscription_not_found — отдаём 404
-        if track_result["reason"] == "subscription_not_found":
+    # Внутренняя проверка аудита — не трекаем устройство, не проверяем лимит
+    _INTERNAL_IPS = {"127.0.0.1", "188.214.107.107"}
+    is_audit = (
+        request.headers.get("X-Audit-Internal") == "1"
+        and client_ip in _INTERNAL_IPS
+    )
+
+    if is_audit:
+        # Просто убеждаемся что подписка существует, затем отдаём конфиги
+        chk = (sb.table("subscriptions").select("user_id")
+               .eq("status", "active").like("sub_url", f"%{client_uuid}").limit(1).execute())
+        if not chk.data:
             return Response("Subscription not found", status=404)
+    else:
+        # Регистрация устройства / проверка лимита
+        track_result = track_device(client_uuid, client_ip, user_agent,
+                                    hwid=hwid, device_model=device_model,
+                                    device_os=device_os, os_version=os_version)
+        if not track_result["allowed"]:
+            if track_result["reason"] == "limit_exceeded":
+                app.logger.info(f"Subscription blocked (limit): {client_uuid} from {client_ip}")
+                return Response("Device limit exceeded for this subscription", status=403)
+            # Если subscription_not_found — отдаём 404
+            if track_result["reason"] == "subscription_not_found":
+                return Response("Subscription not found", status=404)
 
     # Получаем активные серверы
     try:
@@ -1500,7 +1514,8 @@ def _build_audit_report(uid):
         sub_url = active_sub["sub_url"]
         try:
             t0 = datetime.utcnow()
-            r = _req.get(sub_url, timeout=10, allow_redirects=True)
+            r = _req.get(sub_url, timeout=10, allow_redirects=True,
+                         headers={"X-Audit-Internal": "1"})
             ms = int((datetime.utcnow() - t0).total_seconds() * 1000)
             valid_json = (r.status_code == 200)
             note = "Лимит устройств достигнут" if r.status_code == 403 else None
