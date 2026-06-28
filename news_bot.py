@@ -225,8 +225,47 @@ def _format_fallback(article: dict) -> str:
     )
 
 
+def find_image_url(article: dict) -> str | None:
+    """Извлекает og:image из страницы статьи."""
+    link = article.get("link", "")
+    if not link:
+        return None
+    try:
+        r = requests.get(link, timeout=8, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        })
+        if r.status_code != 200:
+            return None
+        for pat in [
+            r'property="og:image"\s+content="([^"]+)"',
+            r'content="([^"]+)"\s+property="og:image"',
+            r"property='og:image'\s+content='([^']+)'",
+        ]:
+            m = re.search(pat, r.text)
+            if m:
+                img = m.group(1).strip()
+                if img.startswith("http"):
+                    return img
+    except Exception as e:
+        log.warning(f"og:image scrape error: {e}")
+    return None
+
+
+def download_image(url: str) -> bytes | None:
+    """Скачивает картинку, возвращает bytes."""
+    try:
+        r = requests.get(url, timeout=12, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        })
+        if r.status_code == 200 and len(r.content) > 2000:
+            return r.content
+    except Exception as e:
+        log.warning(f"Ошибка загрузки картинки: {e}")
+    return None
+
+
 def send_to_admin(text: str, article: dict):
-    """Отправляет предложку поста Максиму в Telegram."""
+    """Отправляет предложку поста Максиму в Telegram (с картинкой если нашлась)."""
     if not BOT_TOKEN:
         log.error("BOT_TOKEN не задан — отправка невозможна")
         return
@@ -244,6 +283,44 @@ def send_to_admin(text: str, article: dict):
     )
     full_text = (header + text)[:4096]
 
+    # Пробуем найти и отправить картинку
+    log.info("Ищем og:image для статьи...")
+    img_url = find_image_url(article)
+    if img_url:
+        log.info(f"Найдена картинка: {img_url[:80]}...")
+        img_bytes = download_image(img_url)
+        if img_bytes:
+            caption = full_text[:1024]  # caption в Telegram ≤1024 символа
+            try:
+                r = requests.post(
+                    f"{base}/sendPhoto",
+                    data={"chat_id": SUPERADMIN_ID, "caption": caption, "parse_mode": "HTML"},
+                    files={"photo": ("image.jpg", img_bytes, "image/jpeg")},
+                    timeout=30,
+                )
+                resp = r.json()
+                if resp.get("ok"):
+                    log.info(f"Фото отправлено, message_id={resp['result']['message_id']}")
+                    # Если текст длиннее 1024 — отправляем остаток отдельным сообщением
+                    if len(full_text) > 1024:
+                        remainder = full_text[1024:]
+                        requests.post(f"{base}/sendMessage", json={
+                            "chat_id": SUPERADMIN_ID,
+                            "text": remainder,
+                            "parse_mode": "HTML",
+                            "disable_web_page_preview": True,
+                        }, timeout=15)
+                    return
+                else:
+                    log.warning(f"sendPhoto failed: {resp.get('description')} — отправляем текстом")
+            except Exception as e:
+                log.warning(f"sendPhoto exception: {e} — отправляем текстом")
+        else:
+            log.warning("Картинку скачать не удалось — отправляем текстом")
+    else:
+        log.info("og:image не найдена — отправляем текстом")
+
+    # Fallback: только текст
     r = requests.post(f"{base}/sendMessage", json={
         "chat_id": SUPERADMIN_ID,
         "text": full_text,
@@ -253,21 +330,19 @@ def send_to_admin(text: str, article: dict):
 
     resp = r.json()
     if resp.get("ok"):
-        log.info(f"Пост отправлен, message_id={resp['result']['message_id']}")
+        log.info(f"Пост отправлен текстом, message_id={resp['result']['message_id']}")
     else:
         log.error(f"Telegram API error: {resp.get('description')} (code {resp.get('error_code')})")
-        # Пробуем ещё раз без HTML (plain text)
         plain = re.sub(r"<[^>]+>", "", full_text)
         r2 = requests.post(f"{base}/sendMessage", json={
             "chat_id": SUPERADMIN_ID,
             "text": plain[:4096],
             "disable_web_page_preview": True,
         }, timeout=15)
-        resp2 = r2.json()
-        if resp2.get("ok"):
+        if r2.json().get("ok"):
             log.info("Отправлено как plain text (fallback)")
         else:
-            log.error(f"Plain text тоже не прошёл: {resp2.get('description')}")
+            log.error(f"Plain text тоже не прошёл: {r2.json().get('description')}")
 
 
 def main():
