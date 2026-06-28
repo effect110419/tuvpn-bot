@@ -439,14 +439,6 @@ async def safe_edit(callback, text, kb=None):
             pass
 
 
-def happ_deeplink(sub_url: str) -> str:
-    """Deeplink для импорта подписки в Happ одним тапом."""
-    try:
-        b = _b64.b64encode(sub_url.encode()).decode()
-        return f"happ://add/{b}"
-    except Exception:
-        return ""
-
 
 def make_howto_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -1354,11 +1346,11 @@ async def howto_ios(callback: types.CallbackQuery):
     await safe_edit(
         callback,
         "🍏 <b>Подключение на iPhone / iPad</b>\n\n"
-        "1️⃣ Установите приложение <b>Happ</b>\n"
-        "👉 <a href=\"https://apps.apple.com/ru/app/happ-proxy-utility-plus/id6746188973\">Открыть в App Store</a>\n\n"
+        "1️⃣ Установите приложение <b>Streisand</b>\n"
+        "👉 <a href=\"https://apps.apple.com/ru/app/streisand/id6450534064\">Открыть в App Store</a>\n\n"
         "2️⃣ Нажмите «🔗 Получить ссылку подключения» ниже\n\n"
-        "3️⃣ Скопируйте ссылку (или нажмите «Открыть в Happ»)\n\n"
-        "4️⃣ В Happ нажмите <b>➕</b> → <b>«Добавить из буфера обмена»</b>\n\n"
+        "3️⃣ Скопируйте ссылку\n\n"
+        "4️⃣ В Streisand нажмите <b>➕</b> → <b>«Подписка»</b> → вставьте ссылку → «Готово»\n\n"
         "5️⃣ Нажмите большую круглую кнопку 🟢\n\n"
         "❓ Не получилось? Напишите @TuVPNSupport_bot",
         kb
@@ -1643,7 +1635,7 @@ async def connection_link(callback: types.CallbackQuery):
         f"<code>{sub['sub_url']}</code>\n\n"
         f"👆 Нажмите на ссылку чтобы скопировать.\n\n"
         f"<b>Дальше всё просто:</b>\n"
-        f"1️⃣ Откройте приложение (Happ / v2RayTun)\n"
+        f"1️⃣ Откройте приложение (Streisand / v2RayTun)\n"
         f"2️⃣ Нажмите ➕ → «Добавить из буфера обмена»\n"
         f"3️⃣ Нажмите кнопку подключения 🟢\n\n"
         f"❓ Не получается? Нажмите «Как настроить» ниже.",
@@ -1667,7 +1659,7 @@ async def my_devices(callback: types.CallbackQuery):
         await callback.message.answer(
             f"📱 <b>Мои устройства (0/{device_limit})</b>\n\n"
             f"🔍 У вас пока нет подключённых устройств.\n\n"
-            f"Получите ссылку подписки и откройте её в Happ Plus или v2RayTun — ваше устройство автоматически появится в этом списке.",
+            f"Получите ссылку подписки и откройте её в Streisand или v2RayTun — ваше устройство автоматически появится в этом списке.",
             reply_markup=kb
         )
         await callback.answer()
