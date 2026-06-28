@@ -39,6 +39,7 @@ _load_env()
 
 BOT_TOKEN        = os.environ.get("BOT_TOKEN", "")
 ANTHROPIC_KEY    = os.environ.get("ANTHROPIC_API_KEY", "")
+ANTHROPIC_URL    = os.environ.get("ANTHROPIC_BASE_URL", "")
 SUPERADMIN_ID    = 784871620
 SENT_CACHE_FILE  = "/tmp/tuvpn_news_sent.json"
 
@@ -175,7 +176,10 @@ def generate_post(article: dict) -> str:
         return _format_fallback(article)
 
     import anthropic
-    client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
+    client = anthropic.Anthropic(
+        api_key=ANTHROPIC_KEY,
+        **({"base_url": ANTHROPIC_URL} if ANTHROPIC_URL else {}),
+    )
 
     prompt = f"""Ты — SMM-редактор Telegram-канала о VPN и цифровой свободе в России.
 Аудитория: обычные люди, которые используют VPN чтобы заходить в Instagram, смотреть YouTube без тормозов, читать заблокированные сайты.
