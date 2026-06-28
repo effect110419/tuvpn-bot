@@ -1,3 +1,4 @@
+/* === MKT FIX === === REBRAND v4 === цвета Deep Ocean применены */
 /* =====================================================================
    TuVPN Admin v3 — Linear-style, command-palette, keyboard-first
    ===================================================================== */
@@ -6,6 +7,14 @@
 const PROXY_URL = 'https://admin.tuvpn.ru';
 /* ===================== STATE ===================== */
 const state = {
+  myPermissions: [],
+  isSuperadmin: false,
+  adminUsers: [],
+  adminRoles: [],
+  financeExpenses: [],
+  financeInvestments: [],
+  financePlanned: [],
+  financeSummary: null,
   users: [], subs: [], payments: [], promos: [], promoUses: [],
   refs: [], tickets: [], supportAdmins: [], servers: [],
   currentChart: 'revenue',
@@ -17,6 +26,195 @@ const state = {
   keySeq: '',
   keySeqTimer: null,
 };
+
+/* === PAGINATION STATE === */
+const pagination = {
+  users: { limit: 50, offset: 0, total: 0, loading: false, hasMore: true },
+  subs: { limit: 50, offset: 0, total: 0, loading: false, hasMore: true },
+  payments: { limit: 50, offset: 0, total: 0, loading: false, hasMore: true },
+  promos: { limit: 50, offset: 0, total: 0, loading: false, hasMore: true },
+  refs: { limit: 50, offset: 0, total: 0, loading: false, hasMore: true },
+  tickets: { limit: 50, offset: 0, total: 0, loading: false, hasMore: true }
+};
+
+function resetPagination(type) {
+  pagination[type].offset = 0;
+  pagination[type].hasMore = true;
+  state[type] = [];
+}
+
+function updatePaginationState(type, data) {
+  const pag = pagination[type];
+  pag.total = data.total || 0;
+  pag.loading = false;
+  
+  // Проверяем есть ли еще данные для загрузки
+  if (pag.offset + data.data.length >= pag.total) {
+    pag.hasMore = false;
+  } else {
+    pag.hasMore = true;
+  }
+  
+  // Добавляем новые данные к существующим
+  if (pag.offset === 0) {
+    state[type] = data.data; // Первая загрузка - заменяем
+  } else {
+    state[type] = [...state[type], ...data.data]; // Дополнительная загрузка - добавляем
+  }
+}
+
+function showLoadMoreButton(type, containerSelector) {
+  const container = document.querySelector(containerSelector);
+  if (!container) return;
+  
+  let loadMoreDiv = container.querySelector('.load-more-section');
+  if (!loadMoreDiv) {
+    loadMoreDiv = document.createElement('div');
+    loadMoreDiv.className = 'load-more-section';
+    loadMoreDiv.style.cssText = 'text-align: center; padding: 20px; margin-top: 20px;';
+    container.appendChild(loadMoreDiv);
+  }
+  
+  const pag = pagination[type];
+  if (pag.hasMore && !pag.loading) {
+    loadMoreDiv.innerHTML = `
+      <button class="btn btn-ghost" onclick="loadMore('${type}')" style="min-width: 140px;">
+        ${ICONS.arrowDown} Загрузить еще
+      </button>
+      <div style="margin-top: 8px; color: var(--text-muted); font-size: 12px;">
+        Показано ${state[type].length} из ${pag.total}
+      </div>
+    `;
+  } else if (pag.loading) {
+    loadMoreDiv.innerHTML = `
+      <div class="loading-indicator" style="display: flex; align-items: center; justify-content: center; gap: 8px;">
+        <div class="spinner"></div>
+        <span style="color: var(--text-muted);">Загрузка...</span>
+      </div>
+    `;
+  } else {
+    loadMoreDiv.innerHTML = `
+      <div style="color: var(--text-muted); font-size: 12px;">
+        Показаны все записи (${state[type].length})
+      </div>
+    `;
+  }
+}
+
+function loadMore(type) {
+  const pag = pagination[type];
+  if (pag.loading || !pag.hasMore) return;
+  
+  pag.offset += pag.limit;
+  
+  if (type === 'users') {
+    loadUsers(true);
+  } else if (type === 'subs') {
+    loadSubs(true);
+  }
+}
+
+window.loadMore = loadMore;
+
+/* ============================================================ */
+/* === RBAC v2 — единая логика прав ========================== */
+/* ============================================================ */
+
+// Грузится с /admin-api/my-permissions при старте.
+// state.me — текущий админ; state.isSuperadmin; state.myPermissions Set;
+// state.sections — реестр разделов с реестром прав; state.allPermissions — все возможные права.
+
+async function loadMyPermissions() {
+  try {
+    const r = await fetch('/admin-api/my-permissions', { credentials: 'include' });
+    if (!r.ok) { console.warn('my-permissions HTTP', r.status); return; }
+    const data = await r.json();
+    state.me = { user_id: data.user_id };
+    state.isSuperadmin = !!data.is_superadmin;
+    state.myPermissions = new Set(data.permissions || []);
+    state.sections = data.sections || {};
+    state.allPermissions = data.all_permissions || [];
+    // Берём имя из users (для KPI «Суперадмин: ...»)
+    try {
+      const u = (state.users || []).find(x => x.user_id === data.user_id);
+      if (u) state.me.name = [u.first_name, u.last_name].filter(Boolean).join(' ') || u.username;
+    } catch(e){}
+  } catch(e) {
+    console.warn('loadMyPermissions:', e);
+  }
+}
+
+function hasPermission(perm) {
+  if (!perm) return true;
+  if (state.isSuperadmin) return true;
+  return state.myPermissions && state.myPermissions.has(perm);
+}
+
+function canViewSection(pageKey) {
+  if (state.isSuperadmin) return true;
+  const map = {
+    dashboard: 'view_dashboard', users: 'view_users', subs: 'view_subs',
+    payments: 'view_payments', promos: 'view_promos', marketing: 'view_marketing',
+    referrals: 'view_referrals', analytics: 'view_analytics', broadcast: 'view_broadcast',
+    monitor: 'view_monitor', tickets: 'view_tickets', servers: 'view_servers',
+    settings: 'view_settings', finance: 'view_finance', roles: 'view_roles',
+  };
+  const perm = map[pageKey];
+  if (!perm) return true;
+  return hasPermission(perm);
+}
+
+// Скрытие nav-пунктов в зависимости от прав
+function applyNavVisibility() {
+  document.querySelectorAll('.nav-item[data-page]').forEach(el => {
+    const page = el.dataset.page;
+    if (canViewSection(page)) {
+      el.style.display = '';
+    } else {
+      el.style.display = 'none';  // мягкое скрытие, не удаляем — на случай если права обновятся
+    }
+  });
+}
+
+// Глобальный перехват кликов: кнопки с data-perm проверяются
+function installPermClickGuard() {
+  if (window._permGuardInstalled) return;
+  window._permGuardInstalled = true;
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-perm]');
+    if (!btn) return;
+    const perm = btn.dataset.perm;
+    if (hasPermission(perm)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation();
+    showNoPermModal(perm);
+  }, true);  // capture phase, чтобы перехватить раньше других обработчиков
+}
+
+function showNoPermModal(perm) {
+  // подставляем красивое название действия из state.sections
+  let actionLabel = perm;
+  if (state.sections) {
+    for (const sec of Object.values(state.sections)) {
+      if (sec.actions && sec.actions[perm]) { actionLabel = sec.actions[perm]; break; }
+      if (sec.view_perm === perm) { actionLabel = sec.title; break; }
+    }
+  }
+  const lbl = document.getElementById('noPermAction');
+  if (lbl) lbl.textContent = actionLabel;
+  const key = document.getElementById('noPermKey');
+  if (key) key.textContent = perm;
+  openModal('noPermModal');
+}
+window.showNoPermModal = showNoPermModal;
+window.hasPermission = hasPermission;
+window.canViewSection = canViewSection;
+window.applyNavVisibility = applyNavVisibility;
+window.loadMyPermissions = loadMyPermissions;
+window.installPermClickGuard = installPermClickGuard;
+
+/* === END RBAC v2 === */
 
 /* ===================== HELPERS ===================== */
 const $ = (s, r = document) => r.querySelector(s);
@@ -103,6 +301,21 @@ const ICONS = {
 
 /* ===================== TOAST ===================== */
 let toastSeq = 0;
+
+// Скоринг рефералов: главный вес — оплатили, второй — конверсия, третий — привёл
+
+// Загружаем права текущего админа
+
+
+
+function referralScore(r) {
+  const brought = r.brought || 0;
+  const paid = r.paid || 0;
+  if (brought === 0) return 0;
+  const conversion = paid / brought;
+  return (paid * 1000) + (conversion * 100) + (brought * 0.1);
+}
+
 function toast(msg, type = 'success', opts = {}) {
   const id = ++toastSeq;
   const ico = type === 'success' ? ICONS.check
@@ -374,10 +587,109 @@ function showLogin() {
   cancelTgLogin();
 }
 
+
+// ============================================================
+// РАЗДЕЛ: РОЛИ И ДОСТУПЫ (только суперадмин)
+// ============================================================
+
+const PERMISSION_LABELS = {
+  view_users: '👁 Пользователи',
+  view_subscriptions: '👁 Подписки',
+  view_payments: '👁 Платежи',
+  view_referrals: '👁 Рефералы',
+  view_promocodes: '👁 Промокоды',
+  view_campaigns: '👁 Кампании',
+  view_tickets: '👁 Тикеты',
+  view_servers: '👁 Серверы',
+  view_analytics: '👁 Аналитика',
+  view_finance: '💰 Финансы',
+  view_broadcasts: '👁 Рассылки',
+  view_settings: '👁 Настройки',
+  grant_subscription: '✅ Выдать подписку',
+  revoke_subscription: '❌ Отозвать подписку',
+  send_broadcast: '📢 Отправить рассылку',
+  manage_promocodes: '🏷 Управлять промокодами',
+  manage_servers: '🖥 Управлять серверами',
+  close_ticket: '🎫 Закрыть тикет',
+  assign_ticket: '🎫 Взять тикет',
+  edit_finance: '💰 Редактировать финансы',
+  manage_roles: '🔑 Управлять ролями',
+};
+
+
+
+
+
+
+
+
+
+function editAdminPerms(userId) {
+  const admin = state.adminUsers.find(a=>a.user_id===userId);
+  if (!admin) return;
+  const rolePerms = state.adminRoles.find(r=>r.id===admin.role_id)?.permissions || [];
+  const added = admin.added_permissions || [];
+  const removed = admin.removed_permissions || [];
+
+  let groupsHtml = '';
+  for (const [groupName, perms] of Object.entries(PERM_GROUPS)) {
+    groupsHtml += `<div class="perm-group"><div class="perm-group-title">${groupName}</div><div class="perm-checkboxes">`;
+    for (const perm of perms) {
+      const fromRole = rolePerms.includes(perm);
+      const isAdded = added.includes(perm);
+      const isRemoved = removed.includes(perm);
+      const effective = (fromRole && !isRemoved) || isAdded;
+      const label = PERMISSION_LABELS[perm]||perm;
+      const hint = fromRole ? ' (из роли)' : '';
+      groupsHtml += `<label class="perm-check ${fromRole?'from-role':''}"><input type="checkbox" value="${perm}" ${effective?'checked':''}> ${label}<span class="perm-hint">${hint}</span></label>`;
+    }
+    groupsHtml += '</div></div>';
+  }
+
+  const roleOptions = state.adminRoles.map(r =>
+    `<option value="${r.id}" ${r.id===admin.role_id?'selected':''}>${r.name}</option>`
+  ).join('');
+
+  showModal(`
+    <div class="modal-header">⚙️ Права: ${admin.full_name||admin.username}</div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label>Роль</label>
+        <select id="admin-role-select" class="input-field">
+          <option value="">— Без роли —</option>
+          ${roleOptions}
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Права (итоговые, с учётом роли и доп. прав)</label>
+        <div id="admin-perms-container">${groupsHtml}</div>
+      </div>
+      <div class="form-group">
+        <label>
+          <input type="checkbox" id="admin-active-check" ${admin.is_active?'checked':''}> Активен
+        </label>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal()">Отмена</button>
+      <button class="btn btn-primary" onclick="saveAdminPerms(${userId})">Сохранить</button>
+    </div>
+  `);
+}
+
+
 // === END TG ADMIN AUTH ===
 
 /* ===================== DATA LOAD ===================== */
 async function loadAll() {
+  // RBAC v2: грузим права + строим видимость nav + ставим click-guard
+  try { await loadMyPermissions(); } catch(e) { console.warn('loadMyPermissions failed:', e); }
+  try { applyNavVisibility(); } catch(e) {}
+  try { installPermClickGuard(); } catch(e) {}
+  if (state.isSuperadmin) {
+    document.querySelectorAll('.superadmin-only').forEach(el => el.style.display = '');
+  }
+
   try {
     const [users, subs, payments, promos, promoUses, refs, tickets, supportAdmins, campaigns, campaignClicks, userDevices] = await Promise.all([
       sbGet('users', 'select=*&order=created_at.desc'),
@@ -423,6 +735,13 @@ const PAGE_META = {
   tickets:    { sec: 'Поддержка', title: 'Тикеты' },
   servers:    { sec: 'Инфраструктура', title: 'Серверы' },
   settings:   { sec: 'Инфраструктура', title: 'Настройки' },
+  broadcast:  { sec: 'Маркетинг', title: 'Рассылка' },
+  
+  monitor:    { sec: 'Инфраструктура', title: 'Мониторинг' },
+  
+  analytics:  { sec: 'Маркетинг', title: 'Аналитика' },
+  finance:    { sec: 'Система', title: 'Финансы' },
+  roles:      { sec: 'Система', title: 'Роли и доступы' },
 };
 
 function goPage(page) {
@@ -437,6 +756,11 @@ function goPage(page) {
 }
 
 function renderPage(page) {
+  // PAGE logs REMOVED
+if (page === 'broadcast') { renderBroadcast(); return; }
+  if (page === 'monitor') { renderMonitor(); return; }
+  // PAGE map REMOVED
+if (page === 'analytics') { renderAnalytics(); return; }
   const fns = {
     dashboard: renderDashboard,
     users: renderUsers,
@@ -752,6 +1076,28 @@ document.addEventListener('DOMContentLoaded', () => {
   // Grant modal handlers
   $('#grantSubmit').addEventListener('click', grantSubscription);
 
+  // Пресеты устройств
+  document.addEventListener('click', e => {
+    if (e.target.classList.contains('grant-dev-preset') && !e.target.disabled) {
+      $('#grantDevices').value = e.target.dataset.val;
+      document.querySelectorAll('.grant-dev-preset').forEach(b => b.classList.remove('btn-accent'));
+      e.target.classList.add('btn-accent');
+    }
+    if (e.target.classList.contains('grant-days-preset') && !e.target.disabled) {
+      $('#grantDays').value = e.target.dataset.val;
+      document.querySelectorAll('.grant-days-preset').forEach(b => b.classList.remove('btn-accent'));
+      e.target.classList.add('btn-accent');
+    }
+  });
+
+  // Включаем/выключаем пресеты устройств вместе с чекбоксом
+  const _gde = $('#grantDevicesEnable');
+  if (_gde) _gde.addEventListener('change', function() {
+    const dis = !this.checked;
+    $('#grantDevices').disabled = dis;
+    document.querySelectorAll('.grant-dev-preset').forEach(b => b.disabled = dis);
+  });
+
   // Promo modal handlers
   $('#promoGenBtn').addEventListener('click', genPromoCode);
   $('#promoType').addEventListener('change', updatePromoHelp);
@@ -824,6 +1170,8 @@ function renderDashboard() {
   $('#page-dashboard').innerHTML = `
     <div class="page-title">Дашборд</div>
     <div class="page-sub">Общая картина по системе TuVPN</div>
+
+    <div id="pulseBlock"></div>
 
     <div class="kpi-grid">
       <div class="kpi">
@@ -956,7 +1304,7 @@ function renderDashboard() {
   `;
 
   // Sparklines
-  sparkline($('#sparkUsers'), sparkUsers, '#5b8def');
+  sparkline($('#sparkUsers'), sparkUsers, '#4fc4cf');
   sparkline($('#sparkSubs'), sparkSubs, '#4ade80');
   sparkline($('#sparkRev'), sparkRev, '#c084fc');
   sparkline($('#sparkPay'), sparkPay, '#facc15');
@@ -973,6 +1321,9 @@ function renderDashboard() {
   $$('#page-dashboard .lst-row[data-uid]').forEach(r => r.addEventListener('click', () => openUserSheet(r.dataset.uid)));
   $('#goPayments').addEventListener('click', () => goPage('payments'));
   $('#goTickets').addEventListener('click', () => goPage('tickets'));
+
+  // Live-пульс
+  renderDashboardPulse();
 }
 
 function renderMainChart(kind) {
@@ -1008,7 +1359,7 @@ function renderMainChart(kind) {
   const canvas = $('#mainChart');
   if (!canvas) return;
   const ctx = canvas.getContext('2d');
-  const color = kind === 'revenue' ? '#5b8def' : kind === 'payments' ? '#67e8f9' : '#c084fc';
+  const color = kind === 'revenue' ? '#4fc4cf' : kind === 'payments' ? '#67e8f9' : '#c084fc';
   const grad = ctx.createLinearGradient(0, 0, 0, 260);
   grad.addColorStop(0, color + '40');
   grad.addColorStop(1, color + '00');
@@ -1025,16 +1376,16 @@ function renderMainChart(kind) {
       plugins: {
         legend: { display: false },
         tooltip: {
-          backgroundColor: '#12141c', borderColor: '#2a2f42', borderWidth: 1, padding: 8,
-          titleColor: '#f0f2f7', bodyColor: '#b4b9c8',
+          backgroundColor: '#0b1428', borderColor: 'rgba(120,160,220,0.18)', borderWidth: 1, padding: 8,
+          titleColor: '#ecf3ff', bodyColor: '#afc3e0',
           titleFont: { family: 'Geist Mono', size: 11 },
           bodyFont: { family: 'Geist', size: 12, weight: 600 },
           callbacks: { label: ctx => kind === 'revenue' ? money(ctx.parsed.y) : num(ctx.parsed.y) },
         },
       },
       scales: {
-        x: { grid: { display: false }, ticks: { color: '#4a4f60', font: { family: 'Geist Mono', size: 10 }, maxRotation: 0, autoSkipPadding: 30 }},
-        y: { grid: { color: '#1e2230', drawBorder: false }, ticks: { color: '#4a4f60', font: { family: 'Geist Mono', size: 10 }, callback: v => kind === 'revenue' ? (v >= 1000 ? (v/1000)+'k' : v) : v }},
+        x: { grid: { display: false }, ticks: { color: '#7290b8', font: { family: 'Geist Mono', size: 10 }, maxRotation: 0, autoSkipPadding: 30 }},
+        y: { grid: { color: 'rgba(120,160,220,0.08)', drawBorder: false }, ticks: { color: '#7290b8', font: { family: 'Geist Mono', size: 10 }, callback: v => kind === 'revenue' ? (v >= 1000 ? (v/1000)+'k' : v) : v }},
       },
     },
   });
@@ -1432,7 +1783,7 @@ function renderPaymentsTable() {
     </tr>`;
   }).join('');
 
-  $$('#paymentsTbody [data-act="mark"]').forEach(b => b.addEventListener('click', () => markReceipt(Number(b.dataset.pid), 'registered')));
+  $$('#paymentsTbody [data-act="mark"]').forEach(b => b.addEventListener('click', () => openReceiptModal(Number(b.dataset.pid))));
   $$('#paymentsTbody [data-act="unmark"]').forEach(b => b.addEventListener('click', () => markReceipt(Number(b.dataset.pid), 'pending')));
 }
 
@@ -1639,7 +1990,7 @@ function renderReferrals() {
     user: userById(rid) || { user_id: rid },
     referred: info.referred.length,
     paid: info.paid,
-  })).sort((a, b) => b.referred - a.referred);
+  })).sort((a, b) => (b.paid * 100 + b.referred) - (a.paid * 100 + a.referred));
 
   const totalPaid = list.reduce((s, r) => s + r.paid, 0);
   const totalDays = state.refs.reduce((s, r) => s + (r.bonus_days || 0), 0);
@@ -1738,7 +2089,7 @@ function renderTicketsTable() {
     const cls = t.status === 'open' ? 'yellow' : t.status === 'in_progress' ? 'blue' : 'green';
     const lab = t.status === 'open' ? 'open' : t.status === 'in_progress' ? 'work' : 'closed';
     const admin = t.assigned_admin_id ? state.supportAdmins.find(a => Number(a.user_id) === Number(t.assigned_admin_id)) : null;
-    return `<tr class="clickable" data-uid="${t.user_id}">
+    return `<tr class="clickable" data-tid="${t.id}" data-uid="${t.user_id}">
       <td><span class="mono" style="font-weight:600">#${t.id}</span></td>
       <td><div class="u-cell">${avaHtml(u)}<div class="u-name">${esc(displayName(u))}</div></div></td>
       <td><span class="muted">${esc((t.subject || '').slice(0, 60))}</span></td>
@@ -1750,7 +2101,7 @@ function renderTicketsTable() {
   }).join('');
   $$('#ticketsTbody tr.clickable').forEach(r => r.addEventListener('click', e => {
     if (e.target.closest('a, button')) return;
-    openUserSheet(r.dataset.uid);
+    openTicketChat(Number(r.dataset.tid));
   }));
 }
 
@@ -1869,9 +2220,11 @@ function renderServerGrid() {
         <div class="k">Проверено</div><div class="v">${s.last_check_at ? fmtTimeAgo(s.last_check_at) : 'никогда'}</div>
       </div>
 
-      <div class="srv-foot">
+      <div class="srv-foot srv-foot-wrap">
         <button class="btn btn-ghost btn-sm" data-act="check">${ICONS.refresh} Проверить</button>
-          <button class="btn btn-ghost btn-sm" data-act="sync">${ICONS.refresh} Синхр.</button>
+        <button class="btn btn-ghost btn-sm" data-act="sync">${ICONS.refresh} Синхр.</button>
+        <button class="btn btn-ghost btn-sm" data-act="apply" title="Записать SNI/Reality из админки на сам сервер + рестарт">📡 Применить SNI</button>
+        <button class="btn btn-ghost btn-sm" data-act="restart" title="Перезапустить Xray на сервере">♻️ Рестарт</button>
         <div class="srv-acts">
           <button class="btn btn-ghost btn-sm btn-icon" data-act="edit" title="Редактировать">${ICONS.edit}</button>
         </div>
@@ -1885,6 +2238,8 @@ function renderServerGrid() {
     card.querySelector('[data-act="toggle"]').addEventListener('change', e => toggleServerActive(sid, e.target.checked));
     card.querySelector('[data-act="check"]').addEventListener('click', () => checkServer(sid));
     const sb = card.querySelector('[data-act="sync"]'); if (sb) sb.addEventListener('click', () => syncServer(sid));
+    const ab = card.querySelector('[data-act="apply"]'); if (ab) ab.addEventListener('click', () => applyReality(sid));
+    const rb = card.querySelector('[data-act="restart"]'); if (rb) rb.addEventListener('click', () => restartXray(sid));
     card.querySelector('[data-act="edit"]').addEventListener('click', () => openServerModal(sid));
   });
 }
@@ -1913,11 +2268,12 @@ function openServerModal(sid = null) {
     $('#srvSni').value = s.sni || 'www.bing.com';
     $('#srvFlow').value = s.flow || 'xtls-rprx-vision';
     $('#srvFp').value = s.fingerprint || 'chrome';
+    if ($('#srvApiToken')) $('#srvApiToken').value = s.api_token || '';
     $('#srvSort').value = s.sort_order || 0;
     $('#srvActive').checked = !!s.is_active;
   } else {
     // Reset
-    ['#srvFlag', '#srvCountry', '#srvCode', '#srvCountryCode', '#srvPanelUrl', '#srvPanelLogin', '#srvPanelPass', '#srvIp', '#srvPubKey', '#srvShortId'].forEach(s => $(s).value = '');
+    ['#srvFlag', '#srvCountry', '#srvCode', '#srvCountryCode', '#srvPanelUrl', '#srvPanelLogin', '#srvPanelPass', '#srvIp', '#srvPubKey', '#srvShortId', '#srvApiToken'].forEach(s => $(s) && ($(s).value = ''));
     $('#srvPort').value = 443;
     $('#srvInbound').value = 1;
     $('#srvSni').value = 'www.bing.com';
@@ -1927,6 +2283,20 @@ function openServerModal(sid = null) {
     $('#srvActive').checked = true;
   }
 
+  // автозаполнение country_code при выборе страны из селектора
+  const flagSel = $('#srvFlag');
+  if (flagSel && !flagSel.dataset.bound) {
+    flagSel.dataset.bound = '1';
+    flagSel.addEventListener('change', () => {
+      const opt = flagSel.options[flagSel.selectedIndex];
+      const cc = opt && opt.dataset ? opt.dataset.cc : '';
+      const ccInput = $('#srvCountryCode');
+      // подставляем код только если поле пустое или равно XX/прежнему авто
+      if (cc && cc !== 'XX' && ccInput && !ccInput.value.trim()) {
+        ccInput.value = cc;
+      }
+    });
+  }
   openModal('serverModal');
 }
 
@@ -1938,6 +2308,7 @@ async function saveServer() {
     code: $('#srvCode').value.trim(),
     country_name: $('#srvCountry').value.trim(),
     country_flag: $('#srvFlag').value.trim(),
+      api_token: ($('#srvApiToken') ? $('#srvApiToken').value.trim() : ''),
     country_code: $('#srvCountryCode').value.trim().toUpperCase(),
     panel_url: $('#srvPanelUrl').value.trim().replace(/\/$/, ''),
     panel_login: $('#srvPanelLogin').value.trim(),
@@ -2169,20 +2540,37 @@ function quickGrant(uid) {
 
 async function grantSubscription() {
   const uid = parseInt($('#grantUid').value);
-  const devices = parseInt($('#grantDevices').value);
-  const days = parseInt($('#grantDays').value);
   if (!uid) { toast('Введите Telegram ID', 'error'); return; }
-
+  const changeDevices = $('#grantDevicesEnable').checked;
+  const changeDays = $('#grantDaysEnable').checked;
+  if (changeDevices) {
+    const devVal = parseInt($('#grantDevices').value);
+    if (isNaN(devVal) || devVal < 1 || devVal > 999) { toast('Некорректное число устройств (1-999)', 'error'); return; }
+  }
+  if (changeDays) {
+    const daysVal = parseInt($('#grantDays').value);
+    if (isNaN(daysVal) || daysVal < 1 || daysVal > 9999) { toast('Некорректное число дней (1-9999)', 'error'); return; }
+  }
+  if (!changeDevices && !changeDays) {
+    toast('Включи хотя бы одну секцию: устройства или срок', 'error');
+    return;
+  }
+  const body = { user_id: uid };
+  if (changeDevices) body.set_devices = parseInt($('#grantDevices').value);
+  if (changeDays) body.extend_days = parseInt($('#grantDays').value);
   const btn = $('#grantSubmit');
   btn.disabled = true;
-  btn.innerHTML = '⏳ Выдаём...';
+  btn.innerHTML = '⏳ Применяем...';
   try {
     const r = await proxy('/admin-api/grant', {
       method: 'POST',
-      body: JSON.stringify({ user_id: uid, devices, days }),
+      body: JSON.stringify(body),
     });
     if (r.success) {
-      toast(`Подписка ${r.action === 'extended' ? 'продлена' : 'создана'} на ${r.servers || '?'} серверах`);
+      const parts = [];
+      if (changeDevices) parts.push(`устройств: ${r.devices}`);
+      if (changeDays) parts.push(`+${body.extend_days} дн`);
+      toast(`Подписка обновлена · ${parts.join(' · ')} · ${r.servers || '?'} серверов`);
       closeModal('grantModal');
       try { await sbUpdate('users', 'user_id=eq.' + uid, { client_uuid: r.uuid }); } catch (e) {}
       await loadAll();
@@ -2193,18 +2581,20 @@ async function grantSubscription() {
     toast('Ошибка: ' + e.message, 'error');
   } finally {
     btn.disabled = false;
-    btn.innerHTML = `${ICONS.check} Выдать`;
+    btn.innerHTML = `${ICONS.check} Применить`;
   }
 }
 
 async function revokeSub(id) {
-  if (!confirm('Отозвать подписку? Пользователь потеряет доступ.')) return;
+  if (!confirm('Отозвать подписку? Пользователь потеряет доступ ко всем серверам.')) return;
   try {
-    await sbUpdate('subscriptions', 'id=eq.' + id, { status: 'inactive' });
+    const data = await proxy('/admin-api/revoke/' + id, { method: 'POST' });
+    if (!data.success) { toast('Ошибка отзыва: ' + (data.error || 'неизвестно'), 'error'); return; }
     const s = state.subs.find(x => x.id === id);
     if (s) s.status = 'inactive';
     renderPage(state.currentPage);
-    toast('Подписка отозвана');
+    const errs = (data.server_errors || []).length;
+    toast(errs ? 'Отозвано (ошибки на ' + errs + ' серверах — см. консоль)' : 'Подписка отозвана — доступ к VPN закрыт');
   } catch (e) { toast('Ошибка: ' + e.message, 'error'); }
 }
 
@@ -2305,7 +2695,7 @@ function renderMarketing() {
         <button class="btn btn-ghost" onclick="loadAll()" title="Обновить (R)">
           ${ICONS.refresh} Обновить
         </button>
-        <button class="btn btn-primary" onclick="openCampaignModal()" title="Создать (N)">
+        <button class="btn btn-primary" data-perm="marketing.manage_campaigns" onclick="openCampaignModal()" title="Создать (N)">
           ${ICONS.plus} Новая кампания
         </button>
       </div>
@@ -2338,11 +2728,11 @@ function renderMarketing() {
       <div class="card-head">
         <div class="card-title">🎯 Кампании по эффективности</div>
         <div class="table-actions">
-          <input type="search" id="campaignSearch" placeholder="Поиск кампаний..." class="search-input">
+          <input type="search" id="campaignSearch" placeholder="Поиск кампаний..." class="input" style="max-width:220px">
         </div>
       </div>
       <div class="table-container">
-        <table id="campaignsTable">
+        <table id="campaignsTable" class="tbl">
           <thead>
             <tr>
               <th>Кампания</th>
@@ -2358,8 +2748,8 @@ function renderMarketing() {
           </thead>
           <tbody>
             <!-- Direct Traffic Row -->
-            <tr class="organic-row" style="background:var(--bg-2);border-left:3px solid var(--accent-3)">
-              <td>
+            <tr class="organic-row">
+              <td data-label="Кампания">
                 <div class="u-cell">
                   <div class="status-dot organic"></div>
                   <div>
@@ -2368,18 +2758,18 @@ function renderMarketing() {
                   </div>
                 </div>
               </td>
-              <td><span class="pill pill-muted">organic</span></td>
-              <td style="text-align:right">—</td>
-              <td style="text-align:right">—</td>
-              <td style="text-align:right">${organicUsers.length}</td>
-              <td style="text-align:right">${organicPayments.length}</td>
-              <td style="text-align:right">${num(totalOrganicRevenue)}</td>
-              <td style="text-align:right"><span class="roi-badge success">∞</span></td>
-              <td style="text-align:right">${organicPayments.length > 0 ? num(totalOrganicRevenue / organicPayments.length) : '—'}</td>
+              <td data-label="Источник"><span class="pill pill-direct">organic</span></td>
+              <td data-label="Расходы ₽" style="text-align:right">—</td>
+              <td data-label="Клики" style="text-align:right">—</td>
+              <td data-label="Рег-ции" style="text-align:right">${organicUsers.length}</td>
+              <td data-label="Оплаты" style="text-align:right">${organicPayments.length}</td>
+              <td data-label="Выручка ₽" style="text-align:right">${num(totalOrganicRevenue)}</td>
+              <td data-label="ROI" style="text-align:right"><span class="roi-badge success">∞</span></td>
+              <td data-label="Ср.чек ₽" style="text-align:right">${organicPayments.length > 0 ? num(totalOrganicRevenue / organicPayments.length) : '—'}</td>
             </tr>
             ${campaignStats.map(campaign => `
-              <tr class="campaign-row" data-code="${campaign.code}" onclick="showCampaignDetails('${campaign.code}')">
-                <td>
+              <tr class="campaign-row clickable" data-code="${campaign.code}" onclick="showCampaignDetails('${campaign.code}')">
+                <td data-label="Кампания">
                   <div class="u-cell">
                     <div class="status-dot ${campaign.is_active ? 'active' : 'inactive'}"></div>
                     <div>
@@ -2388,13 +2778,13 @@ function renderMarketing() {
                     </div>
                   </div>
                 </td>
-                <td><span class="pill pill-${campaign.source || 'muted'}">${getSourceIcon(campaign.source)} ${getSourceLabel(campaign.source)}</span></td>
-                <td style="text-align:right">${campaign.cost > 0 ? num(campaign.cost) : '—'}</td>
-                <td style="text-align:right">${campaign.clicks || '—'}</td>
-                <td style="text-align:right">${campaign.registrations || '—'}</td>
-                <td style="text-align:right">${campaign.payments || '—'}</td>
-                <td style="text-align:right">${campaign.revenue > 0 ? num(campaign.revenue) : '—'}</td>
-                <td style="text-align:right">
+                <td data-label="Источник"><span class="pill pill-${campaign.source || 'other'}">${getSourceIcon(campaign.source)} ${getSourceLabel(campaign.source)}</span></td>
+                <td data-label="Расходы ₽" style="text-align:right">${campaign.cost > 0 ? num(campaign.cost) : '—'}</td>
+                <td data-label="Клики" style="text-align:right">${campaign.clicks || '—'}</td>
+                <td data-label="Рег-ции" style="text-align:right">${campaign.registrations || '—'}</td>
+                <td data-label="Оплаты" style="text-align:right">${campaign.payments || '—'}</td>
+                <td data-label="Выручка ₽" style="text-align:right">${campaign.revenue > 0 ? num(campaign.revenue) : '—'}</td>
+                <td data-label="ROI" style="text-align:right">
                   ${campaign.roi === Infinity ? '<span class="roi-badge success">∞</span>' : 
                     campaign.roi > 50 ? `<span class="roi-badge success">+${campaign.roi.toFixed(0)}%</span>` :
                     campaign.roi > 0 ? `<span class="roi-badge warning">+${campaign.roi.toFixed(0)}%</span>` :
@@ -2402,7 +2792,7 @@ function renderMarketing() {
                     '<span class="roi-badge muted">0%</span>'
                   }
                 </td>
-                <td style="text-align:right">${campaign.avgTicket > 0 ? num(campaign.avgTicket) : '—'}</td>
+                <td data-label="Ср.чек ₽" style="text-align:right">${campaign.avgTicket > 0 ? num(campaign.avgTicket) : '—'}</td>
               </tr>
             `).join('')}
           </tbody>
@@ -2685,10 +3075,10 @@ function showCampaignDetails(campaignCode) {
       </div>
       <div class="modal-body">${body}</div>
       <div class="modal-foot modal-foot-spread">
-        <button class="btn btn-danger" onclick="deleteCampaign('${esc(c.code)}')">🗑 Удалить</button>
+        <button class="btn btn-danger" data-perm="marketing.manage_campaigns" onclick="deleteCampaign('${esc(c.code)}')">🗑 Удалить</button>
         <div style="display:flex;gap:8px">
           <button class="btn btn-ghost" onclick="closeModal('campaignViewModal')">Закрыть</button>
-          <button class="btn btn-primary" onclick="updateCampaign('${esc(c.code)}')">💾 Сохранить</button>
+          <button class="btn btn-primary" data-perm="marketing.manage_campaigns" onclick="updateCampaign('${esc(c.code)}')">💾 Сохранить</button>
         </div>
       </div>
     </div>`;
@@ -2732,4 +3122,2395 @@ async function deleteCampaign(code) {
     toast('Ошибка удаления: ' + e.message, 'error');
   }
 }
+
+
+/* ==================== ЛОГИ ==================== */
+const LOG_LEVEL_BADGE = {
+  info:  '<span class="log-badge log-info">info</span>',
+  warn:  '<span class="log-badge log-warn">warn</span>',
+  error: '<span class="log-badge log-error">error</span>',
+};
+const LOG_CAT_LABEL = {
+  subscription: 'Подписка', payment: 'Платёж', bot: 'Бот',
+  server: 'Сервер', admin: 'Админ', broadcast: 'Рассылка',
+};
+const logState = { category: 'all', level: 'all', search: '' };
+
+
+let _logsCache = [];
+async function loadLogs() {
+  const wrap = $('#logTableWrap');
+  if (!wrap) return;
+  try {
+    let qs = `category=${logState.category}&level=${logState.level}`;
+    if (logState.search) qs += `&search=${encodeURIComponent(logState.search)}`;
+    const data = await proxy('/admin-api/logs?' + qs);
+    _logsCache = data.logs || [];
+    if (!_logsCache.length) { wrap.innerHTML = '<div class="empty-state">Нет записей</div>'; return; }
+    let rows = _logsCache.map(l => {
+      const t = new Date(l.created_at).toLocaleString('ru-RU');
+      const det = l.details && Object.keys(l.details).length ? JSON.stringify(l.details) : '';
+      const cat = LOG_CAT_LABEL[l.category] || l.category;
+      return `<tr>
+        <td class="log-time">${esc(t)}</td>
+        <td>${LOG_LEVEL_BADGE[l.level] || esc(l.level)}</td>
+        <td>${esc(cat)}</td>
+        <td class="log-event">${esc(l.event)}${l.user_id ? ` <span class="log-uid">uid:${l.user_id}</span>` : ''}</td>
+        <td class="log-details">${det ? `<code>${esc(det.slice(0,80))}</code>` : ''}</td>
+        <td><button class="btn-copy" data-log='${esc(JSON.stringify(l))}' title="Копировать">⧉</button></td>
+      </tr>`;
+    }).join('');
+    wrap.innerHTML = `<table class="data-table log-table">
+      <thead><tr><th>Время</th><th>Уровень</th><th>Категория</th><th>Событие</th><th>Детали</th><th></th></tr></thead>
+      <tbody>${rows}</tbody></table>`;
+    $$('.btn-copy').forEach(b => b.addEventListener('click', () => {
+      copyToClipboard(b.dataset.log); toast('Скопировано');
+    }));
+  } catch (e) {
+    wrap.innerHTML = `<div class="empty-state">Ошибка загрузки логов</div>`;
+  }
+}
+
+function copyAllLogs() {
+  const text = _logsCache.map(l =>
+    `[${new Date(l.created_at).toLocaleString('ru-RU')}] ${l.level.toUpperCase()} ${l.category}: ${l.event}` +
+    (l.user_id ? ` (uid:${l.user_id})` : '') +
+    (l.details && Object.keys(l.details).length ? ` ${JSON.stringify(l.details)}` : '')
+  ).join('\n');
+  copyToClipboard(text); toast('Все логи скопированы');
+}
+
+/* ==================== РАССЫЛКА ==================== */
+const BC_TEMPLATES = {
+  fix: "✅ Мы устранили неполадки — сервис снова работает стабильно.\n\nЕсли VPN не подключается, откройте приложение и нажмите 🔄 (обновить), затем выберите любую локацию. Спасибо за терпение! 🙌",
+  apology: "🙏 Приносим извинения за недавние перебои в работе сервиса.\n\nВ качестве компенсации мы начислили вам бонусные дни подписки. Спасибо, что остаётесь с нами!\n\nЕсли возникнут вопросы — мы всегда на связи.",
+  renew: "⏳ Ваша подписка скоро истекает.\n\nПродлите её заранее, чтобы доступ не прерывался. Telegram сейчас замедляют — с нашим VPN всё открывается без ограничений. Оформить продление можно прямо в боте.",
+  news: "📣 У нас новости!\n\nМы постоянно улучшаем сервис: добавляем серверы, повышаем стабильность и скорость. Следите за обновлениями — впереди ещё больше полезного. 🚀",
+  howto: "🛠 Если VPN не подключается:\n\n1. Откройте приложение Happ\n2. Нажмите 🔄 (обновить подписку)\n3. Выберите другую локацию\n4. Нажмите кнопку подключения\n\nЕсли не помогло — напишите в поддержку, поможем!",
+};
+const bcState = { audience: 'all', campaign: 'all', targetUserId: null };
+
+async function renderBroadcast() {
+  const host = getPageHost();
+  host.innerHTML = `
+    <div class="page-head">
+      <h2>Рассылка</h2>
+      <div class="page-sub">Массовые уведомления пользователям в Telegram-бот.</div>
+    </div>
+    <div class="toolbar">
+      <button class="btn btn-primary" id="bcNewBtn">+ Новая рассылка</button>
+      <span class="toolbar-grow"></span>
+      <button class="btn btn-ghost btn-sm" id="bcHistRefresh">Обновить историю</button>
+    </div>
+    <div id="bcHistWrap"><div class="empty-state">Загрузка истории...</div></div>
+  `;
+  $('#bcNewBtn').addEventListener('click', openBroadcastModal);
+  $('#bcHistRefresh').addEventListener('click', loadBroadcasts);
+  loadBroadcasts();
+}
+
+async function loadBroadcasts() {
+  const wrap = $('#bcHistWrap');
+  if (!wrap) return;
+  try {
+    const data = await proxy('/admin-api/broadcasts');
+    const list = data.broadcasts || [];
+    if (!list.length) { wrap.innerHTML = '<div class="empty-state">Рассылок пока не было</div>'; return; }
+    const audMeta = {
+      all: { label: 'Все пользователи', cls: 'bc-aud-all' },
+      active: { label: 'С подпиской', cls: 'bc-aud-active' },
+      inactive: { label: 'Без подписки', cls: 'bc-aud-inactive' },
+      single: { label: 'Конкретный', cls: 'bc-aud-single' },
+    };
+    let rows = list.map(b => {
+      const t = new Date(b.created_at);
+      const date = t.toLocaleDateString('ru-RU', { day: '2-digit', month: 'short' });
+      const time = t.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+      const am = audMeta[b.audience] || { label: b.audience, cls: '' };
+      // расшифровка получателя
+      let recipient = am.label;
+      if (b.audience === 'single' && b.target_user_id) {
+        const u = userById ? userById(b.target_user_id) : null;
+        const name = u ? ([u.first_name, u.last_name].filter(Boolean).join(' ') || (u.username ? '@'+u.username : '')) : '';
+        recipient = name ? `${esc(name)} (id:${b.target_user_id})` : `id:${b.target_user_id}`;
+      } else if (b.campaign_filter) {
+        const c = (state.campaigns || []).find(x => x.code === b.campaign_filter);
+        recipient = `${am.label} · ${c ? esc(c.name || c.code) : esc(b.campaign_filter)}`;
+      }
+      const preview = (b.message_text || '').replace(/\n/g, ' ');
+      const previewShort = preview.slice(0, 70) + (preview.length > 70 ? '…' : '');
+      const deliveredPct = b.recipients_count ? Math.round(b.sent_count / b.recipients_count * 100) : 0;
+      const statusBadge = b.status === 'completed' ? '<span class="bc-st bc-st-ok">доставлено</span>'
+        : b.status === 'partial' ? '<span class="bc-st bc-st-partial">частично</span>'
+        : '<span class="bc-st bc-st-fail">ошибка</span>';
+      return `<tr class="bc-hist-row" title="${esc(preview)}">
+        <td class="bc-hist-date"><div>${date}</div><div class="bc-hist-time">${time}</div></td>
+        <td><span class="bc-aud-badge ${am.cls}">${esc(recipient)}</span></td>
+        <td class="bc-hist-msg">${esc(previewShort)}</td>
+        <td class="bc-hist-delivered">
+          <div class="bc-deliv-num">${b.sent_count}/${b.recipients_count}</div>
+          <div class="bc-deliv-bar"><div class="bc-deliv-fill" style="width:${deliveredPct}%"></div></div>
+        </td>
+        <td class="bc-hist-bonus">${b.bonus_days > 0 ? `<span class="bc-bonus-badge">+${b.bonus_days}д</span>` : '—'}</td>
+        <td>${statusBadge}${b.blocked_count ? ` <span class="muted" title="заблокировали бота">🚫${b.blocked_count}</span>` : ''}</td>
+      </tr>`;
+    }).join('');
+    wrap.innerHTML = `<div class="bc-hist-card"><table class="data-table bc-hist-table">
+      <thead><tr><th>Дата</th><th>Кому</th><th>Сообщение</th><th>Доставлено</th><th>Бонус</th><th>Статус</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>`;
+  } catch (e) {
+    wrap.innerHTML = '<div class="empty-state">Ошибка загрузки истории</div>';
+  }
+}
+
+function openBroadcastModal() {
+  // переписана на новую логику v3 — просто открываем новую модалку
+  if (typeof openBroadcastForm === 'function') {
+    openBroadcastForm();
+  } else {
+    // фолбэк: открываем модалку и инициализируем
+    if (typeof bcReset === 'function') bcReset();
+    openModal('broadcastModal');
+    setTimeout(() => {
+      if (typeof bcBindModal === 'function') bcBindModal();
+      if (typeof bcOnAudChange === 'function') bcOnAudChange();
+      const r = document.querySelector('input[name="bcAud"][value="all"]');
+      if (r) r.checked = true;
+    }, 30);
+  }
+}
+
+async function initBroadcastHandlers() {
+  await loadMyPermissions();
+
+  // аудитория
+  document.addEventListener('click', e => {
+    const b = e.target.closest('#bcAudience .seg-btn');
+    if (b) {
+      $$('#bcAudience .seg-btn').forEach(x => x.classList.remove('active'));
+      b.classList.add('active'); bcState.audience = b.dataset.aud;
+      const wrap = $('#bcSingleWrap');
+      if (wrap) wrap.style.display = (b.dataset.aud === 'single') ? 'block' : 'none';
+    }
+  });
+  // поиск юзера для 'конкретный'
+  document.addEventListener('input', e => {
+    if (e.target && e.target.id === 'bcUserSearch') bcRenderUserList(e.target.value);
+  });
+  document.addEventListener('click', e => {
+    const it = e.target.closest('.bc-user-item');
+    if (it) {
+      bcState.targetUserId = Number(it.dataset.uid);
+      $('#bcUserSearch').value = it.dataset.label;
+      $('#bcUserList').innerHTML = '';
+    }
+  });
+  // шаблон
+  const tpl = $('#bcTemplate');
+  if (tpl) tpl.addEventListener('change', e => {
+    const v = e.target.value;
+    if (v && BC_TEMPLATES[v]) $('#bcText').value = BC_TEMPLATES[v];
+  });
+  // бонус toggle
+  const be = $('#bcBonusEnable');
+  if (be) be.addEventListener('change', e => {
+    $('#bcBonusWrap').style.display = e.target.checked ? 'block' : 'none';
+  });
+  // предпросмотр
+  const pv = $('#bcPreviewBtn');
+  if (pv) pv.addEventListener('click', doBroadcastPreview);
+  // отправка
+  const sb_ = $('#bcSendBtn');
+  if (sb_) sb_.addEventListener('click', doBroadcastSend);
+}
+
+async function doBroadcastPreview() {
+  const text = $('#bcText').value.trim();
+  if (!text) { toast('Введите текст сообщения'); return; }
+  bcState.campaign = $('#bcCampaign').value;
+  if (bcState.audience === 'single' && !bcState.targetUserId) { toast('Выберите пользователя'); return; }
+  const bonusEnabled = $('#bcBonusEnable').checked;
+  const bonusDays = bonusEnabled ? parseInt($('#bcBonusDays').value || 0) : 0;
+  try {
+    const data = await proxy('/admin-api/broadcast/preview', {
+      method: 'POST',
+      body: JSON.stringify({ audience: bcState.audience, campaign_filter: bcState.campaign, target_user_id: bcState.targetUserId }),
+    });
+    if (!data.success) { toast('Ошибка предпросмотра'); return; }
+    const audLabel = { all: 'Все', active: 'С подпиской', inactive: 'Без подписки' };
+    $('#bcPreviewText').textContent = text;
+    $('#bcPreviewCount').textContent = data.count;
+    $('#bcPreviewAud').textContent = audLabel[bcState.audience] + (bcState.campaign !== 'all' ? ` · ${bcState.campaign}` : '');
+    if (bonusDays > 0) {
+      $('#bcPreviewBonusRow').style.display = 'flex';
+      $('#bcPreviewBonus').textContent = `+${bonusDays} дней`;
+    } else {
+      $('#bcPreviewBonusRow').style.display = 'none';
+    }
+    // сохраним для отправки
+    $('#bcSendBtn').dataset.payload = JSON.stringify({
+      audience: bcState.audience, campaign_filter: bcState.campaign,
+      message_text: text, bonus_days: bonusDays, target_user_id: bcState.targetUserId,
+    });
+    closeModal('broadcastModal');
+    openModal('broadcastPreviewModal');
+  } catch (e) { toast('Ошибка сети'); }
+}
+
+async function doBroadcastSend() {
+  const btn = $('#bcSendBtn');
+  const payload = btn.dataset.payload;
+  if (!payload) return;
+  btn.disabled = true; btn.textContent = 'Отправка...';
+  try {
+    const data = await proxy('/admin-api/broadcast/send', { method: 'POST', body: payload });
+    if (data.success) {
+      toast(`Отправлено: ${data.sent} из ${data.total}`);
+      closeModal('broadcastPreviewModal');
+      loadBroadcasts();
+    } else {
+      toast('Ошибка: ' + (data.error || 'неизвестно'));
+    }
+  } catch (e) {
+    toast('Ошибка сети при отправке');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Отправить рассылку';
+  }
+}
+
+
+function bcRenderUserList(q) {
+  const box = $('#bcUserList'); if (!box) return;
+  q = (q || '').toLowerCase().trim();
+  if (!q) { box.innerHTML = ''; return; }
+  const matches = (state.users || []).filter(u => {
+    const hay = [u.username, u.first_name, u.last_name, u.user_id].filter(Boolean).join(' ').toLowerCase();
+    return hay.includes(q);
+  }).slice(0, 8);
+  box.innerHTML = matches.map(u => {
+    const name = [u.first_name, u.last_name].filter(Boolean).join(' ') || (u.username ? '@'+u.username : 'id:'+u.user_id);
+    const label = name + ' (id:' + u.user_id + ')';
+    return `<div class="bc-user-item" data-uid="${u.user_id}" data-label="${esc(label)}">${esc(label)}</div>`;
+  }).join('') || '<div class="bc-user-empty">Не найдено</div>';
+}
+
+
+
+/* ==================== МОНИТОРИНГ СЕРВЕРОВ ==================== */
+const monState = { hours: 6, server: 'all', charts: {}, timer: null };
+const INTERVAL_OPTIONS = [
+  { v: 5, label: '5 сек' }, { v: 30, label: '30 сек' },
+  { v: 60, label: '1 мин' }, { v: 300, label: '5 мин' }, { v: 600, label: '10 мин' },
+];
+
+async function renderMonitor() {
+  const host = getPageHost();
+  host.innerHTML = `
+    <div class="lb-page-head">
+      <h2>Мониторинг серверов</h2>
+      <div class="lb-page-sub">Здоровье VPN-узлов в реальном времени. Доступность, задержка, клиенты, Reality-донор.</div>
+    </div>
+    <div class="toolbar">
+      <label class="mon-ctl">Проверять каждые
+        <select class="input" id="monInterval" style="max-width:130px">
+          ${INTERVAL_OPTIONS.map(o => `<option value="${o.v}">${o.label}</option>`).join('')}
+        </select>
+      </label>
+      <span class="toolbar-grow"></span>
+      <label class="mon-ctl">Окно
+        <select class="input" id="monWindow" style="max-width:120px">
+          <option value="1">1 час</option>
+          <option value="6" selected>6 часов</option>
+          <option value="24">24 часа</option>
+        </select>
+      </label>
+      <button class="btn btn-ghost btn-sm" id="monRefresh">Обновить</button>
+    </div>
+    <div id="monCards" class="mon-cards"><div class="empty-state">Загрузка...</div></div>
+    <div class="mon-charts">
+      <div class="mon-chart-box">
+        <div class="mon-chart-title">Задержка узла (мс)</div>
+        <div class="mon-chart-wrap"><canvas id="monChartLatency"></canvas></div>
+      </div>
+      <div class="mon-chart-box">
+        <div class="mon-chart-title">Доступность (up / down)</div>
+        <div class="mon-chart-wrap"><canvas id="monChartUptime"></canvas></div>
+      </div>
+      <div class="mon-chart-box">
+        <div class="mon-chart-title">Клиенты на узле</div>
+        <div class="mon-chart-wrap"><canvas id="monChartClients"></canvas></div>
+      </div>
+      <div class="mon-chart-box">
+        <div class="mon-chart-title">Reality-донор (доступность TLS)</div>
+        <div class="mon-chart-wrap"><canvas id="monChartTarget"></canvas></div>
+      </div>
+    </div>
+  `;
+  // загрузить текущий интервал
+  try {
+    const s = await proxy('/admin-api/monitor/settings');
+    if (s.settings && s.settings.interval_sec) $('#monInterval').value = s.settings.interval_sec;
+  } catch (e) {}
+
+  $('#monInterval').addEventListener('change', async e => {
+    try {
+      await proxy('/admin-api/monitor/settings', { method: 'POST', body: JSON.stringify({ interval_sec: parseInt(e.target.value) }) });
+      toast('Интервал обновлён: ' + e.target.options[e.target.selectedIndex].text);
+    } catch (er) { toast('Ошибка сохранения интервала'); }
+  });
+  $('#monWindow').addEventListener('change', e => { monState.hours = parseInt(e.target.value); loadMonitorCharts(); });
+  $('#monRefresh').addEventListener('click', () => { loadMonitorLatest(); loadMonitorCharts(); });
+
+  loadMonitorLatest();
+  loadMonitorCharts();
+
+  // авто-обновление карточек каждые 30 сек пока на странице
+  if (monState.timer) clearInterval(monState.timer);
+  monState.timer = setInterval(() => {
+    if (state.currentPage === 'monitor') { loadMonitorLatest(); }
+    else { clearInterval(monState.timer); monState.timer = null; }
+  }, 30000);
+}
+
+async function loadMonitorLatest() {
+  const box = $('#monCards');
+  if (!box) return;
+  try {
+    const data = await proxy('/admin-api/monitor/latest');
+    const servers = data.servers || [];
+    if (!servers.length) { box.innerHTML = '<div class="empty-state">Нет данных. Демон мониторинга ещё не собрал метрики.</div>'; return; }
+    box.innerHTML = servers.map(s => {
+      const h = s.health || {};
+      const up = h.is_up;
+      const dot = up ? 'mon-dot-up' : 'mon-dot-down';
+      const statusText = up ? 'Работает' : 'Недоступен';
+      const lat = h.latency_ms != null ? h.latency_ms + ' мс' : '—';
+      const clients = h.clients_count != null ? h.clients_count : '—';
+      const target = h.target_ok === true ? '🟢' : h.target_ok === false ? '🔴' : '—';
+      const xray = h.xray_listening ? '🟢' : '🔴';
+      const uptime = s.uptime_24h != null ? s.uptime_24h + '%' : '—';
+      const checkedAt = h.checked_at ? new Date(h.checked_at).toLocaleTimeString('ru-RU') : '—';
+      return `<div class="mon-card ${up ? '' : 'mon-card-down'}">
+        <div class="mon-card-head">
+          <span class="mon-dot ${dot}"></span>
+          <span class="mon-card-name">${esc(s.flag || '')} ${esc(s.name || s.code)}</span>
+          <span class="mon-card-status">${statusText}</span>
+        </div>
+        <div class="mon-card-ip">${esc(s.ip || '')}</div>
+        <div class="mon-card-grid">
+          <div class="mon-metric"><span>Задержка</span><b>${lat}</b></div>
+          <div class="mon-metric"><span>Uptime 24ч</span><b>${uptime}</b></div>
+          <div class="mon-metric"><span>Клиентов</span><b>${clients}</b></div>
+          <div class="mon-metric"><span>Xray :443</span><b>${xray}</b></div>
+          <div class="mon-metric"><span>Reality-донор</span><b>${target}</b></div>
+          <div class="mon-metric"><span>SNI</span><b class="mon-sni">${esc(h.sni || s.sni || '—')}</b></div>
+        </div>
+        <div class="mon-card-foot">Проверено: ${checkedAt}${h.error ? ` · <span class="log-error">${esc(h.error.slice(0,40))}</span>` : ''}</div>
+      </div>`;
+    }).join('');
+  } catch (e) {
+    box.innerHTML = '<div class="empty-state">Ошибка загрузки состояния серверов</div>';
+  }
+}
+
+const MON_COLORS = ['#4fc4cf', '#6366f1', '#c084fc', '#4ade80', '#facc15', '#f87171'];
+
+async function loadMonitorCharts() {
+  try {
+    const data = await proxy('/admin-api/monitor/health?hours=' + monState.hours);
+    const rows = data.health || [];
+    // группируем по серверам
+    const byServer = {};
+    rows.forEach(r => {
+      (byServer[r.server_code] = byServer[r.server_code] || []).push(r);
+    });
+    const codes = Object.keys(byServer);
+    // единые метки времени (берём все checked_at отсортированные уникальные — упрощённо по каждому серверу свои точки)
+    drawMonChart('monChartLatency', 'latency', byServer, codes, v => v.latency_ms);
+    drawMonChart('monChartUptime', 'uptime', byServer, codes, v => v.is_up ? 1 : 0);
+    drawMonChart('monChartClients', 'clients', byServer, codes, v => v.clients_count);
+    drawMonChart('monChartTarget', 'target', byServer, codes, v => v.target_ok ? 1 : 0);
+  } catch (e) {
+    console.error('monitor charts:', e);
+  }
+}
+
+function createMonGradient(ctx, canvas, color) {
+  // вертикальный градиент: цвет сверху (полупрозрачный) -> прозрачный снизу
+  const h = canvas.height || 230;
+  const grad = ctx.createLinearGradient(0, 0, 0, h);
+  // hex color -> rgba helper
+  const hex = color.replace('#', '');
+  const r = parseInt(hex.substring(0, 2), 16);
+  const g = parseInt(hex.substring(2, 4), 16);
+  const b = parseInt(hex.substring(4, 6), 16);
+  grad.addColorStop(0, `rgba(${r},${g},${b},0.35)`);
+  grad.addColorStop(0.5, `rgba(${r},${g},${b},0.12)`);
+  grad.addColorStop(1, `rgba(${r},${g},${b},0.0)`);
+  return grad;
+}
+
+function drawMonChart(canvasId, key, byServer, codes, valueFn) {
+  const canvas = $('#' + canvasId);
+  if (!canvas) return;
+  if (monState.charts[canvasId]) monState.charts[canvasId].destroy();
+  const ctx = canvas.getContext('2d');
+  const isStep = (key === 'uptime' || key === 'target');
+
+  const datasets = codes.map((code, i) => {
+    const color = MON_COLORS[i % MON_COLORS.length];
+    const pts = byServer[code].map(r => ({ x: new Date(r.checked_at).getTime(), y: valueFn(r) }));
+    return {
+      label: code, data: pts, borderColor: color,
+      backgroundColor: createMonGradient(ctx, canvas, color),
+      borderWidth: 2.2, pointRadius: 0, pointHoverRadius: 4, tension: isStep ? 0 : .4,
+      stepped: isStep ? true : false, fill: true,
+    };
+  });
+
+  monState.charts[canvasId] = new Chart(ctx, {
+    type: 'line',
+    data: { datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'nearest', intersect: false },
+      plugins: {
+        legend: { display: true, labels: { color: '#b4b9c8', font: { family: 'Geist Mono', size: 10 }, boxWidth: 10, boxHeight: 10, padding: 8 } },
+        tooltip: {
+          backgroundColor: '#0b1428', borderColor: 'rgba(120,160,220,0.18)', borderWidth: 1, padding: 8,
+          titleColor: '#ecf3ff', bodyColor: '#afc3e0',
+          titleFont: { family: 'Geist Mono', size: 11 }, bodyFont: { family: 'Geist', size: 12 },
+          callbacks: {
+            title: items => items.length ? new Date(items[0].parsed.x).toLocaleString('ru-RU') : '',
+            label: c => {
+              if (key === 'uptime') return c.dataset.label + ': ' + (c.parsed.y ? 'UP' : 'DOWN');
+              if (key === 'target') return c.dataset.label + ': ' + (c.parsed.y ? 'доступен' : 'недоступен');
+              if (key === 'latency') return c.dataset.label + ': ' + (c.parsed.y == null ? '—' : c.parsed.y + ' мс');
+              return c.dataset.label + ': ' + (c.parsed.y == null ? '—' : c.parsed.y);
+            },
+          },
+        },
+      },
+      scales: {
+        x: { type: 'time', time: { tooltipFormat: 'HH:mm', displayFormats: { minute: 'HH:mm', hour: 'HH:mm' } },
+             grid: { display: false }, ticks: { color: '#7290b8', font: { family: 'Geist Mono', size: 10 }, maxRotation: 0, autoSkipPadding: 40 } },
+        y: isStep
+          ? { min: -0.1, max: 1.1, grid: { color: 'rgba(120,160,220,0.08)' }, ticks: { color: '#7290b8', font: { family: 'Geist Mono', size: 10 }, stepSize: 1, callback: v => v === 1 ? 'UP' : v === 0 ? 'DOWN' : '' } }
+          : { beginAtZero: true, grid: { color: 'rgba(120,160,220,0.08)' }, ticks: { color: '#7290b8', font: { family: 'Geist Mono', size: 10 } } },
+      },
+    },
+  });
+}
+
+/* helpers (если ещё не определены) */
+function getPageHost() {
+  // рендерим в div текущей страницы (.page#page-<name>)
+  const p = state.currentPage;
+  return $('#page-' + p) || $('#content') || document.querySelector('main');
+}
+function copyToClipboard(text) {
+  if (navigator.clipboard) navigator.clipboard.writeText(text);
+  else { const t = document.createElement('textarea'); t.value = text; document.body.appendChild(t); t.select(); document.execCommand('copy'); t.remove(); }
+}
+function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
+
+// инициализация обработчиков рассылки при загрузке
+if (document.readyState !== 'loading') initBroadcastHandlers();
+else document.addEventListener('DOMContentLoaded', initBroadcastHandlers);
+
+
+
+/* === MOBILE SIDEBAR === Логика выезжающей шторки на мобилке */
+(function initMobileSidebar() {
+  function attach() {
+    const burger = document.getElementById('mobileBurger');
+    const backdrop = document.getElementById('sidebarBackdrop');
+    if (!burger || !backdrop) { setTimeout(attach, 100); return; }
+
+    const closeSidebar = () => document.body.classList.remove('sidebar-open');
+    const toggleSidebar = () => document.body.classList.toggle('sidebar-open');
+
+    burger.addEventListener('click', toggleSidebar);
+    backdrop.addEventListener('click', closeSidebar);
+
+    // Закрывать sidebar при клике на nav-item на мобиле
+    document.querySelectorAll('.nav-item').forEach(item => {
+      item.addEventListener('click', () => {
+        if (window.matchMedia('(max-width: 768px)').matches) {
+          // даём 80ms на анимацию подсветки, потом закрываем
+          setTimeout(closeSidebar, 80);
+        }
+      });
+    });
+
+    // Закрывать sidebar по Escape
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && document.body.classList.contains('sidebar-open')) {
+        closeSidebar();
+      }
+    });
+
+    // При изменении размера окна — если стал десктоп, закрыть мобильный sidebar
+    let resizeTimer;
+    window.addEventListener('resize', () => {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        if (!window.matchMedia('(max-width: 768px)').matches) {
+          closeSidebar();
+        }
+      }, 150);
+    });
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', attach);
+  } else {
+    attach();
+  }
+})();
+
+
+/* ==================== DASHBOARD PULSE ==================== */
+let _pulseTimer = null;
+
+async function renderDashboardPulse() {
+  const host = $('#pulseBlock');
+  if (!host) return;
+  await loadPulse();
+  if (_pulseTimer) clearInterval(_pulseTimer);
+  _pulseTimer = setInterval(() => {
+    if (state.currentPage === 'dashboard') loadPulse();
+    else { clearInterval(_pulseTimer); _pulseTimer = null; }
+  }, 30000);
+}
+
+async function loadPulse() {
+  const host = $('#pulseBlock');
+  if (!host) return;
+  try {
+    const data = await proxy('/admin-api/dashboard/pulse');
+    if (!data.success) { host.innerHTML = ''; return; }
+    const p = data.pulse || {};
+    const servers = (p.servers || []).map(s => {
+      const cls = s.is_up === true ? 'mon-dot-up' : s.is_up === false ? 'mon-dot-down' : '';
+      const lat = s.latency_ms != null ? s.latency_ms + 'мс' : '—';
+      return `<div class="pulse-srv">
+        <span class="mon-dot ${cls}"></span>
+        <span class="pulse-srv-flag">${esc(s.flag || '')}</span>
+        <span class="pulse-srv-name">${esc(s.name || s.code)}</span>
+        <span class="pulse-srv-lat">${lat}</span>
+      </div>`;
+    }).join('');
+
+    const mrrDelta = p.mrr_delta_pct;
+    const mrrDeltaHtml = mrrDelta == null
+      ? '<span class="kpi-delta flat">—</span>'
+      : `<span class="kpi-delta ${mrrDelta >= 0 ? 'up' : 'dn'}">${mrrDelta >= 0 ? '↑' : '↓'} ${Math.abs(mrrDelta)}%</span>`;
+
+    const churnCls = p.churn_pct > 30 ? 'dn' : p.churn_pct > 10 ? 'flat' : 'up';
+    const convCls = p.conversion_pct > 5 ? 'up' : p.conversion_pct > 1 ? 'flat' : 'dn';
+
+    host.innerHTML = `
+      <div class="pulse-grid">
+        <div class="pulse-card pulse-card-wide">
+          <div class="pulse-card-head">
+            <span class="pulse-card-label">VPN-узлы</span>
+            <span class="live-pulse-dot"></span>
+          </div>
+          <div class="pulse-srvs">${servers || '<span class="muted">нет данных</span>'}</div>
+        </div>
+        <div class="pulse-card">
+          <div class="pulse-card-head">
+            <span class="pulse-card-label">Активны за час</span>
+            <svg class="pulse-card-ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/></svg>
+          </div>
+          <div class="pulse-value">${num(p.live_users)}</div>
+          <div class="pulse-foot">пользовались за час</div>
+        </div>
+        <div class="pulse-card">
+          <div class="pulse-card-head">
+            <span class="pulse-card-label">MRR (30д)</span>
+            ${mrrDeltaHtml}
+          </div>
+          <div class="pulse-value">${money(p.mrr)}</div>
+          <div class="pulse-foot">${p.expiring_soon || 0} истекают за 48ч</div>
+        </div>
+        <div class="pulse-card">
+          <div class="pulse-card-head">
+            <span class="pulse-card-label">Конверсия 7д</span>
+            <span class="kpi-delta ${convCls}">${p.paid_users_7d}/${p.new_users_7d}</span>
+          </div>
+          <div class="pulse-value">${p.conversion_pct || 0}%</div>
+          <div class="pulse-foot">регистрация → оплата</div>
+        </div>
+        <div class="pulse-card">
+          <div class="pulse-card-head">
+            <span class="pulse-card-label">Отток 7д</span>
+            <span class="kpi-delta ${churnCls}">${p.churned_count}/${p.expired_count}</span>
+          </div>
+          <div class="pulse-value">${p.churn_pct || 0}%</div>
+          <div class="pulse-foot">истекли и не продлили</div>
+        </div>
+      </div>
+    `;
+  } catch (e) {
+    host.innerHTML = '';
+  }
+}
+
+/* ==================== WORLD MAP ==================== */
+/* ===== MAP POINT MODAL — список юзеров в точке ===== */
+
+function ruPlural(n, one, few, many) {
+  const mod10 = n % 10, mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return one;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return few;
+  return many;
+}
+
+
+/* ==================== ANALYTICS ==================== */
+const analyticsState = { funnelChart: null, period: 30, campaign: 'all' };
+
+async function renderAnalytics() {
+  const host = $('#page-analytics');
+  host.innerHTML = `
+    <div class="lb-page-head">
+      <h2>📊 Аналитика</h2>
+      <div class="lb-page-sub">Воронка конверсии, когортный анализ LTV и календарь продлений.</div>
+    </div>
+
+    <div class="card" style="margin-bottom:18px">
+      <div class="card-head">
+        <div class="card-title">Воронка конверсии</div>
+        <div class="table-actions">
+          <select class="filter" id="funnelPeriod">
+            <option value="7">7 дней</option>
+            <option value="30" selected>30 дней</option>
+            <option value="90">90 дней</option>
+            <option value="365">Год</option>
+          </select>
+          <select class="filter" id="funnelCampaign"><option value="all">Все источники</option></select>
+        </div>
+      </div>
+      <div class="card-pad">
+        <div id="funnelBars" class="funnel-bars"><div class="empty"><div class="title">Загрузка...</div></div></div>
+      </div>
+    </div>
+
+    <div class="grid-1-1">
+      <div class="card">
+        <div class="card-head"><div class="card-title">Когорты по месяцам</div></div>
+        <div class="tbl-wrap"><table class="tbl" id="cohortTable"></table></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><div class="card-title">Источники: LTV / CAC / ROI</div></div>
+        <div class="tbl-wrap"><table class="tbl" id="utmCohortTable"></table></div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:18px">
+      <div class="card-head">
+        <div class="card-title">📅 Календарь продлений (30 дней)</div>
+        <div class="card-sub" id="calSummary">—</div>
+      </div>
+      <div class="card-pad">
+        <div id="renewalCalendar" class="renewal-cal"><div class="empty"><div class="title">Загрузка...</div></div></div>
+      </div>
+    </div>
+  `;
+
+  // заполнить кампании в фильтр
+  const campSel = $('#funnelCampaign');
+  (state.campaigns || []).forEach(c => {
+    const o = document.createElement('option');
+    o.value = c.code; o.textContent = c.name || c.code;
+    campSel.appendChild(o);
+  });
+
+  $('#funnelPeriod').addEventListener('change', e => { analyticsState.period = e.target.value; loadFunnel(); });
+  $('#funnelCampaign').addEventListener('change', e => { analyticsState.campaign = e.target.value; loadFunnel(); });
+
+  loadFunnel();
+  loadCohorts();
+  loadCalendar();
+}
+
+async function loadFunnel() {
+  const host = $('#funnelBars');
+  try {
+    const q = `?period=${analyticsState.period}&campaign=${encodeURIComponent(analyticsState.campaign)}`;
+    const data = await proxy('/admin-api/analytics/funnel' + q);
+    if (!data.success) { host.innerHTML = '<div class="empty"><div class="title">Ошибка</div></div>'; return; }
+    const f = data.funnel || [];
+    const maxCount = Math.max(...f.map(s => s.count), 1);
+    const colors = ['#4fc4cf', '#6366f1', '#c084fc', '#4ade80'];
+    host.innerHTML = f.map((s, i) => {
+      const widthPct = s.count === 0 ? 0 : Math.max(4, s.count / maxCount * 100);
+      const dropFromPrev = i > 0 && f[i-1].count > 0
+        ? Math.round((1 - s.count / f[i-1].count) * 100) : 0;
+      return `
+        <div class="funnel-step">
+          <div class="funnel-step-info">
+            <span class="funnel-step-label">${esc(s.step)}</span>
+            <span class="funnel-step-vals"><b>${num(s.count)}</b> · ${s.pct}%</span>
+          </div>
+          <div class="funnel-bar-track">
+            <div class="funnel-bar-fill" style="width:${widthPct}%;background:linear-gradient(90deg, ${colors[i]}, ${colors[i]}aa)"></div>
+          </div>
+          ${i > 0 && dropFromPrev > 0 ? `<div class="funnel-drop">↓ потеря ${dropFromPrev}% с прошлого шага</div>` : ''}
+        </div>`;
+    }).join('');
+  } catch (e) {
+    host.innerHTML = '<div class="empty"><div class="title">Ошибка сети</div></div>';
+  }
+}
+
+async function loadCohorts() {
+  try {
+    const data = await proxy('/admin-api/analytics/cohorts');
+    if (!data.success) return;
+
+    // Когорты по месяцам
+    const ct = $('#cohortTable');
+    const cohorts = data.cohorts || [];
+    if (!cohorts.length) {
+      ct.innerHTML = '<tbody><tr><td class="empty"><div class="sub">Нет данных</div></td></tr></tbody>';
+    } else {
+      ct.innerHTML = `
+        <thead><tr>
+          <th>Месяц</th><th class="text-r">Юзеры</th><th class="text-r">Платят</th><th class="text-r">%</th><th class="text-r">LTV/юзер</th>
+        </tr></thead>
+        <tbody>
+          ${cohorts.map(c => `
+            <tr>
+              <td data-label="Месяц"><span class="mono">${monthName(c.month)}</span></td>
+              <td data-label="Юзеры" class="text-r num">${c.new_users}</td>
+              <td data-label="Платят" class="text-r num">${c.paid_users}</td>
+              <td data-label="%" class="text-r"><span class="tag ${c.paid_pct >= 10 ? 'tag-green' : c.paid_pct >= 3 ? 'tag-yellow' : 'tag-gray'}">${c.paid_pct}%</span></td>
+              <td data-label="LTV/юзер" class="text-r num">${money(c.ltv_per_user)}</td>
+            </tr>`).join('')}
+        </tbody>`;
+    }
+
+    // UTM-когорты
+    const ut = $('#utmCohortTable');
+    const utm = data.utm_cohorts || [];
+    if (!utm.length) {
+      ut.innerHTML = '<tbody><tr><td class="empty"><div class="sub">Нет кампаний с данными</div></td></tr></tbody>';
+    } else {
+      ut.innerHTML = `
+        <thead><tr>
+          <th>Источник</th><th class="text-r">Юзеры</th><th class="text-r">LTV/ю</th><th class="text-r">CAC</th><th class="text-r">ROI</th>
+        </tr></thead>
+        <tbody>
+          ${utm.map(c => {
+            let roiTag = '<span class="tag tag-gray">—</span>';
+            if (c.roi_pct !== null) {
+              const cls = c.roi_pct > 50 ? 'tag-green' : c.roi_pct > 0 ? 'tag-yellow' : 'tag-red';
+              roiTag = `<span class="tag ${cls}">${c.roi_pct > 0 ? '+' : ''}${c.roi_pct}%</span>`;
+            }
+            return `
+            <tr>
+              <td data-label="Источник">${esc(c.name)}</td>
+              <td data-label="Юзеры" class="text-r num">${c.new_users}</td>
+              <td data-label="LTV/ю" class="text-r num">${money(c.ltv_per_user)}</td>
+              <td data-label="CAC" class="text-r num">${c.cac > 0 ? money(c.cac) : '—'}</td>
+              <td data-label="ROI" class="text-r">${roiTag}</td>
+            </tr>`;
+          }).join('')}
+        </tbody>`;
+    }
+  } catch (e) {}
+}
+
+async function loadCalendar() {
+  const host = $('#renewalCalendar');
+  try {
+    const data = await proxy('/admin-api/analytics/calendar');
+    if (!data.success) { host.innerHTML = '<div class="empty"><div class="title">Ошибка</div></div>'; return; }
+    const days = data.days || [];
+    const sum = data.summary || {};
+    $('#calSummary').innerHTML = `Всего <b>${sum.total || 0}</b> · 7д <b>${sum.next7 || 0}</b> · 3д <b>${sum.next3 || 0}</b>`;
+    if (!days.length) {
+      host.innerHTML = '<div class="empty"><span class="emoji">📭</span><div class="title">Нет продлений в ближайшие 30 дней</div></div>';
+      return;
+    }
+    host.innerHTML = days.map(d => {
+      const urgency = d.items[0].days_left <= 1 ? 'urgent' : d.items[0].days_left <= 3 ? 'soon' : '';
+      return `
+        <div class="cal-day ${urgency}">
+          <div class="cal-day-head">
+            <span class="cal-day-date">${calDate(d.date)}</span>
+            <span class="cal-day-count">${d.items.length}</span>
+          </div>
+          <div class="cal-day-users">
+            ${d.items.map(it => {
+              const name = it.username ? '@' + it.username : [it.first_name, it.last_name].filter(Boolean).join(' ') || ('id:' + it.user_id);
+              return `<div class="cal-user" onclick="openUserSheet('${it.user_id}')">
+                <span class="cal-user-name">${esc(name)}</span>
+                <span class="cal-user-dev">${it.devices || 1}📱</span>
+              </div>`;
+            }).join('')}
+          </div>
+        </div>`;
+    }).join('');
+  } catch (e) {
+    host.innerHTML = '<div class="empty"><div class="title">Ошибка сети</div></div>';
+  }
+}
+
+function monthName(ym) {
+  const [y, m] = ym.split('-');
+  const months = ['Янв','Фев','Мар','Апр','Май','Июн','Июл','Авг','Сен','Окт','Ноя','Дек'];
+  return `${months[parseInt(m)-1]} ${y}`;
+}
+function calDate(ds) {
+  const d = new Date(ds + 'T00:00:00');
+  const days = ['Вс','Пн','Вт','Ср','Чт','Пт','Сб'];
+  const months = ['янв','фев','мар','апр','мая','июн','июл','авг','сен','окт','ноя','дек'];
+  return `${d.getDate()} ${months[d.getMonth()]}, ${days[d.getDay()]}`;
+}
+
+
+/* ==================== MAP v2: LIVE MODE ==================== */
+
+
+
+/* ==================== SERVER MGMT: apply Reality + restart ==================== */
+async function applyReality(sid) {
+  const srv = (state.servers || []).find(s => String(s.id) === String(sid));
+  const name = srv ? (srv.country_name || srv.code) : ('#' + sid);
+  const sni = srv ? srv.sni : '?';
+  if (!confirm(`Применить настройки Reality на сервер "${name}"?\n\nНа сервер будет записан SNI = "${sni}" (из админки), затем Xray перезапустится.\n\nВ момент рестарта подключения на короткое время прервутся.`)) return;
+
+  const card = document.querySelector(`.srv[data-sid="${sid}"]`);
+  const btn = card && card.querySelector('[data-act="apply"]');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Применяю...'; }
+  try {
+    const r = await proxy(`/admin-api/servers/${sid}/apply_reality`, { method: 'POST', body: '{}' });
+    if (r.success) {
+      toast(`✅ ${r.message}. ${r.restarted ? 'Xray перезапущен.' : 'Рестарт: ' + (r.restart_msg || '?')}`, 'success');
+    } else {
+      toast('Ошибка: ' + (r.error || 'неизвестно'), 'error');
+    }
+  } catch (e) {
+    toast('Ошибка сети', 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = '📡 Применить SNI'; }
+  }
+}
+
+async function restartXray(sid) {
+  const srv = (state.servers || []).find(s => String(s.id) === String(sid));
+  const name = srv ? (srv.country_name || srv.code) : ('#' + sid);
+  if (!confirm(`Перезапустить Xray на сервере "${name}"?\n\nПодключения на короткое время прервутся.`)) return;
+  const card = document.querySelector(`.srv[data-sid="${sid}"]`);
+  const btn = card && card.querySelector('[data-act="restart"]');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳...'; }
+  try {
+    const r = await proxy(`/admin-api/servers/${sid}/restart_xray`, { method: 'POST', body: '{}' });
+    if (r.success) toast('♻️ ' + (r.message || 'Перезапущено'), 'success');
+    else toast('Ошибка: ' + (r.message || r.error || '?'), 'error');
+  } catch (e) {
+    toast('Ошибка сети', 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = '♻️ Рестарт'; }
+  }
+}
+
+
+/* ==================== V3 UPDATE — TICKETS MESSENGER + BROADCAST V2 + RECEIPT ==================== */
+
+if (typeof window.ticketState === 'undefined') {
+  window.ticketState = { currentId: null, lastMsgId: 0, pollTimer: null };
+}
+
+async function openTicketChat(ticketId) {
+  ticketState.currentId = ticketId;
+  ticketState.lastMsgId = 0;
+  $('#ticketChatNum').textContent = '#' + ticketId;
+  $('#ticketChatStatus').innerHTML = '<span class="tag tag-gray">загрузка...</span>';
+  $('#ticketChatUser').textContent = '—';
+  $('#ticketChatMeta').textContent = '—';
+  $('#ticketChatMsgs').innerHTML = '<div class="empty"><div class="title">Загрузка...</div></div>';
+  $('#ticketChatActions').innerHTML = '';
+  $('#ticketChatInput').value = '';
+  openModal('ticketChatModal');
+  await loadTicketChat(ticketId);
+  if (!$('#ticketChatSendBtn').dataset.bound) {
+    $('#ticketChatSendBtn').dataset.bound = '1';
+    $('#ticketChatSendBtn').addEventListener('click', sendTicketReply);
+    $('#ticketChatInput').addEventListener('keydown', e => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendTicketReply(); }
+    });
+  }
+  if (ticketState.pollTimer) clearInterval(ticketState.pollTimer);
+  ticketState.pollTimer = setInterval(() => {
+    if (ticketState.currentId === ticketId && $('#ticketChatModal').classList.contains('open')) {
+      pollTicketMessages(ticketId);
+    } else { clearInterval(ticketState.pollTimer); ticketState.pollTimer = null; }
+  }, 5000);
+  const modal = $('#ticketChatModal');
+  const stopPoll = () => {
+    if (ticketState.pollTimer) { clearInterval(ticketState.pollTimer); ticketState.pollTimer = null; }
+    ticketState.currentId = null;
+  };
+  modal.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', stopPoll, { once: true }));
+  modal.addEventListener('click', e => { if (e.target === modal) stopPoll(); }, { once: true });
+}
+
+async function loadTicketChat(ticketId) {
+  try {
+    const data = await proxy(`/admin-api/tickets/${ticketId}`);
+    if (!data.success) {
+      $('#ticketChatMsgs').innerHTML = `<div class="empty"><div class="title">Ошибка: ${esc(data.error || '?')}</div></div>`;
+      return;
+    }
+    const t = data.ticket;
+    const msgs = data.messages || [];
+    renderTicketChatHead(t);
+    renderTicketChatMsgs(msgs, true);
+    renderTicketChatActions(t);
+    if (msgs.length) ticketState.lastMsgId = Math.max(...msgs.map(m => m.id));
+  } catch (e) {
+    $('#ticketChatMsgs').innerHTML = '<div class="empty"><div class="title">Ошибка сети</div></div>';
+  }
+}
+
+function renderTicketChatHead(t) {
+  const statusMap = { open: { cls: 'tag-yellow', text: 'Открыт' }, in_progress: { cls: 'tag-blue', text: 'В работе' }, closed: { cls: 'tag-gray', text: 'Закрыт' } };
+  const st = statusMap[t.status] || { cls: 'tag-gray', text: t.status };
+  $('#ticketChatStatus').innerHTML = `<span class="tag ${st.cls} dot">${st.text}</span>`;
+  const u = t.user || {};
+  const name = [u.first_name, u.last_name].filter(Boolean).join(' ') || ('id:' + t.user_id);
+  const handle = u.username ? '@' + u.username : '';
+  $('#ticketChatUser').innerHTML = `<b>${esc(name)}</b> ${handle ? `<span class="muted">${esc(handle)}</span>` : ''} <span class="mono muted">${t.user_id}</span>`;
+  let meta = '';
+  if (t.subject) meta += `<span>📝 ${esc(t.subject)}</span>`;
+  if (t.assigned_admin) {
+    const aname = t.assigned_admin.full_name || t.assigned_admin.username || ('id:' + t.assigned_admin_id);
+    meta += ` <span>· 👤 ${esc(aname)}</span>`;
+  }
+  meta += ` <span class="muted">· создан ${fmtDateShort(t.created_at)}</span>`;
+  if (t.closed_at) meta += ` <span class="muted">· закрыт ${fmtDateShort(t.closed_at)}</span>`;
+  $('#ticketChatMeta').innerHTML = meta;
+}
+
+function renderTicketChatMsgs(msgs, scrollToBottom) {
+  const host = $('#ticketChatMsgs');
+  if (!msgs.length) { host.innerHTML = '<div class="empty"><div class="title">Сообщений нет</div></div>'; return; }
+  host.innerHTML = msgs.map(m => {
+    const isUser = m.sender_type === 'user';
+    return `<div class="msg ${isUser ? 'msg-user' : 'msg-admin'}"><div class="msg-bubble"><div class="msg-name">${esc(m.sender_name || (isUser ? 'Пользователь' : 'Поддержка'))}</div><div class="msg-text">${escMsg(m.message_text || '')}</div><div class="msg-time">${fmtTimeShort(m.created_at)}</div></div></div>`;
+  }).join('');
+  if (scrollToBottom) requestAnimationFrame(() => { host.scrollTop = host.scrollHeight; });
+}
+
+function renderTicketChatActions(t) {
+  const me = state.currentAdminId;
+  const isMine = me && t.assigned_admin_id && Number(t.assigned_admin_id) === Number(me);
+  const isClosed = t.status === 'closed';
+  let html = '';
+  if (isClosed) {
+    html = `<button class="btn btn-ghost btn-sm" id="actReopen">↻ Переоткрыть</button>`;
+  } else {
+    if (!t.assigned_admin_id) html += `<button class="btn btn-primary btn-sm" id="actTake">✋ Взять в работу</button>`;
+    else if (!isMine) {
+      const aname = (t.assigned_admin && (t.assigned_admin.full_name || t.assigned_admin.username)) || ('id:' + t.assigned_admin_id);
+      html += `<button class="btn btn-ghost btn-sm" id="actTake" title="Перехватить">✋ Взять (у ${esc(aname)})</button>`;
+    }
+    html += `<button class="btn btn-success btn-sm" id="actClose">✓ Закрыть</button>`;
+  }
+  $('#ticketChatActions').innerHTML = html;
+  const tb = $('#actTake'); if (tb) tb.addEventListener('click', () => takeTicket(t.id, t.assigned_admin_id, t.assigned_admin));
+  const cb = $('#actClose'); if (cb) cb.addEventListener('click', () => closeTicket(t.id));
+  const rb = $('#actReopen'); if (rb) rb.addEventListener('click', () => reopenTicket(t.id));
+}
+
+async function takeTicket(id, curAdminId, curAdminObj) {
+  const me = state.currentAdminId;
+  if (curAdminId && Number(curAdminId) !== Number(me)) {
+    const aname = (curAdminObj && (curAdminObj.full_name || curAdminObj.username)) || ('id:' + curAdminId);
+    if (!confirm(`Тикет сейчас в работе у ${aname}.\n\nПерехватить себе?`)) return;
+  }
+  const r = await proxy(`/admin-api/tickets/${id}/take`, { method: 'POST', body: JSON.stringify({ force: true }) });
+  if (r.success) { toast('✋ Взято в работу', 'success'); loadTicketChat(id); if (state.currentPage === 'tickets') renderTicketsTable(); }
+  else toast('Ошибка: ' + (r.error || '?'), 'error');
+}
+async function closeTicket(id) {
+  if (!confirm('Закрыть тикет?')) return;
+  const r = await proxy(`/admin-api/tickets/${id}/close`, { method: 'POST', body: '{}' });
+  if (r.success) { toast('✓ Закрыт', 'success'); loadTicketChat(id); if (state.currentPage === 'tickets') renderTicketsTable(); }
+  else toast('Ошибка: ' + (r.error || '?'), 'error');
+}
+async function reopenTicket(id) {
+  const r = await proxy(`/admin-api/tickets/${id}/reopen`, { method: 'POST', body: '{}' });
+  if (r.success) { toast('↻ Переоткрыт', 'success'); loadTicketChat(id); if (state.currentPage === 'tickets') renderTicketsTable(); }
+  else toast('Ошибка: ' + (r.error || '?'), 'error');
+}
+async function sendTicketReply() {
+  const id = ticketState.currentId;
+  if (!id) return;
+  const inp = $('#ticketChatInput');
+  const text = (inp.value || '').trim();
+  if (!text) return;
+  const btn = $('#ticketChatSendBtn');
+  btn.disabled = true;
+  try {
+    const r = await proxy(`/admin-api/tickets/${id}/reply`, { method: 'POST', body: JSON.stringify({ text }) });
+    if (r.success) { inp.value = ''; await pollTicketMessages(id); }
+    else toast('Не отправлено: ' + (r.error || '?'), 'error');
+  } catch (e) { toast('Ошибка сети', 'error'); }
+  finally { btn.disabled = false; inp.focus(); }
+}
+async function pollTicketMessages(ticketId) {
+  if (ticketState.currentId !== ticketId) return;
+  try {
+    const data = await proxy(`/admin-api/tickets/${ticketId}/messages?after=${ticketState.lastMsgId}`);
+    if (data.success && data.messages && data.messages.length) {
+      const full = await proxy(`/admin-api/tickets/${ticketId}`);
+      if (full.success) {
+        renderTicketChatHead(full.ticket);
+        renderTicketChatMsgs(full.messages || [], true);
+        renderTicketChatActions(full.ticket);
+        const msgs = full.messages || [];
+        if (msgs.length) ticketState.lastMsgId = Math.max(...msgs.map(m => m.id));
+      }
+    }
+  } catch (e) {}
+}
+function escMsg(s) { return esc(String(s)).replace(/\n/g, '<br>'); }
+function fmtTimeShort(iso) { try { return new Date(iso).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }); } catch (e) { return iso || ''; } }
+function fmtDateShort(iso) { try { return new Date(iso).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' }); } catch (e) { return iso || ''; } }
+
+
+/* === BROADCAST V2 === */
+if (typeof window.bcState === 'undefined' || !('customIds' in window.bcState)) {
+  window.bcState = { audience: 'all', campaign: 'all', customIds: [], targetUserId: null };
+}
+function bcReset() { bcState.audience = 'all'; bcState.campaign = 'all'; bcState.customIds = []; bcState.targetUserId = null; }
+
+const BC_AUDIENCE_TEMPLATES = {
+  all: `📢 Привет!
+
+Хотим поделиться с тобой новостью — мы постоянно работаем над улучшением TuVPN, чтобы тебе было удобнее.
+
+[опиши что нового]
+
+Спасибо что выбираете нас ❤️`,
+  active: `❤️ Спасибо что ты с нами!
+
+Ты — один из наших постоянных пользователей, и мы это очень ценим.
+
+[опционально: какой-то бонус/подарок]
+
+Хорошего тебе соединения 🚀`,
+  inactive: `👋 Эй, привет!
+
+Давно тебя не видели в TuVPN. Хотим вернуть тебя — лови персональную скидку.
+
+🎁 Промокод PROMO20 — 20% на любую подписку
+
+Жми → Подключиться`,
+  utm_no_device: `👋 Привет!
+
+Заметили, что ты заходил в наш бот, но VPN ещё не настроил. Может что-то пошло не так?
+
+Если нужна помощь с настройкой — напиши в поддержку, поможем разобраться за 1 минуту.`,
+  expired_unpaid_14d: `👋 Привет!
+
+Твоя подписка TuVPN закончилась некоторое время назад. Хочешь вернуться?
+
+🎁 Промокод PROMO40 — скидка 40% на любую подписку
+
+Жми → Продлить`,
+  expires_6h: `⏰ Привет!
+Твоя подписка TuVPN скоро заканчивается. Самое время продлить, чтобы не остаться без VPN.
+🎁 Промокод PROMO20 — скидка 20% на любую подписку
+Жми → Продлить`,
+  custom_list: '',
+};
+
+function bcApplyTemplateForAudience(aud) {
+  const tpl = BC_AUDIENCE_TEMPLATES[aud];
+  if (tpl === undefined) return;
+  const txt = document.getElementById('bcMessageText');
+  if (!txt) return;
+  const current = (txt.value || '').trim();
+  // если текст уже не пустой и не совпадает ни с одним шаблоном — спрашиваем подтверждение
+  if (current && !Object.values(BC_AUDIENCE_TEMPLATES).map(s => s.trim()).includes(current)) {
+    if (!confirm('У тебя уже введён свой текст. Заменить на шаблон для этой аудитории?')) return;
+  }
+  txt.value = tpl;
+}
+
+
+function bcOnAudChange() {
+  const aud = bcState.audience;
+  const utm = $('#bcExtraUtm'); const custom = $('#bcExtraCustom');
+  if (utm) utm.style.display = (aud === 'utm_no_device') ? '' : 'none';
+  if (custom) custom.style.display = (aud === 'custom_list') ? '' : 'none';
+  // автоподстановка шаблона под когорту
+  if (typeof bcApplyTemplateForAudience === 'function') {
+    bcApplyTemplateForAudience(aud);
+  }
+}
+function bcBindModal() {
+  document.querySelectorAll('input[name="bcAud"]').forEach(r => {
+    r.addEventListener('change', e => { if (e.target.checked) { bcState.audience = e.target.value; bcOnAudChange(); } });
+  });
+  const cs = $('#bcCampaignFilter');
+  if (cs) {
+    cs.innerHTML = '<option value="all">Любая кампания</option>' + (state.campaigns || []).map(c => `<option value="${esc(c.code)}">${esc(c.name || c.code)}</option>`).join('');
+    cs.addEventListener('change', e => { bcState.campaign = e.target.value; });
+  }
+  const search = $('#bcUserSearch');
+  if (search && !search.dataset.bound) {
+    search.dataset.bound = '1';
+    let dt;
+    search.addEventListener('input', () => { clearTimeout(dt); dt = setTimeout(() => bcRenderUserList(search.value.trim()), 200); });
+    bcRenderUserList('');
+  }
+  const tpl = $('#bcTemplate');
+  if (tpl && !tpl.dataset.bound) {
+    tpl.dataset.bound = '1';
+    tpl.addEventListener('change', () => { const t = bcTemplateText(tpl.value); if (t) $('#bcMessageText').value = t; });
+  }
+  const pb = $('#bcPreviewBtn');
+  if (pb && !pb.dataset.bound) { pb.dataset.bound = '1'; pb.addEventListener('click', bcPreview); }
+}
+function bcTemplateText(name) {
+  const m = {
+    fix: '🔧 Привет! Мы починили технический сбой, и теперь VPN снова работает корректно. Спасибо за терпение!',
+    apology: '❤️ Здравствуйте! Хотим извиниться за неудобства. В качестве компенсации даём бонусные дни к подписке.',
+    renew: '⏰ Привет! Срок твоей подписки подходит к концу. Самое время продлить.',
+    expire_soon: '⏰ Привет!\nТвоя подписка TuVPN скоро заканчивается. Самое время продлить, чтобы не остаться без VPN.\n🎁 Промокод PROMO20 — скидка 20% на любую подписку\nЖми → Продлить',
+    news: '📢 Привет! Подключили новый сервер и ускорили все остальные.',
+    howto: '📘 Инструкция: как настроить TuVPN на своём устройстве за 1 минуту.',
+  };
+  return m[name] || '';
+}
+function bcRenderUserListNew(query) {  // переименовываем чтоб не конфликтнуть со старой
+  const host = $('#bcUserList');
+  if (!host) return;
+  const all = state.users || [];
+  const q = (query || '').toLowerCase();
+  const matched = q ? all.filter(u => {
+    const name = ((u.first_name || '') + ' ' + (u.last_name || '')).toLowerCase();
+    return name.includes(q) || (u.username || '').toLowerCase().includes(q) || String(u.user_id).includes(q);
+  }).slice(0, 50) : all.slice(0, 30);
+  if (!matched.length) { host.innerHTML = '<div class="bc-user-empty">никого не нашлось</div>'; return; }
+  host.innerHTML = matched.map(u => {
+    const name = [u.first_name, u.last_name].filter(Boolean).join(' ') || '—';
+    const un = u.username ? '@' + u.username : '';
+    const checked = bcState.customIds.includes(u.user_id);
+    return `<label class="bc-user-row"><input type="checkbox" data-uid="${u.user_id}" ${checked ? 'checked' : ''}><span class="bc-user-row-name">${esc(name)}</span>${un ? `<span class="bc-user-row-handle">${esc(un)}</span>` : ''}<span class="bc-user-row-id muted">${u.user_id}</span></label>`;
+  }).join('');
+  host.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+    cb.addEventListener('change', e => {
+      const uid = Number(e.target.dataset.uid);
+      if (e.target.checked) { if (!bcState.customIds.includes(uid)) bcState.customIds.push(uid); }
+      else bcState.customIds = bcState.customIds.filter(x => x !== uid);
+      bcRenderSelectedList();
+    });
+  });
+  bcRenderSelectedList();
+}
+// перенаправление если используется в HTML — старая (которая уже была в файле) тоже работает
+window.bcRenderUserList = bcRenderUserListNew;
+
+function bcRenderSelectedList() {
+  const cnt = $('#bcSelectedCount'); if (cnt) cnt.textContent = bcState.customIds.length;
+  const host = $('#bcSelectedList'); if (!host) return;
+  if (!bcState.customIds.length) { host.innerHTML = '<div class="muted" style="font-size:12px">Никого не выбрано</div>'; return; }
+  host.innerHTML = bcState.customIds.map(uid => {
+    const u = (state.users || []).find(x => x.user_id === uid) || {};
+    const name = [u.first_name, u.last_name].filter(Boolean).join(' ') || ('id:' + uid);
+    return `<span class="bc-chip">${esc(name)} <button data-uid="${uid}">×</button></span>`;
+  }).join('');
+  host.querySelectorAll('button').forEach(b => {
+    b.addEventListener('click', () => {
+      const uid = Number(b.dataset.uid);
+      bcState.customIds = bcState.customIds.filter(x => x !== uid);
+      const cb = $('#bcUserList').querySelector(`input[data-uid="${uid}"]`);
+      if (cb) cb.checked = false;
+      bcRenderSelectedList();
+    });
+  });
+}
+async function bcPreview() {
+  const text = ($('#bcMessageText').value || '').trim();
+  if (!text) { toast('Введите текст', 'warning'); return; }
+  if (bcState.audience === 'custom_list' && !bcState.customIds.length) { toast('Выберите хотя бы одного юзера', 'warning'); return; }
+  const bonusDays = parseInt($('#bcBonusDays').value || '0', 10);
+  try {
+    const r = await proxy('/admin-api/broadcast/preview', {
+      method: 'POST',
+      body: JSON.stringify({
+        audience: bcState.audience, campaign_filter: bcState.campaign,
+        target_user_id: null, target_user_ids: bcState.audience === 'custom_list' ? bcState.customIds : null,
+      })
+    });
+    if (!r.success) { toast('Ошибка: ' + (r.error || '?'), 'error'); return; }
+    const audLabels = { all: '📢 Все', active: '✅ С подпиской', inactive: '⏸ Без подписки', utm_no_device: '🎯 UTM без устройства', expired_unpaid_14d: '💤 Истекли 14д', custom_list: `👤 Выбранные (${bcState.customIds.length})` };
+    const _set = (sel, val) => { const el = $(sel); if (el) el.textContent = val; };
+    _set('#bcPreviewAud', audLabels[bcState.audience] || bcState.audience);
+    _set('#bcPreviewCount', r.count || 0);
+    _set('#bcPreviewText', text);
+    _set('#bcPreviewBonus', bonusDays > 0 ? bonusDays + ' дней' : '—');
+    closeModal('broadcastModal');
+    openModal('broadcastPreviewModal');
+    const sb = $('#bcSendConfirmBtn') || $('#bcSendBtn') || document.querySelector('#broadcastPreviewModal .btn-primary');
+    if (sb) {
+      const fresh = sb.cloneNode(true);
+      sb.parentNode.replaceChild(fresh, sb);
+      fresh.addEventListener('click', () => bcSend(text, bonusDays));
+    }
+  } catch (e) { toast('Ошибка сети', 'error'); }
+}
+async function bcSend(text, bonusDays) {
+  const sb = document.querySelector('#broadcastPreviewModal .btn-primary');
+  if (sb) sb.disabled = true;
+  try {
+    const r = await proxy('/admin-api/broadcast/send', {
+      method: 'POST',
+      body: JSON.stringify({
+        audience: bcState.audience, campaign_filter: bcState.campaign,
+        message_text: text, bonus_days: bonusDays,
+        target_user_id: null, target_user_ids: bcState.audience === 'custom_list' ? bcState.customIds : null,
+      })
+    });
+    if (r.success) {
+      toast(`📨 Отправлено: ${r.sent || 0}, ошибок: ${r.failed || 0}`, 'success');
+      closeModal('broadcastPreviewModal');
+      bcReset();
+      if (state.currentPage === 'broadcast') renderBroadcast();
+    } else toast('Ошибка: ' + (r.error || '?'), 'error');
+  } catch (e) { toast('Ошибка сети', 'error'); }
+  finally { if (sb) sb.disabled = false; }
+}
+
+// Перехват openModal('broadcastModal') — bind при первом открытии
+(function() {
+  if (window._bcInterceptInstalled) return;
+  window._bcInterceptInstalled = true;
+  const _origOpen = window.openModal;
+  if (typeof _origOpen !== 'function') return;
+  window.openModal = function(id) {
+    if (id === 'broadcastModal') {
+      bcReset();
+      const result = _origOpen(id);
+      setTimeout(() => {
+        bcBindModal(); bcOnAudChange();
+        const r = document.querySelector('input[name="bcAud"][value="all"]');
+        if (r) r.checked = true;
+      }, 30);
+      return result;
+    }
+    return _origOpen(id);
+  };
+})();
+
+
+/* === RECEIPT MODAL === */
+let _receiptCurrentPayId = null;
+function openReceiptModal(payId) {
+  const p = (state.payments || []).find(x => Number(x.id) === Number(payId));
+  if (!p) { toast('Платёж не найден', 'error'); return; }
+  _receiptCurrentPayId = payId;
+  const u = (state.users || []).find(x => x.user_id === p.user_id) || {};
+  const name = [u.first_name, u.last_name].filter(Boolean).join(' ') || ('id:' + p.user_id);
+  const handle = u.username ? '@' + u.username : '';
+  const paidDate = p.paid_at ? fmtDateShort(p.paid_at) : (p.created_at ? fmtDateShort(p.created_at) : '—');
+  $('#receiptInfoBlock').innerHTML = `<div class="info"><div class="info-k">Пользователь</div><div class="info-v">${esc(name)} ${esc(handle)}</div></div><div class="info"><div class="info-k">Платёж #</div><div class="info-v mono">${p.id}</div></div><div class="info"><div class="info-k">Сумма</div><div class="info-v"><b>${money(p.amount)}</b></div></div><div class="info"><div class="info-k">Дата</div><div class="info-v">${paidDate}</div></div>`;
+  $('#receiptUrlInput').value = '';
+  updateReceiptPreview();
+  const inp = $('#receiptUrlInput');
+  if (!inp.dataset.bound) { inp.dataset.bound = '1'; inp.addEventListener('input', updateReceiptPreview); }
+  const sb = $('#receiptSendBtn');
+  if (!sb.dataset.bound) { sb.dataset.bound = '1'; sb.addEventListener('click', sendReceipt); }
+  openModal('receiptRegisterModal');
+}
+function updateReceiptPreview() {
+  const url = ($('#receiptUrlInput').value || '').trim();
+  const p = (state.payments || []).find(x => Number(x.id) === Number(_receiptCurrentPayId));
+  if (!p) return;
+  const paidDate = p.paid_at ? fmtDateShort(p.paid_at) : (p.created_at ? fmtDateShort(p.created_at) : '—');
+  const urlPart = url ? `\n\n📄 Посмотреть чек: ${url}` : '\n\n📄 [ссылка появится после ввода]';
+  $('#receiptPreviewBox').textContent = `✅ Спасибо за оплату подписки TuVPN!\n\nЧек на сумму ${p.amount}₽ от ${paidDate} оформлен через ФНС.${urlPart}\n\nСпасибо что выбираете нас! ❤️`;
+}
+async function sendReceipt() {
+  const url = ($('#receiptUrlInput').value || '').trim();
+  if (!url) { toast('Введите ссылку на чек', 'warning'); return; }
+  if (!url.startsWith('http://') && !url.startsWith('https://')) { toast('Ссылка должна начинаться с http:// или https://', 'warning'); return; }
+  const btn = $('#receiptSendBtn');
+  btn.disabled = true; btn.textContent = 'Отправляю...';
+  try {
+    const sendSms = document.getElementById('receiptSendSms')?.checked ?? false;
+    const r = await proxy(`/admin-api/payments/${_receiptCurrentPayId}/register_receipt`, { method: 'POST', body: JSON.stringify({ receipt_url: url, send_sms: sendSms }) });
+    if (r.success) {
+      if (r.delivered) toast('✅ Чек зарегистрирован, юзеру отправлено', 'success');
+      else toast('⚠️ Чек зарегистрирован, но юзеру не доставлено: ' + (r.message || '?'), 'warning');
+      closeModal('receiptRegisterModal');
+      try { const fresh = await sbGet('payments', 'select=*&order=created_at.desc'); if (Array.isArray(fresh)) state.payments = fresh; } catch (e) {}
+      if (state.currentPage === 'payments') renderPaymentsTable();
+    } else toast('Ошибка: ' + (r.error || '?'), 'error');
+  } catch (e) { toast('Ошибка сети', 'error'); }
+  finally { btn.disabled = false; btn.textContent = 'Отправить и пометить'; }
+}
+
+
+/* UI-FIX: старая кнопка "Новая рассылка" вызывала openBroadcastModal — направим её на openBroadcastForm */
+if (typeof openBroadcastForm === 'function') {
+  window.openBroadcastModal = openBroadcastForm;
+}
+
+
+
+// ============================================================
+// РАЗДЕЛ: ФИНАНСЫ
+// ============================================================
+
+
+
+
+function fmt(n) {
+  return Number(n).toLocaleString('ru-RU', {minimumFractionDigits:0, maximumFractionDigits:2});
+}
+
+function renderExpensesRows(expenses, canEdit) {
+  if (!expenses.length) return '<tr><td colspan="6" class="empty-cell">Нет расходов</td></tr>';
+  return expenses.map(e => `
+    <tr data-category="${e.category}">
+      <td>${e.expense_date||'—'}</td>
+      <td>${EXPENSE_CATEGORIES[e.category]||e.category}</td>
+      <td>${e.description}</td>
+      <td>₽${fmt(e.amount)}</td>
+      <td>${e.is_recurring ? (e.recurring_period==='monthly'?'🔁 Ежемес.':'🔁 Ежегод.') : '—'}</td>
+      ${canEdit ? `<td class="actions-cell">
+        <button class="btn-icon" onclick="editExpense(${e.id})" title="Редактировать">✏️</button>
+        <button class="btn-icon btn-danger-icon" onclick="deleteExpense(${e.id})" title="Удалить">🗑</button>
+      </td>` : ''}
+    </tr>
+  `).join('');
+}
+
+
+
+
+async function editExpense(id) {
+  const e = state.financeExpenses.find(x=>x.id===id);
+  if (e) openAddExpenseModal(e);
+}
+
+
+
+
+
+
+
+async function markPlannedDone(id) {
+  await fetch(`/admin-api/finance/planned/${id}`, { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({is_done:true}) });
+  showToast('Отмечено','success'); renderFinancePage();
+}
+
+
+async function changePass() {
+  const newPass = prompt('Новый пароль панели:');
+  if (!newPass) return;
+  const res = await fetch('/admin-api/change-panel-password', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({password: newPass})
+  });
+  if (res.ok) showToast('Пароль изменён', 'success');
+  else showToast('Ошибка', 'error');
+}
+
+
+/* ===================================================================== */
+/* ============ FINANCE & ROLES — REBUILD в стиле проекта ============== */
+/* ===================================================================== */
+
+// Категории расходов
+
+// Группы прав для UI
+
+// =========================================================
+// FINANCE
+// =========================================================
+
+
+
+function renderFinPlannedTable() {
+  const tbody = $('#finPlannedTbody');
+  if (!tbody) return;
+  const canEdit = hasPermission('edit_finance');
+  const list = state.finance.planned.slice().sort((a, b) => (a.planned_date || 'z').localeCompare(b.planned_date || 'z'));
+
+  if (!list.length) {
+    tbody.innerHTML = `<tr><td colspan="${canEdit ? 6 : 5}"><div class="empty"><div class="title">Нет плановых покупок</div></div></td></tr>`;
+    return;
+  }
+  tbody.innerHTML = list.map(p => {
+    const cat = EXPENSE_CATEGORIES[p.category] || { label: p.category };
+    return `<tr class="${p.is_done ? 'row-done' : ''}">
+      <td><input type="checkbox" ${p.is_done ? 'checked' : ''} ${canEdit ? `data-tog-id="${p.id}"` : 'disabled'}></td>
+      <td><span class="mono">${esc(p.planned_date || '—')}</span></td>
+      <td>${cat.label}</td>
+      <td>${esc(p.description)}</td>
+      <td class="text-r">${p.estimated_amount ? money(p.estimated_amount) : '—'}</td>
+      ${canEdit ? `<td class="text-r">
+        <button class="btn btn-ghost btn-sm" data-act="del-p" data-id="${p.id}">🗑</button>
+      </td>` : ''}
+    </tr>`;
+  }).join('');
+  $$('#finPlannedTbody [data-tog-id]').forEach(c => c.addEventListener('change', () =>
+    togglePlanned(Number(c.dataset.togId), c.checked)));
+  $$('#finPlannedTbody [data-act="del-p"]').forEach(b => b.addEventListener('click', () =>
+    confirmDeletePlanned(Number(b.dataset.id))));
+}
+
+// ---- Модалки финансов ----
+
+
+
+async function confirmDeleteExpense(id) {
+  if (!confirm('Удалить расход?')) return;
+  const r = await fetch(`/admin-api/finance/expenses/${id}`, { method: 'DELETE' });
+  if (r.ok) { toast('Удалено', 'success'); renderFinancePage(); }
+  else toast('Ошибка удаления', 'error');
+}
+
+
+
+function openPlannedModal() {
+  $('#finPlanId').value = '';
+  $('#finPlanDate').value = '';
+  $('#finPlanCategory').value = 'servers';
+  $('#finPlanDesc').value = '';
+  $('#finPlanAmount').value = '';
+  openModal('finPlannedModal');
+}
+
+
+async function togglePlanned(id, isDone) {
+  const r = await fetch(`/admin-api/finance/planned/${id}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ is_done: isDone })
+  });
+  if (!r.ok) toast('Ошибка', 'error');
+}
+
+async function confirmDeletePlanned(id) {
+  if (!confirm('Удалить плановую покупку?')) return;
+  const r = await fetch(`/admin-api/finance/planned/${id}`, { method: 'DELETE' });
+  if (r.ok) { toast('Удалено', 'success'); renderFinancePage(); }
+  else toast('Ошибка', 'error');
+}
+
+
+// =========================================================
+// ROLES & ADMINS — только для суперадмина
+// =========================================================
+
+
+
+
+// ---- Модалка роли ----
+
+
+
+// ---- Модалка админа ----
+
+
+
+
+// =========================================================
+// page-роутер — регистрация finance/roles
+// =========================================================
+(function () {
+  // подождём пока renderPage будет в scope
+  const _orig = window.renderPage;
+  if (typeof _orig === 'function') {
+    window.renderPage = function (page) {
+      if (page === 'finance') { renderFinancePage(); return; }
+      if (page === 'roles') { renderRolesPage(); return; }
+      return _orig(page);
+    };
+  }
+})();
+
+
+/* hooks: привязка save-кнопок модалок (через делегирование, на всякий) */
+(function() {
+  document.addEventListener('click', (e) => {
+    const id = e.target?.id;
+    if (id === 'finExpenseSaveBtn') saveExpense();
+    else if (id === 'finInvSaveBtn') saveInvestment();
+    else if (id === 'finPlanSaveBtn') savePlanned();
+    else if (id === 'roleSaveBtn') saveRole();
+    else if (id === 'adminSaveBtn') saveAdmin();
+  });
+})();
+
+
+/* ===================================================================== */
+/* ============ FINANCE & ROLES — REBUILD в стиле проекта ============== */
+/* ===================================================================== */
+
+// Категории расходов
+const EXPENSE_CATEGORIES = {
+  servers: { label: '🖥 Серверы', color: '#4fc4cf' },
+  domains: { label: '🌐 Домены', color: '#9b8fff' },
+  ads:     { label: '📢 Реклама', color: '#ffb84f' },
+  dev:     { label: '💻 Разработка', color: '#4fcf78' },
+  other:   { label: '🔧 Прочее', color: '#94a3b8' },
+};
+
+// Группы прав для UI
+
+// =========================================================
+// FINANCE
+// =========================================================
+
+
+function renderFinExpensesTable(catFilter) {
+  const tbody = $('#finExpensesTbody');
+  if (!tbody) return;
+  const canEdit = hasPermission('edit_finance');
+  let list = state.finance.expenses.slice();
+  if (catFilter && catFilter !== 'all') list = list.filter(e => e.category === catFilter);
+  list.sort((a, b) => (b.expense_date || '').localeCompare(a.expense_date || ''));
+
+  if (!list.length) {
+    tbody.innerHTML = `<tr><td colspan="${canEdit ? 5 : 4}"><div class="empty"><div class="title">Нет расходов</div></div></td></tr>`;
+    return;
+  }
+  tbody.innerHTML = list.map(e => {
+    const cat = EXPENSE_CATEGORIES[e.category] || { label: e.category };
+    return `<tr>
+      <td><span class="mono">${esc(e.expense_date)}</span></td>
+      <td>${cat.label}</td>
+      <td>${esc(e.description || '')}</td>
+      <td class="text-r"><span class="num" style="color:var(--red);font-weight:600">${money(e.amount)}</span></td>
+      ${canEdit ? `<td class="text-r">
+        <button class="btn btn-ghost btn-sm" data-act="ed" data-id="${e.id}">✎</button>
+        <button class="btn btn-ghost btn-sm" data-act="del" data-id="${e.id}">🗑</button>
+      </td>` : ''}
+    </tr>`;
+  }).join('');
+  $$('#finExpensesTbody [data-act="ed"]').forEach(b => b.addEventListener('click', () =>
+    openExpenseModal(state.finance.expenses.find(x => x.id == b.dataset.id))));
+  $$('#finExpensesTbody [data-act="del"]').forEach(b => b.addEventListener('click', () =>
+    confirmDeleteExpense(Number(b.dataset.id))));
+}
+
+function renderFinPlannedTable() {
+  const tbody = $('#finPlannedTbody');
+  if (!tbody) return;
+  const canEdit = hasPermission('edit_finance');
+  const list = state.finance.planned.slice().sort((a, b) => (a.planned_date || 'z').localeCompare(b.planned_date || 'z'));
+
+  if (!list.length) {
+    tbody.innerHTML = `<tr><td colspan="${canEdit ? 6 : 5}"><div class="empty"><div class="title">Нет плановых покупок</div></div></td></tr>`;
+    return;
+  }
+  tbody.innerHTML = list.map(p => {
+    const cat = EXPENSE_CATEGORIES[p.category] || { label: p.category };
+    return `<tr class="${p.is_done ? 'row-done' : ''}">
+      <td><input type="checkbox" ${p.is_done ? 'checked' : ''} ${canEdit ? `data-tog-id="${p.id}"` : 'disabled'}></td>
+      <td><span class="mono">${esc(p.planned_date || '—')}</span></td>
+      <td>${cat.label}</td>
+      <td>${esc(p.description)}</td>
+      <td class="text-r">${p.estimated_amount ? money(p.estimated_amount) : '—'}</td>
+      ${canEdit ? `<td class="text-r">
+        <button class="btn btn-ghost btn-sm" data-act="del-p" data-id="${p.id}">🗑</button>
+      </td>` : ''}
+    </tr>`;
+  }).join('');
+  $$('#finPlannedTbody [data-tog-id]').forEach(c => c.addEventListener('change', () =>
+    togglePlanned(Number(c.dataset.togId), c.checked)));
+  $$('#finPlannedTbody [data-act="del-p"]').forEach(b => b.addEventListener('click', () =>
+    confirmDeletePlanned(Number(b.dataset.id))));
+}
+
+// ---- Модалки финансов ----
+
+function openExpenseModal(existing) {
+  const isEdit = !!existing;
+  $('#finExpenseModalTitle').textContent = isEdit ? 'Редактировать расход' : 'Добавить расход';
+  $('#finExpenseId').value = existing?.id || '';
+  $('#finExpenseDate').value = existing?.expense_date || new Date().toISOString().slice(0, 10);
+  $('#finExpenseCategory').value = existing?.category || 'servers';
+  $('#finExpenseDesc').value = existing?.description || '';
+  $('#finExpenseAmount').value = existing?.amount || '';
+  $('#finExpenseRecurring').checked = !!existing?.is_recurring;
+  $('#finExpensePeriod').value = existing?.recurring_period || 'monthly';
+  openModal('finExpenseModal');
+}
+
+
+async function confirmDeleteExpense(id) {
+  if (!confirm('Удалить расход?')) return;
+  const r = await fetch(`/admin-api/finance/expenses/${id}`, { method: 'DELETE' });
+  if (r.ok) { toast('Удалено', 'success'); renderFinancePage(); }
+  else toast('Ошибка удаления', 'error');
+}
+
+function openInvestmentModal() {
+  $('#finInvId').value = '';
+  $('#finInvName').value = '';
+  $('#finInvTgId').value = '';
+  $('#finInvAmount').value = '';
+  $('#finInvDate').value = new Date().toISOString().slice(0, 10);
+  $('#finInvNote').value = '';
+  openModal('finInvestmentModal');
+}
+
+
+function openPlannedModal() {
+  $('#finPlanId').value = '';
+  $('#finPlanDate').value = '';
+  $('#finPlanCategory').value = 'servers';
+  $('#finPlanDesc').value = '';
+  $('#finPlanAmount').value = '';
+  openModal('finPlannedModal');
+}
+
+async function savePlanned() {
+  const body = {
+    planned_date: $('#finPlanDate').value || null,
+    category: $('#finPlanCategory').value,
+    description: $('#finPlanDesc').value.trim(),
+    estimated_amount: parseFloat($('#finPlanAmount').value || '0') || null,
+  };
+  if (!body.description) { toast('Заполни описание', 'error'); return; }
+  const r = await fetch('/admin-api/finance/planned', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+  });
+  if (r.ok) { toast('Добавлено', 'success'); closeModal('finPlannedModal'); renderFinancePage(); }
+  else { const e = await r.json().catch(() => ({})); toast('Ошибка: ' + (e.error || r.status), 'error'); }
+}
+
+async function togglePlanned(id, isDone) {
+  const r = await fetch(`/admin-api/finance/planned/${id}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ is_done: isDone })
+  });
+  if (!r.ok) toast('Ошибка', 'error');
+}
+
+async function confirmDeletePlanned(id) {
+  if (!confirm('Удалить плановую покупку?')) return;
+  const r = await fetch(`/admin-api/finance/planned/${id}`, { method: 'DELETE' });
+  if (r.ok) { toast('Удалено', 'success'); renderFinancePage(); }
+  else toast('Ошибка', 'error');
+}
+
+
+// =========================================================
+// ROLES & ADMINS — только для суперадмина
+// =========================================================
+
+async function renderRolesPage() {
+  const host = $('#page-roles');
+  if (!host) return;
+  if (!state.isSuperadmin) {
+    host.innerHTML = '<div class="empty"><span class="emoji">⛔</span><div class="title">Только для суперадмина</div></div>';
+    return;
+  }
+
+  let roles = [], admins = [];
+  try {
+    const [r1, r2] = await Promise.all([
+      fetch('/admin-api/roles', { credentials: 'include' }).then(r => r.json()),
+      fetch('/admin-api/admin-users', { credentials: 'include' }).then(r => r.json()),
+    ]);
+    roles = Array.isArray(r1) ? r1 : (r1.roles || []);
+    admins = Array.isArray(r2) ? r2 : (r2.admins || []);
+  } catch (e) {
+    host.innerHTML = '<div class="empty"><div class="title">Ошибка загрузки</div><div class="sub">' + esc(e.message || '') + '</div></div>';
+    return;
+  }
+  state.roles = roles;
+  state.admins = admins;
+
+  // имя суперадмина — из state.me.name или из users
+  let superName = state.me && state.me.name;
+  if (!superName) {
+    const u = (state.users || []).find(x => x.user_id === (state.me && state.me.user_id));
+    if (u) superName = [u.first_name, u.last_name].filter(Boolean).join(' ') || u.username;
+  }
+  if (!superName) superName = 'ты';
+
+  host.innerHTML = `
+    <div class="page-title">Роли и доступы</div>
+    <div class="page-sub">Управление правами админов</div>
+
+    <div class="kpi-grid">
+      <div class="kpi"><div class="kpi-head"><span class="kpi-label">Ролей</span></div><div class="kpi-value num">${roles.length}</div></div>
+      <div class="kpi"><div class="kpi-head"><span class="kpi-label">Админов</span></div><div class="kpi-value num">${admins.filter(a => a.is_active).length}</div></div>
+      <div class="kpi"><div class="kpi-head"><span class="kpi-label">Всего прав</span></div><div class="kpi-value num">${(state.allPermissions || []).length}</div></div>
+      <div class="kpi"><div class="kpi-head"><span class="kpi-label">Суперадмин</span></div><div class="kpi-value num" style="color:var(--accent);font-size:14px">${esc(superName)}</div></div>
+    </div>
+
+    <div class="fin-grid">
+      <div class="card">
+        <div class="card-head">
+          <div class="card-title">Роли</div>
+          <button class="btn btn-primary btn-sm" id="roleAddBtn">+ Роль</button>
+        </div>
+        <div id="rolesList"></div>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <div class="card-title">Админы</div>
+          <button class="btn btn-primary btn-sm" id="adminAddBtn">+ Админ</button>
+        </div>
+        <div id="adminsList"></div>
+      </div>
+    </div>
+  `;
+
+  renderRolesList();
+  renderAdminsList();
+  $('#roleAddBtn').addEventListener('click', () => openRoleModal());
+  $('#adminAddBtn').addEventListener('click', () => openAdminModal());
+}
+
+
+
+// Строим UI чекбоксов прав из state.sections (один источник правды)
+function buildPermissionsUI(currentPermsSet, tripleMode) {
+  // tripleMode=false для ролей (один чекбокс)
+  // tripleMode=true для админов (две колонки: +добавить / −отозвать)
+  let html = '';
+  for (const [secKey, sec] of Object.entries(state.sections)) {
+    if (sec.superadmin_only) continue;  // суперадмин-only права НЕ показываем
+    const items = [];
+    if (sec.view_perm) {
+      items.push([sec.view_perm, '👁 ' + (sec.title || secKey)]);
+    }
+    for (const [actKey, actLabel] of Object.entries(sec.actions || {})) {
+      items.push([actKey, actLabel]);
+    }
+    if (!items.length) continue;
+    html += `<div class="perm-group">
+      <div class="perm-group-title">${esc(sec.title || secKey)}</div>
+      <div class="perm-list">`;
+    for (const [key, label] of items) {
+      if (tripleMode) {
+        const addedSet = currentPermsSet && currentPermsSet.added;
+        const removedSet = currentPermsSet && currentPermsSet.removed;
+        const a = addedSet && addedSet.has(key) ? 'checked' : '';
+        const r = removedSet && removedSet.has(key) ? 'checked' : '';
+        html += `<div class="perm-row-tri">
+          <span class="perm-row-label">${esc(label)} <span class="mono muted">${esc(key)}</span></span>
+          <label class="perm-mini" title="Дать сверх роли"><input type="checkbox" data-add="${esc(key)}" ${a}> <span style="color:var(--green)">+</span></label>
+          <label class="perm-mini" title="Забрать из роли"><input type="checkbox" data-rem="${esc(key)}" ${r}> <span style="color:var(--red)">−</span></label>
+        </div>`;
+      } else {
+        const checked = currentPermsSet && currentPermsSet.has(key) ? 'checked' : '';
+        html += `<label class="perm-row">
+          <input type="checkbox" value="${esc(key)}" ${checked}>
+          <span>${esc(label)}</span>
+          <span class="mono muted">${esc(key)}</span>
+        </label>`;
+      }
+    }
+    html += '</div></div>';
+  }
+  return html;
+}
+
+
+
+
+
+function renderRolesList() {
+  const host = $('#rolesList');
+  if (!state.roles.length) {
+    host.innerHTML = '<div class="empty"><div class="title">Ролей пока нет</div></div>';
+    return;
+  }
+  host.innerHTML = state.roles.map(r => `
+    <div class="adm-item">
+      <div class="adm-item-main">
+        <div class="adm-item-name">${esc(r.name)}</div>
+        <div class="adm-item-sub">${esc(r.description || '—')} · <b>${(r.permissions || []).length}</b> прав</div>
+      </div>
+      <div class="adm-item-acts">
+        <button class="btn btn-ghost btn-sm" data-rid="${r.id}" data-act="ed-role">✎</button>
+        <button class="btn btn-ghost btn-sm" data-rid="${r.id}" data-act="del-role">🗑</button>
+      </div>
+    </div>
+  `).join('');
+  $$('#rolesList [data-act="ed-role"]').forEach(b => b.addEventListener('click', () =>
+    openRoleModal(state.roles.find(r => r.id == b.dataset.rid))));
+  $$('#rolesList [data-act="del-role"]').forEach(b => b.addEventListener('click', async () => {
+    if (!confirm('Удалить роль?')) return;
+    const r = await fetch(`/admin-api/roles/${b.dataset.rid}`, { method: 'DELETE' });
+    if (r.ok) { toast('Удалено', 'success'); renderRolesPage(); }
+    else toast('Ошибка', 'error');
+  }));
+}
+
+function renderAdminsList() {
+  const host = $('#adminsList');
+  if (!state.admins.length) {
+    host.innerHTML = '<div class="empty"><div class="title">Админов нет</div></div>';
+    return;
+  }
+  host.innerHTML = state.admins.map(a => {
+    const role = state.roles.find(r => r.id == a.role_id);
+    const cls = a.is_active ? '' : 'adm-item-off';
+    return `<div class="adm-item ${cls}">
+      <div class="adm-item-main">
+        <div class="adm-item-name">${esc(a.full_name || a.username || ('id:' + a.user_id))}</div>
+        <div class="adm-item-sub">
+          ${a.username ? '<span class="mono">@' + esc(a.username) + '</span> · ' : ''}
+          <span class="mono">${a.user_id}</span>
+          ${role ? '<span class="tag tag-blue" style="margin-left:6px">' + esc(role.name) + '</span>' : '<span class="muted" style="margin-left:6px">без роли</span>'}
+          ${(a.added_permissions || []).length ? '<span class="tag tag-green" style="margin-left:4px">+' + a.added_permissions.length + '</span>' : ''}
+          ${(a.removed_permissions || []).length ? '<span class="tag tag-red" style="margin-left:4px">−' + a.removed_permissions.length + '</span>' : ''}
+        </div>
+      </div>
+      <div class="adm-item-acts">
+        <button class="btn btn-ghost btn-sm" data-uid="${a.user_id}" data-act="ed-admin">✎</button>
+      </div>
+    </div>`;
+  }).join('');
+  $$('#adminsList [data-act="ed-admin"]').forEach(b => b.addEventListener('click', () =>
+    openAdminModal(state.admins.find(a => a.user_id == b.dataset.uid))));
+}
+
+// ---- Модалка роли ----
+
+function openRoleModal(existing) {
+  $('#roleModalTitle').textContent = existing ? 'Редактировать роль' : 'Новая роль';
+  $('#roleId').value = existing?.id || '';
+  $('#roleName').value = existing?.name || '';
+  $('#roleDesc').value = existing?.description || '';
+  const currentSet = new Set(existing?.permissions || []);
+  $('#rolePermsHost').innerHTML = buildPermissionsUI(currentSet, false);
+  openModal('roleModal');
+}
+
+async function saveRole() {
+  const id = $('#roleId').value;
+  const perms = Array.from($('#rolePermsHost').querySelectorAll('input:checked')).map(c => c.value);
+  const body = {
+    name: $('#roleName').value.trim(),
+    description: $('#roleDesc').value.trim(),
+    permissions: perms,
+  };
+  if (!body.name) { toast('Введи название', 'error'); return; }
+  const url = id ? `/admin-api/roles/${id}` : '/admin-api/roles';
+  const method = id ? 'PUT' : 'POST';
+  const r = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  if (r.ok) { toast('Сохранено', 'success'); closeModal('roleModal'); renderRolesPage(); }
+  else { const e = await r.json().catch(() => ({})); toast('Ошибка: ' + (e.error || r.status), 'error'); }
+}
+
+// ---- Модалка админа ----
+
+function openAdminModal(existing) {
+  const isEdit = !!existing;
+  $('#adminModalTitle').textContent = isEdit ? 'Редактировать админа' : 'Новый админ';
+  $('#adminUserId').value = existing?.user_id || '';
+  $('#adminUserId').readOnly = !!isEdit;
+  $('#adminFullName').value = existing?.full_name || '';
+  $('#adminUsername').value = existing?.username || '';
+  $('#adminActive').checked = existing ? !!existing.is_active : true;
+
+  const sel = $('#adminRole');
+  sel.innerHTML = '<option value="">— без роли —</option>' +
+    state.roles.map(r => `<option value="${r.id}">${esc(r.name)}</option>`).join('');
+  sel.value = existing?.role_id || '';
+
+  const tripleSet = {
+    added: new Set(existing?.added_permissions || []),
+    removed: new Set(existing?.removed_permissions || []),
+  };
+  $('#adminPermsHost').innerHTML = buildPermissionsUI(tripleSet, true);
+  openModal('adminModal');
+}
+
+async function saveAdmin() {
+  const uid = parseInt($('#adminUserId').value || '0', 10);
+  if (!uid) { toast('Введи Telegram ID', 'error'); return; }
+  const added = Array.from($('#adminPermsHost').querySelectorAll('input[data-add]:checked')).map(c => c.dataset.add);
+  const removed = Array.from($('#adminPermsHost').querySelectorAll('input[data-rem]:checked')).map(c => c.dataset.rem);
+  const body = {
+    user_id: uid,
+    full_name: $('#adminFullName').value.trim(),
+    username: $('#adminUsername').value.trim(),
+    is_active: $('#adminActive').checked,
+    role_id: parseInt($('#adminRole').value || '0', 10) || null,
+    added_permissions: added,
+    removed_permissions: removed,
+  };
+  const r = await fetch('/admin-api/admin-users', {
+    method: 'POST', credentials: 'include',
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+  });
+  if (r.ok) { toast('Сохранено', 'success'); closeModal('adminModal'); renderRolesPage(); }
+  else { const e = await r.json().catch(() => ({})); toast('Ошибка: ' + (e.error || r.status), 'error'); }
+}
+
+
+// =========================================================
+// page-роутер — регистрация finance/roles
+// =========================================================
+(function () {
+  // подождём пока renderPage будет в scope
+  const _orig = window.renderPage;
+  if (typeof _orig === 'function') {
+    window.renderPage = function (page) {
+      if (page === 'finance') { renderFinancePage(); return; }
+      if (page === 'roles') { renderRolesPage(); return; }
+      return _orig(page);
+    };
+  }
+})();
+
+
+/* ===================================================== */
+/* === FINANCE v2 — sources & funding ================== */
+/* ===================================================== */
+
+async function loadFinanceSources() {
+  try {
+    const r = await fetch('/admin-api/finance/sources', { credentials: 'include' });
+    if (!r.ok) return [];
+    state.finSources = await r.json();
+    return state.finSources;
+  } catch(e) { return []; }
+}
+
+async function renderFinancePage() {
+  const host = $('#page-finance');
+  if (!host) return;
+  if (!hasPermission('view_finance')) {
+    host.innerHTML = '<div class="empty"><span class="emoji">⛔</span><div class="title">Нет доступа</div></div>';
+    return;
+  }
+  // загружаем всё параллельно
+  let summary={}, expenses=[], investments=[], planned=[], sources=[], breakdown={};
+  try {
+    const [s,e,i,p,src,br] = await Promise.all([
+      fetch('/admin-api/finance/summary',     {credentials:'include'}).then(r=>r.json()),
+      fetch('/admin-api/finance/expenses',    {credentials:'include'}).then(r=>r.json()),
+      fetch('/admin-api/finance/investments', {credentials:'include'}).then(r=>r.json()),
+      fetch('/admin-api/finance/planned',     {credentials:'include'}).then(r=>r.json()),
+      fetch('/admin-api/finance/sources',     {credentials:'include'}).then(r=>r.json()),
+      fetch('/admin-api/finance/breakdown',   {credentials:'include'}).then(r=>r.json()),
+    ]);
+    summary = s.summary || s || {};
+    expenses = Array.isArray(e) ? e : (e.expenses || []);
+    investments = Array.isArray(i) ? i : (i.investments || []);
+    planned = Array.isArray(p) ? p : (p.planned || []);
+    sources = Array.isArray(src) ? src : [];
+    breakdown = br || {};
+  } catch (err) {
+    host.innerHTML = '<div class="empty"><div class="title">Ошибка загрузки</div><div class="sub">' + esc(String(err)) + '</div></div>';
+    return;
+  }
+  state.finance = { summary, expenses, investments, planned };
+  state.finSources = sources;
+  state.finBreakdown = breakdown;
+
+  const canEdit = hasPermission('edit_finance');
+  const income = +(summary.total_income || 0);
+  const totalExp = +(summary.total_expenses || 0);
+  const totalInv = +(summary.total_invested || 0);
+  const net = income - totalExp;
+
+  // расходы по категориям
+  const expByCat = {};
+  expenses.forEach(e => { expByCat[e.category] = (expByCat[e.category] || 0) + (+e.amount || 0); });
+
+  host.innerHTML = `
+    <div class="page-title">Финансы</div>
+    <div class="page-sub">Доходы, расходы, вложения и плановые покупки</div>
+
+    <div class="kpi-grid">
+      <div class="kpi">
+        <div class="kpi-head"><span class="kpi-label">Доходы</span></div>
+        <div class="kpi-value num">${money(income)}</div>
+        <div class="kpi-foot"><span class="kpi-delta up">от продаж подписок</span></div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-head"><span class="kpi-label">Расходы</span></div>
+        <div class="kpi-value num" style="color:var(--red)">${money(totalExp)}</div>
+        <div class="kpi-foot"><span class="kpi-delta dn">все траты</span></div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-head"><span class="kpi-label">Вложено личных</span></div>
+        <div class="kpi-value num" style="color:var(--accent)">${money(totalInv)}</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-head"><span class="kpi-label">Чистый результат</span></div>
+        <div class="kpi-value num" style="color:${net>=0?'var(--green)':'var(--red)'}">${net>=0?'+':'−'}${money(Math.abs(net))}</div>
+      </div>
+    </div>
+
+    <div class="toolbar">
+      ${canEdit ? `
+        <button class="btn btn-primary btn-sm" id="finAddExpenseBtn">+ Расход</button>
+        <button class="btn btn-ghost btn-sm" id="finAddInvBtn">+ Вложение</button>
+        <button class="btn btn-ghost btn-sm" id="finAddPlanBtn">+ Плановый</button>
+        <span class="toolbar-grow"></span>
+        <button class="btn btn-ghost btn-sm" id="finManageSrcBtn">⚙ Источники</button>
+      ` : ''}
+    </div>
+
+    <!-- Финансовая раскладка -->
+    <div class="card" style="margin-top:14px">
+      <div class="card-head"><div class="card-title">Финансовая раскладка</div><div class="card-sub">${money(breakdown.total_balance || 0)} — общий остаток</div></div>
+      <div class="tbl-wrap">
+        <table class="tbl fin-breakdown-tbl">
+          <colgroup>
+            <col style="width:45%">
+            <col style="width:18%">
+            <col style="width:18%">
+            <col style="width:19%">
+          </colgroup>
+          <thead><tr>
+            <th>Источник</th>
+            <th class="text-r">Внесено</th>
+            <th class="text-r">Потрачено</th>
+            <th class="text-r">Остаток</th>
+          </tr></thead>
+          <tbody>
+            ${(breakdown.sources || []).map(row => {
+              const s = row.source || {};
+              const balCol = row.balance >= 0 ? 'var(--green)' : 'var(--red)';
+              return `<tr>
+                <td><b>${esc(s.name)}</b> ${s.kind === 'service_pool' ? '<span class="muted" style="font-size:11px">(пул сервиса)</span>' : ''}</td>
+                <td class="text-r"><span class="num">${money(row.contributed)}</span></td>
+                <td class="text-r"><span class="num" style="color:var(--red)">${money(row.spent)}</span></td>
+                <td class="text-r"><b class="num" style="color:${balCol}">${money(row.balance)}</b></td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="fin-grid" style="margin-top:14px">
+      <div class="card">
+        <div class="card-head"><div class="card-title">Расходы по категориям</div></div>
+        <div class="fin-bars">
+          ${Object.entries(EXPENSE_CATEGORIES).map(([cat,meta]) => {
+            const amt = expByCat[cat] || 0;
+            const total = totalExp || 1;
+            const pct = Math.round(amt/total*100);
+            return `<div class="fin-bar-row">
+              <div class="fin-bar-label">${meta.label}</div>
+              <div class="fin-bar-track"><div class="fin-bar-fill" style="width:${pct}%;background:${meta.color}"></div></div>
+              <div class="fin-bar-amount">${money(amt)}</div>
+            </div>`;
+          }).join('')}
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head"><div class="card-title">История вложений</div></div>
+        ${investments.length ? investments.map(inv => `
+          <div class="fin-investor">
+            <span class="fin-investor-name">${esc(inv.investor_name || '?')} <span class="muted" style="font-size:11px">${esc((inv.invested_at||'').slice(0,10))}</span>${inv.note ? ' <span class="muted" style="font-size:11px">· ' + esc(inv.note) + '</span>' : ''}</span>
+            <span class="fin-investor-amount">${money(inv.amount)}</span>
+            ${canEdit ? `<button class="btn btn-ghost btn-sm fin-inv-del" data-iid="${inv.id}" style="margin-left:8px" title="Удалить вложение">🗑</button>` : ''}
+          </div>
+        `).join('') : '<div class="empty"><div class="title">Нет вложений</div></div>'}
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:14px">
+      <div class="card-head">
+        <div class="card-title">История расходов</div>
+        <div class="seg" id="finExpFilter">
+          <button class="seg-btn active" data-cat="all">Все</button>
+          ${Object.entries(EXPENSE_CATEGORIES).map(([cat,meta]) =>
+            `<button class="seg-btn" data-cat="${cat}">${meta.label}</button>`
+          ).join('')}
+        </div>
+      </div>
+      <div class="tbl-wrap">
+        <table class="tbl">
+          <thead><tr><th>Дата</th><th>Категория</th><th>Описание</th><th>Источники</th><th class="text-r">Сумма</th>${canEdit ? '<th></th>' : ''}</tr></thead>
+          <tbody id="finExpensesTbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:14px">
+      <div class="card-head"><div class="card-title">Плановые покупки</div></div>
+      <div class="tbl-wrap">
+        <table class="tbl">
+          <thead><tr><th>Готово</th><th>Дата</th><th>Категория</th><th>Что</th><th class="text-r">Оценка</th>${canEdit ? '<th></th>' : ''}</tr></thead>
+          <tbody id="finPlannedTbody"></tbody>
+        </table>
+      </div>
+    </div>
+  `;
+
+  renderFinExpensesTable('all');
+  renderFinPlannedTable();
+
+  if (canEdit) {
+    $('#finAddExpenseBtn').addEventListener('click', () => openExpenseModal());
+    $('#finAddInvBtn').addEventListener('click', () => openInvestmentModal());
+    $('#finAddPlanBtn').addEventListener('click', () => openPlannedModal());
+    $('#finManageSrcBtn').addEventListener('click', openSourcesModal);
+  }
+    // удаление вложения
+  $$('.fin-inv-del').forEach(b => b.addEventListener('click', async () => {
+    if (!confirm('Удалить это вложение?')) return;
+    const r = await fetch('/admin-api/finance/investments/' + b.dataset.iid, {
+      method: 'DELETE', credentials: 'include'
+    });
+    if (r.ok) { toast('Удалено', 'success'); renderFinancePage(); }
+    else { const e = await r.json().catch(()=>({})); toast('Ошибка: ' + (e.error || r.status), 'error'); }
+  }));
+  $$('#finExpFilter .seg-btn').forEach(b => b.addEventListener('click', () => {
+    $$('#finExpFilter .seg-btn').forEach(x => x.classList.remove('active'));
+    b.classList.add('active');
+    renderFinExpensesTable(b.dataset.cat);
+  }));
+}
+
+// ---- Модалка расхода с funding[] ----
+
+function openExpenseModal(existing) {
+  $('#finExpenseModalTitle').textContent = existing ? 'Редактировать расход' : 'Добавить расход';
+  $('#finExpenseId').value = existing?.id || '';
+  $('#finExpenseDate').value = existing?.expense_date || new Date().toISOString().slice(0,10);
+  $('#finExpenseCategory').value = existing?.category || 'servers';
+  $('#finExpenseDesc').value = existing?.description || '';
+  $('#finExpenseAmount').value = existing?.amount || '';
+  $('#finExpenseRecurring').checked = !!existing?.is_recurring;
+  $('#finExpensePeriod').value = existing?.recurring_period || 'monthly';
+
+  // строим строки источников (по одной строке на каждый активный)
+  const existingFunding = existing?.funding || [];
+  const fundMap = new Map();
+  for (const f of existingFunding) fundMap.set(f.source_id, +f.amount || 0);
+
+  const sources = (state.finSources || []).filter(s => s.is_active);
+  $('#finExpenseFunding').innerHTML = sources.map(s => `
+    <div class="fund-row" data-sid="${s.id}">
+      <label class="fund-label">${esc(s.name)}</label>
+      <input type="number" step="0.01" min="0" class="input fund-amount" data-sid="${s.id}" value="${fundMap.get(s.id) || ''}" placeholder="0">
+      <span class="muted">₽</span>
+    </div>
+  `).join('');
+  // live-валидация
+  $$('#finExpenseFunding .fund-amount').forEach(inp => inp.addEventListener('input', updateExpenseFundingTotal));
+  $('#finExpenseAmount').addEventListener('input', updateExpenseFundingTotal);
+  updateExpenseFundingTotal();
+
+  openModal('finExpenseModal');
+}
+
+function updateExpenseFundingTotal() {
+  const total = +($('#finExpenseAmount').value || 0);
+  let sum = 0;
+  $$('#finExpenseFunding .fund-amount').forEach(i => { sum += +(i.value || 0); });
+  const diff = total - sum;
+  const el = $('#finExpenseFundingTotal');
+  if (!el) return;
+  if (Math.abs(diff) < 0.005) {
+    el.innerHTML = `<span style="color:var(--green)">✓ ${money(sum)} / ${money(total)}</span>`;
+  } else if (sum === 0) {
+    el.innerHTML = `<span class="muted">Сумма по источникам: ${money(0)} / ${money(total)}</span>`;
+  } else {
+    el.innerHTML = `<span style="color:var(--red)">⚠ Сумма по источникам: ${money(sum)} / ${money(total)} (разница ${money(diff)})</span>`;
+  }
+}
+
+async function saveExpense() {
+  const id = $('#finExpenseId').value;
+  const amount = parseFloat($('#finExpenseAmount').value || '0');
+  const desc = $('#finExpenseDesc').value.trim();
+  if (!desc || amount <= 0) { toast('Заполни описание и сумму', 'error'); return; }
+
+  const funding = [];
+  $$('#finExpenseFunding .fund-amount').forEach(inp => {
+    const v = parseFloat(inp.value || '0');
+    if (v > 0) funding.push({ source_id: +inp.dataset.sid, amount: v });
+  });
+  // проверка суммы
+  const sumFunding = funding.reduce((a,b)=>a+b.amount,0);
+  if (Math.abs(sumFunding - amount) > 0.005 && funding.length) {
+    if (!confirm(`Суммы по источникам (${money(sumFunding)}) не совпадают с общей суммой расхода (${money(amount)}). Сохранить как есть?`)) return;
+  }
+
+  const body = {
+    expense_date: $('#finExpenseDate').value,
+    category: $('#finExpenseCategory').value,
+    description: desc,
+    amount: amount,
+    is_recurring: $('#finExpenseRecurring').checked,
+    recurring_period: $('#finExpensePeriod').value,
+    funding: funding,
+  };
+  const url = id ? `/admin-api/finance/expenses/${id}` : '/admin-api/finance/expenses';
+  const method = id ? 'PUT' : 'POST';
+  const r = await fetch(url, { method, credentials:'include', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+  if (r.ok) { toast(id ? 'Обновлено' : 'Добавлено', 'success'); closeModal('finExpenseModal'); renderFinancePage(); }
+  else { const e = await r.json().catch(()=>({})); toast('Ошибка: ' + (e.error || r.status), 'error'); }
+}
+
+// ---- Модалка вложения с dropdown ----
+
+function openInvestmentModal() {
+  // dropdown по источникам person
+  const sel = $('#finInvSourceId');
+  const persons = (state.finSources || []).filter(s => s.kind === 'person' && s.is_active);
+  sel.innerHTML = persons.map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join('');
+  $('#finInvAmount').value = '';
+  $('#finInvDate').value = new Date().toISOString().slice(0,10);
+  $('#finInvNote').value = '';
+  openModal('finInvestmentModal');
+}
+
+async function saveInvestment() {
+  const source_id = parseInt($('#finInvSourceId').value || '0', 10);
+  const amount = parseFloat($('#finInvAmount').value || '0');
+  if (!source_id || amount <= 0) { toast('Выбери участника и сумму', 'error'); return; }
+  const body = {
+    source_id, amount,
+    invested_at: $('#finInvDate').value,
+    note: $('#finInvNote').value.trim(),
+  };
+  const r = await fetch('/admin-api/finance/investments', {
+    method: 'POST', credentials:'include',
+    headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)
+  });
+  if (r.ok) { toast('Вложение добавлено', 'success'); closeModal('finInvestmentModal'); renderFinancePage(); }
+  else { const e = await r.json().catch(()=>({})); toast('Ошибка: ' + (e.error || r.status), 'error'); }
+}
+
+// ---- Модалка источников ----
+
+function openSourcesModal() {
+  renderSourcesList();
+  $('#finSrcNewName').value = '';
+  $('#finSrcNewCode').value = '';
+  $('#finSrcNewTgId').value = '';
+  openModal('finSourcesModal');
+}
+
+function renderSourcesList() {
+  const host = $('#finSourcesList');
+  const list = state.finSources || [];
+  host.innerHTML = list.map(s => `
+    <div class="adm-item ${s.is_active ? '' : 'adm-item-off'}">
+      <div class="adm-item-main">
+        <div class="adm-item-name">${esc(s.name)}</div>
+        <div class="adm-item-sub">
+          <span class="mono">${esc(s.code)}</span> · 
+          ${s.kind === 'person' ? 'участник' : '🏦 пул сервиса'}
+          ${s.tg_id ? '· <span class="mono">' + s.tg_id + '</span>' : ''}
+        </div>
+      </div>
+      <div class="adm-item-acts">
+        ${s.kind === 'person' ? `<button class="btn btn-ghost btn-sm" data-sid="${s.id}" data-act="toggle">${s.is_active ? '🚫' : '✓'}</button>` : ''}
+      </div>
+    </div>
+  `).join('');
+  $$('#finSourcesList [data-act="toggle"]').forEach(b => b.addEventListener('click', async () => {
+    const s = state.finSources.find(x => x.id == b.dataset.sid);
+    const r = await fetch(`/admin-api/finance/sources/${b.dataset.sid}`, {
+      method:'PUT', credentials:'include',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify({ is_active: !s.is_active })
+    });
+    if (r.ok) {
+      await loadFinanceSources();
+      renderSourcesList();
+      toast('Обновлено', 'success');
+    } else toast('Ошибка', 'error');
+  }));
+}
+
+async function addFinSource() {
+  const name = $('#finSrcNewName').value.trim();
+  const code = $('#finSrcNewCode').value.trim().toLowerCase();
+  const tgId = parseInt($('#finSrcNewTgId').value || '0', 10) || null;
+  if (!name || !code) { toast('Заполни имя и код', 'error'); return; }
+  const r = await fetch('/admin-api/finance/sources', {
+    method:'POST', credentials:'include',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ name, code, kind: 'person', tg_id: tgId })
+  });
+  if (r.ok) {
+    await loadFinanceSources();
+    renderSourcesList();
+    $('#finSrcNewName').value = '';
+    $('#finSrcNewCode').value = '';
+    $('#finSrcNewTgId').value = '';
+    toast('Источник добавлен', 'success');
+  } else { const e = await r.json().catch(()=>({})); toast('Ошибка: ' + (e.error || r.status), 'error'); }
+}
+
+// hook: кнопки save в новых модалках
+(function() {
+  document.addEventListener('click', (e) => {
+    const id = e.target?.id;
+    if (id === 'finSrcAddBtn') addFinSource();
+  });
+})();
+
+// рендер таблицы расходов с колонкой Источники
+function renderFinExpensesTable(catFilter) {
+  const tbody = $('#finExpensesTbody');
+  if (!tbody) return;
+  const canEdit = hasPermission('edit_finance');
+  let list = (state.finance.expenses || []).slice();
+  if (catFilter && catFilter !== 'all') list = list.filter(e => e.category === catFilter);
+  list.sort((a,b) => (b.expense_date || '').localeCompare(a.expense_date || ''));
+  if (!list.length) {
+    tbody.innerHTML = `<tr><td colspan="${canEdit ? 6 : 5}"><div class="empty"><div class="title">Нет расходов</div></div></td></tr>`;
+    return;
+  }
+  tbody.innerHTML = list.map(e => {
+    const cat = EXPENSE_CATEGORIES[e.category] || { label: e.category };
+    const funding = e.funding || [];
+    const fundStr = funding.length
+      ? funding.map(f => `<span class="tag tag-blue" style="margin-right:3px">${esc(f.source_name)}: ${money(f.amount)}</span>`).join('')
+      : '<span class="muted" style="font-size:11px">не размечено</span>';
+    return `<tr>
+      <td><span class="mono">${esc(e.expense_date)}</span></td>
+      <td>${cat.label}</td>
+      <td>${esc(e.description || '')}</td>
+      <td>${fundStr}</td>
+      <td class="text-r"><span class="num" style="color:var(--red);font-weight:600">${money(e.amount)}</span></td>
+      ${canEdit ? `<td class="text-r">
+        <button class="btn btn-ghost btn-sm" data-act="ed" data-id="${e.id}">✎</button>
+        <button class="btn btn-ghost btn-sm" data-act="del" data-id="${e.id}">🗑</button>
+      </td>` : ''}
+    </tr>`;
+  }).join('');
+  $$('#finExpensesTbody [data-act="ed"]').forEach(b => b.addEventListener('click', () =>
+    openExpenseModal(state.finance.expenses.find(x => x.id == b.dataset.id))));
+  $$('#finExpensesTbody [data-act="del"]').forEach(b => b.addEventListener('click', () =>
+    confirmDeleteExpense(Number(b.dataset.id))));
+}
+
+
+/* hook: enable/disable селектов grantModal */
+(function() {
+  document.addEventListener('change', (e) => {
+    if (e.target?.id === 'grantDevicesEnable') {
+      const sel = document.getElementById('grantDevices');
+      if (sel) sel.disabled = !e.target.checked;
+    }
+    if (e.target?.id === 'grantDaysEnable') {
+      const sel = document.getElementById('grantDays');
+      if (sel) sel.disabled = !e.target.checked;
+    }
+  });
+})();
 

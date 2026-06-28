@@ -10,6 +10,7 @@ from config import PANEL_URL, PANEL_USER, PANEL_PASS, INBOUND_ID, SERVER_IP, SUB
 from supabase import create_client
 from config import SUPABASE_URL, SUPABASE_KEY
 import urllib3
+import threading
 urllib3.disable_warnings()
 
 app = Flask(__name__)
@@ -135,8 +136,125 @@ def xui_session(server=None):
         raise Exception(f"Login failed on {server.get('country_name', 'server')}: {e}")
 
 
+def _v3_session(server):
+    """Bearer-сессия для 3X-UI 3.x. Возвращает (session, url, inbound_id)."""
+    session = requests.Session()
+    session.verify = False
+    token = (server.get("api_token") or "").strip()
+    if not token:
+        return None, None, None
+    session.headers.update({
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    })
+    url = server["panel_url"].rstrip("/")
+    iid = int(server.get("inbound_id") or 1)
+    return session, url, iid
+
+
+def xui_v3_list_uuids(server):
+    """Возвращает set UUID клиентов на сервере v3. None если не удалось."""
+    session, url, iid = _v3_session(server)
+    if not session:
+        return None
+    try:
+        r = session.get(f"{url}/panel/api/inbounds/get/{iid}", timeout=15)
+        if r.status_code != 200:
+            return None
+        obj = r.json().get("obj", {})
+        st = obj.get("settings")
+        st = json.loads(st) if isinstance(st, str) else (st or {})
+        return set(c.get("id") for c in st.get("clients", []) if c.get("id"))
+    except Exception:
+        return None
+
+
+def xui_v3_add_client(server, client_uuid, uid, devices, expire_ms, skip_check=False):
+    """3.x: POST /panel/api/clients/add. Идемпотентно: проверяет дубликат."""
+    session, url, iid = _v3_session(server)
+    if not session:
+        return False, "no api_token"
+    if not skip_check:
+        existing = xui_v3_list_uuids(server)
+        if existing is not None and client_uuid in existing:
+            return True, "already exists"
+    payload = {
+        "inboundIds": [iid],
+        "client": {
+            "id": client_uuid,
+            "email": f"user_{uid}",
+            "limitIp": devices,
+            "totalGB": 0,
+            "expiryTime": expire_ms,
+            "enable": True,
+            "flow": "xtls-rprx-vision",
+        }
+    }
+    try:
+        r = session.post(f"{url}/panel/api/clients/add", json=payload, timeout=15)
+        try:
+            jr = r.json()
+        except Exception:
+            return False, f"non-json {r.status_code}: {r.text[:100]}"
+        if jr.get("success"):
+            return True, "ok"
+        msg = (jr.get("msg") or "").lower()
+        if "already" in msg or "exists" in msg or "duplicate" in msg:
+            return True, "already exists (by msg)"
+        return False, jr.get("msg", f"http {r.status_code}")
+    except Exception as e:
+        return False, str(e)[:150]
+
+
+def xui_v3_del_client(server, client_uuid):
+    """3.x: удалить клиента — пробует несколько вариантов API."""
+    session, url, iid = _v3_session(server)
+    if not session:
+        return False, "no api_token"
+    payload = {"inboundIds": [iid]}
+    for method, path in [
+        ("DELETE", f"/panel/api/clients/{client_uuid}"),
+        ("POST", f"/panel/api/clients/delete/{client_uuid}"),
+        ("POST", f"/panel/api/inbounds/{iid}/delClient/{client_uuid}"),
+    ]:
+        try:
+            r = session.request(method, f"{url}{path}", json=payload, timeout=15)
+            try:
+                jr = r.json()
+                if jr.get("success"):
+                    return True, "ok"
+            except Exception:
+                pass
+        except Exception:
+            continue
+    return False, "no working del endpoint"
+
+
+def xui_v3_update_client(server, client_uuid, uid, devices, expire_ms):
+    """3.x: обновить клиента — del → add."""
+    existing = xui_v3_list_uuids(server)
+    if existing is None:
+        return xui_v3_add_client(server, client_uuid, uid, devices, expire_ms)
+    if client_uuid in existing:
+        del_ok, del_msg = xui_v3_del_client(server, client_uuid)
+        if not del_ok:
+            print(f"[{server.get('country_name','?')}] v3 del failed ({del_msg}), trying add anyway")
+        return xui_v3_add_client(server, client_uuid, uid, devices, expire_ms, skip_check=True)
+    return xui_v3_add_client(server, client_uuid, uid, devices, expire_ms, skip_check=True)
+
+
 def xui_add_client_on_server(server, client_uuid, uid, devices, expire_ms):
     """Создаёт клиента на одном сервере. True если успешно."""
+    # v3 (Bearer-токен)
+    if (server.get("api_token") or "").strip():
+        ok, msg = xui_v3_add_client(server, client_uuid, uid, devices, expire_ms)
+        if ok:
+            print(f"[{server.get('country_name')}] addClient v3 {client_uuid[:8]} OK")
+        else:
+            print(f"[{server.get('country_name')}] addClient v3 {client_uuid[:8]} FAIL: {msg}")
+        return ok
+    # v2 (cookie-сессия)
     try:
         session, server = xui_session(server)
         ts = int(datetime.utcnow().timestamp())
@@ -166,6 +284,15 @@ def xui_add_client_on_server(server, client_uuid, uid, devices, expire_ms):
 
 def xui_update_client_on_server(server, client_uuid, uid, devices, expire_ms):
     """Обновляет клиента на одном сервере. Если его нет — добавляет."""
+    # v3 (Bearer-токен)
+    if (server.get("api_token") or "").strip():
+        ok, msg = xui_v3_update_client(server, client_uuid, uid, devices, expire_ms)
+        if ok:
+            print(f"[{server.get('country_name')}] updateClient v3 {client_uuid[:8]} OK")
+        else:
+            print(f"[{server.get('country_name')}] updateClient v3 {client_uuid[:8]} FAIL: {msg}")
+        return ok
+    # v2 (cookie-сессия)
     try:
         session, server = xui_session(server)
         ts = int(datetime.utcnow().timestamp())
@@ -187,12 +314,39 @@ def xui_update_client_on_server(server, client_uuid, uid, devices, expire_ms):
         if result.get("success"):
             print(f"[{server.get('country_name')}] updateClient {client_uuid[:8]} OK")
             return True
-        # Клиента нет на этом сервере — добавляем
         print(f"[{server.get('country_name')}] updateClient failed ({result.get('msg', '')}) — trying addClient")
         return xui_add_client_on_server(server, client_uuid, uid, devices, expire_ms)
     except Exception as e:
         print(f"[{server.get('country_name', '?')}] update_client error: {e}")
     return False
+
+
+def xui_disable_client_on_server(server, client_uuid, enable=False):
+    """Включает или выключает клиента на сервере (enable: True/False)."""
+    try:
+        session, srv = xui_session(server)
+        url = srv["panel_url"].rstrip("/")
+        r = session.get(f"{url}/xui/API/inbounds/list", timeout=10)
+        data = r.json()
+        for inbound in data.get("obj", []):
+            if int(inbound.get("id", 0)) != int(srv["inbound_id"]):
+                continue
+            settings_raw = inbound.get("settings", "{}")
+            settings = settings_raw if isinstance(settings_raw, dict) else json.loads(settings_raw)
+            for c in settings.get("clients", []):
+                if c.get("id") == client_uuid:
+                    c["enable"] = enable
+                    payload = {
+                        "id": int(srv["inbound_id"]),
+                        "settings": json.dumps({"clients": [c]}),
+                    }
+                    r2 = session.post(f"{url}/panel/api/inbounds/updateClient/{client_uuid}", json=payload, timeout=15)
+                    result = r2.json()
+                    return result.get("success", False)
+        return False
+    except Exception as e:
+        print(f"[{server.get('country_name', '?')}] disable_client error: {e}")
+        return False
 
 
 def get_client_expire(client_uuid):
@@ -210,7 +364,8 @@ def get_client_expire(client_uuid):
             for inbound in data.get("obj", []):
                 if int(inbound.get("id", 0)) != int(server["inbound_id"]):
                     continue
-                settings = json.loads(inbound["settings"])
+                settings_raw = inbound.get("settings", "{}")
+                settings = settings_raw if isinstance(settings_raw, dict) else json.loads(settings_raw)
                 for client in settings.get("clients", []):
                     if client.get("id") == client_uuid:
                         return client.get("expiryTime", 0) // 1000
@@ -1056,7 +1211,8 @@ def server_clients(server_id):
         for inbound in data.get("obj", []):
             if int(inbound.get("id", 0)) != int(server["inbound_id"]):
                 continue
-            settings = json.loads(inbound.get("settings", "{}"))
+            settings_raw = inbound.get("settings", "{}")
+            settings = settings_raw if isinstance(settings_raw, dict) else json.loads(settings_raw)
             for c in settings.get("clients", []):
                 clients.append({
                     "uuid": c.get("id"),
@@ -1126,16 +1282,19 @@ def grant():
         resp.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
         return resp
     try:
-        data = request.json
+        data = request.get_json() or {}
         uid = int(data['user_id'])
-        devices = data['devices']
-        days = data['days']
+        # Текущее кол-во устройств (если set_devices не передан — оставляем как есть)
+        cur_r = sb.table("subscriptions").select("devices").eq("user_id", uid).eq("status", "active").limit(1).execute()
+        cur_devices = cur_r.data[0].get("devices", 1) if cur_r.data else 1
+        devices = int(data.get("set_devices") or cur_devices)
+        days = int(data.get("extend_days") or 0)
         result = issue_subscription(uid, devices, days)
         if result.get("success"):
+            result["devices"] = devices
             resp = jsonify(result)
         else:
             resp = jsonify({"success": False, "error": result.get("error", "unknown")})
-
         resp.headers['Access-Control-Allow-Origin'] = '*'
         return resp
     except Exception as e:
@@ -1143,6 +1302,918 @@ def grant():
         resp.headers['Access-Control-Allow-Origin'] = '*'
         return resp
 
+
+
+@app.route('/admin-api/revoke/<int:sub_id>', methods=['POST', 'OPTIONS'])
+def revoke_subscription(sub_id):
+    """Отозвать подписку: деактивировать клиента на всех 3X-UI серверах + обновить БД."""
+    if request.method == 'OPTIONS':
+        return make_response('', 204)
+    try:
+        sub_r = sb.table("subscriptions").select("*").eq("id", sub_id).limit(1).execute()
+        if not sub_r.data:
+            return jsonify({"success": False, "error": "subscription not found"}), 404
+        sub = sub_r.data[0]
+        client_uuid = sub.get("sub_url", "").split("/sub/")[-1] if "/sub/" in sub.get("sub_url", "") else None
+        errors = []
+        if client_uuid:
+            servers = get_active_servers()
+            for server in servers:
+                try:
+                    xui_disable_client_on_server(server, client_uuid, enable=False)
+                except Exception as e:
+                    errors.append(f"{server.get('code')}: {e}")
+        sb.table("subscriptions").update({"status": "inactive"}).eq("id", sub_id).execute()
+        return jsonify({"success": True, "sub_id": sub_id, "client_uuid": client_uuid, "server_errors": errors})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/admin-api/notify_user', methods=['POST', 'OPTIONS'])
+def admin_notify_user_endpoint():
+    """Отправить сообщение пользователю от имени бота."""
+    if request.method == 'OPTIONS':
+        return make_response('', 204)
+    try:
+        data = request.get_json() or {}
+        uid = int(data.get("user_id") or 0)
+        text = (data.get("text") or "").strip()
+        if not uid or not text:
+            return jsonify({"success": False, "error": "user_id and text required"}), 400
+        ok = notify_user(uid, text)
+        return jsonify({"success": ok})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/admin-api/broadcast', methods=['POST', 'OPTIONS'])
+def admin_broadcast():
+    """Рассылка сообщений пользователям по аудитории."""
+    if request.method == 'OPTIONS':
+        return make_response('', 204)
+    try:
+        data = request.get_json() or {}
+        audience = data.get("audience", "all")
+        text = (data.get("text") or "").strip()
+        if not text:
+            return jsonify({"success": False, "error": "text required"}), 400
+
+        users_r = sb.table("users").select("user_id").execute()
+        all_ids = [u["user_id"] for u in (users_r.data or [])]
+
+        if audience == "active":
+            subs_r = sb.table("subscriptions").select("user_id").eq("status", "active").execute()
+            active_set = {s["user_id"] for s in (subs_r.data or [])}
+            target_ids = [u for u in all_ids if u in active_set]
+        elif audience == "inactive":
+            subs_r = sb.table("subscriptions").select("user_id").eq("status", "active").execute()
+            active_set = {s["user_id"] for s in (subs_r.data or [])}
+            target_ids = [u for u in all_ids if u not in active_set]
+        elif audience == "custom":
+            target_ids = [int(x) for x in (data.get("user_ids") or []) if x]
+        else:
+            target_ids = all_ids
+
+        sent = 0
+        failed = 0
+        for uid in target_ids:
+            if notify_user(uid, text):
+                sent += 1
+            else:
+                failed += 1
+
+        try:
+            sb.table("broadcasts").insert({
+                "text": text,
+                "audience": audience,
+                "sent_count": sent,
+                "failed_count": failed,
+                "sent_by": getattr(request, 'admin_tg_id', None),
+                "created_at": datetime.utcnow().isoformat(),
+            }).execute()
+        except Exception:
+            pass
+
+        return jsonify({"success": True, "sent": sent, "failed": failed, "total": len(target_ids)})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+def _build_audit_report(uid):
+    """Полная диагностика пользователя. Возвращает словарь report."""
+    import requests as _req
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    now = datetime.utcnow()
+
+    user_r = sb.table("users").select("*").eq("user_id", uid).limit(1).execute()
+    if not user_r.data:
+        raise ValueError("user not found")
+    user = user_r.data[0]
+
+    # Все подписки (история)
+    all_subs_r = sb.table("subscriptions").select("*").eq("user_id", uid).order("created_at", desc=True).execute()
+    all_subs = all_subs_r.data or []
+    active_sub = next((s for s in all_subs if s.get("status") == "active"), None)
+
+    # Устройства
+    devs_r = sb.table("user_devices").select("*").eq("user_id", uid).order("last_seen", desc=True).execute()
+    devices = devs_r.data or []
+
+    # Платежи
+    pays_r = sb.table("payments").select("*").eq("user_id", uid).order("created_at", desc=True).limit(20).execute()
+    payments = pays_r.data or []
+
+    # Рефералы
+    refs_r = sb.table("referrals").select("referred_id").eq("referrer_id", uid).execute()
+    referred_count = len(refs_r.data or [])
+
+    ref_r = sb.table("referrals").select("referrer_id").eq("referred_id", uid).limit(1).execute()
+    referrer = None
+    if ref_r.data:
+        ref_uid = ref_r.data[0]["referrer_id"]
+        ref_user_r = sb.table("users").select("user_id,first_name,last_name,username").eq("user_id", ref_uid).limit(1).execute()
+        if ref_user_r.data:
+            referrer = ref_user_r.data[0]
+
+    # UUID клиента
+    client_uuid = None
+    if active_sub:
+        sub_url_str = active_sub.get("sub_url", "")
+        client_uuid = sub_url_str.split("/sub/")[-1] if "/sub/" in sub_url_str else None
+
+    def _check_server(server):
+        code = server.get("code", "?")
+        name = server.get("country_name", code)
+        check = {
+            "server_id": server.get("id"),
+            "server_name": name,
+            "code": code,
+            "country_flag": server.get("country_flag"),
+            "found": False, "enabled": None,
+            "expiry": None, "expiry_ms": 0, "expiry_human": None,
+            "response_ms": 0, "error": None,
+        }
+        if not client_uuid:
+            check["error"] = "нет client_uuid"
+            return check
+        try:
+            t0 = datetime.utcnow()
+            session, _ = xui_session(server)
+            url = server["panel_url"].rstrip("/")
+            r = session.get(f"{url}/xui/API/inbounds/list", timeout=10)
+            check["response_ms"] = int((datetime.utcnow() - t0).total_seconds() * 1000)
+            for inb in r.json().get("obj", []):
+                if int(inb.get("id", 0)) != int(server["inbound_id"]):
+                    continue
+                settings_raw = inb.get("settings", "{}")
+                settings = settings_raw if isinstance(settings_raw, dict) else json.loads(settings_raw)
+                for c in settings.get("clients", []):
+                    if c.get("id") == client_uuid:
+                        check["found"] = True
+                        check["enabled"] = c.get("enable", True)
+                        exp_ms = c.get("expiryTime", 0)
+                        check["expiry_ms"] = exp_ms or 0
+                        if exp_ms:
+                            exp_dt = datetime.fromtimestamp(exp_ms / 1000)
+                            check["expiry"] = exp_dt.isoformat()
+                            check["expiry_human"] = "до " + exp_dt.strftime("%d.%m.%Y")
+                        break
+                if check["found"]:
+                    break
+        except Exception as e:
+            check["error"] = str(e)[:100]
+        return check
+
+    # Параллельная проверка серверов
+    active_servers = get_active_servers()
+    server_checks = []
+    if active_servers:
+        with ThreadPoolExecutor(max_workers=min(len(active_servers), 6)) as pool:
+            futures = {pool.submit(_check_server, srv): srv for srv in active_servers}
+            for fut in as_completed(futures):
+                server_checks.append(fut.result())
+        server_checks.sort(key=lambda c: c.get("server_id") or 0)
+
+    # Проверка sub_url
+    sub_url_check = None
+    if active_sub and active_sub.get("sub_url"):
+        sub_url = active_sub["sub_url"]
+        try:
+            t0 = datetime.utcnow()
+            r = _req.get(sub_url, timeout=10, allow_redirects=True)
+            ms = int((datetime.utcnow() - t0).total_seconds() * 1000)
+            valid_json = (r.status_code == 200)
+            note = "Лимит устройств достигнут" if r.status_code == 403 else None
+            sub_url_check = {"url": sub_url, "status_code": r.status_code, "response_ms": ms, "valid_json": valid_json, "note": note}
+        except Exception as e:
+            sub_url_check = {"url": sub_url, "status_code": None, "response_ms": None, "valid_json": False, "error": str(e)[:80]}
+
+    # Оценка (score) и проблемы
+    issues = []
+    if not active_sub:
+        issues.append("Нет активной подписки")
+    else:
+        found_anywhere = any(c.get("found") for c in server_checks)
+        if not found_anywhere and server_checks:
+            issues.append("Клиент не найден ни на одном сервере")
+        else:
+            disabled = [c["code"] for c in server_checks if c.get("found") and c.get("enabled") is False]
+            if disabled:
+                issues.append(f"Клиент отключён на серверах: {', '.join(disabled)}")
+            errors = [c["code"] for c in server_checks if c.get("error") and not c.get("found")]
+            if errors:
+                issues.append(f"Ошибка проверки серверов: {', '.join(errors)}")
+        if sub_url_check and sub_url_check.get("status_code") not in (200, None) and not sub_url_check.get("valid_json"):
+            issues.append(f"sub_url вернул HTTP {sub_url_check.get('status_code', '?')}")
+        elif sub_url_check and sub_url_check.get("error"):
+            issues.append(f"sub_url недоступен: {sub_url_check['error'][:60]}")
+        exp_raw = active_sub.get("expires_at")
+        if exp_raw:
+            try:
+                exp = datetime.fromisoformat(exp_raw.replace("Z", "+00:00")).replace(tzinfo=None)
+                days_left = (exp - now).days
+                if days_left < 0:
+                    issues.append("Подписка просрочена (expires_at в прошлом)")
+                elif days_left <= 3:
+                    issues.append(f"Подписка истекает через {days_left} дн.")
+            except Exception:
+                pass
+
+    score = "ok" if not issues else ("warn" if len(issues) == 1 else "error")
+
+    return {
+        "uid": uid,
+        "user": user,
+        "active_sub": active_sub,
+        "server_checks": server_checks,
+        "sub_url_check": sub_url_check,
+        "devices": devices,
+        "payments": payments,
+        "subscriptions": all_subs,
+        "referred_count": referred_count,
+        "referrer": referrer,
+        "score": score,
+        "issues": issues,
+        "ts": now.isoformat() + "Z",
+    }
+
+
+@app.route('/admin-api/user_audit/<int:uid>', methods=['GET', 'OPTIONS'])
+def user_audit(uid):
+    """Полная диагностика пользователя."""
+    if request.method == 'OPTIONS':
+        return make_response('', 204)
+    try:
+        report = _build_audit_report(uid)
+        return jsonify({"success": True, "report": report})
+    except ValueError as e:
+        return jsonify({"success": False, "error": str(e)}), 404
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/admin-api/fix_user/<int:uid>', methods=['POST', 'OPTIONS'])
+def fix_user(uid):
+    """Восстановить клиента на всех серверах (принудительная синхронизация)."""
+    if request.method == 'OPTIONS':
+        return make_response('', 204)
+    try:
+        sub_r = sb.table("subscriptions").select("*").eq("user_id", uid).eq("status", "active").limit(1).execute()
+        if not sub_r.data:
+            return jsonify({"success": False, "error": "no active subscription"}), 404
+        sub = sub_r.data[0]
+        client_uuid = sub.get("sub_url", "").split("/sub/")[-1] if "/sub/" in sub.get("sub_url", "") else None
+        if not client_uuid:
+            return jsonify({"success": False, "error": "no client_uuid"}), 400
+        devices = int(sub.get("devices") or 1)
+        from datetime import datetime, timedelta
+        exp_raw = sub.get("expires_at")
+        exp_dt = datetime.fromisoformat(exp_raw.replace("Z", "+00:00")).replace(tzinfo=None) if exp_raw else (datetime.utcnow() + timedelta(days=30))
+        expire_ms = int(exp_dt.timestamp() * 1000)
+        results = []
+        for server in get_active_servers():
+            ok = xui_update_client_on_server(server, client_uuid, uid, devices, expire_ms)
+            results.append({"code": server.get("code"), "ok": ok})
+        return jsonify({"success": True, "results": results})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/admin-api/user_fix/<int:uid>/<int:srv_id>', methods=['POST', 'OPTIONS'])
+def fix_user_on_server(uid, srv_id):
+    """Восстановить клиента на конкретном сервере."""
+    if request.method == 'OPTIONS':
+        return make_response('', 204)
+    try:
+        sub_r = sb.table("subscriptions").select("*").eq("user_id", uid).eq("status", "active").limit(1).execute()
+        if not sub_r.data:
+            return jsonify({"success": False, "error": "no active subscription"}), 404
+        sub = sub_r.data[0]
+        client_uuid = sub.get("sub_url", "").split("/sub/")[-1] if "/sub/" in sub.get("sub_url", "") else None
+        if not client_uuid:
+            return jsonify({"success": False, "error": "no client_uuid"}), 400
+        devices = int(sub.get("devices") or 1)
+        exp_raw = sub.get("expires_at")
+        exp_dt = datetime.fromisoformat(exp_raw.replace("Z", "+00:00")).replace(tzinfo=None) if exp_raw else (datetime.utcnow() + timedelta(days=30))
+        expire_ms = int(exp_dt.timestamp() * 1000)
+        srv_r = sb.table("servers").select("*").eq("id", srv_id).limit(1).execute()
+        if not srv_r.data:
+            return jsonify({"success": False, "error": "server not found"}), 404
+        server = srv_r.data[0]
+        ok = xui_update_client_on_server(server, client_uuid, uid, devices, expire_ms)
+        return jsonify({"success": ok, "message": "Клиент синхронизирован" if ok else "Ошибка синхронизации"})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/admin-api/user_devices/<int:uid>/<int:dev_id>', methods=['DELETE', 'OPTIONS'])
+def delete_user_device(uid, dev_id):
+    """Удалить (деактивировать) устройство пользователя."""
+    if request.method == 'OPTIONS':
+        return make_response('', 204)
+    try:
+        sb.table("user_devices").update({"is_active": False}).eq("id", dev_id).eq("user_id", uid).execute()
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# ==================== MY-PERMISSIONS ====================
+
+SUPERADMIN_ID = 784871620
+
+@app.route('/admin-api/my-permissions', methods=['GET', 'OPTIONS'])
+def my_permissions():
+    """Права текущего вошедшего администратора."""
+    if request.method == 'OPTIONS':
+        return make_response('', 204)
+    tg_id = request.admin_tg_id
+    is_superadmin = (int(tg_id) == SUPERADMIN_ID)
+    if is_superadmin:
+        permissions = [
+            "view_users", "edit_users", "view_finance", "edit_finance",
+            "view_tickets", "manage_tickets", "view_servers", "manage_servers",
+            "send_broadcast", "view_analytics", "manage_roles",
+        ]
+    else:
+        try:
+            adm_r = sb.table("support_admins").select("*").eq("user_id", tg_id).eq("is_active", True).limit(1).execute()
+            adm = adm_r.data[0] if adm_r.data else {}
+            role_perms = []
+            if adm.get("role_id"):
+                role_r = sb.table("admin_roles").select("permissions").eq("id", adm["role_id"]).limit(1).execute()
+                if role_r.data:
+                    role_perms = role_r.data[0].get("permissions") or []
+            added = adm.get("added_permissions") or []
+            removed = adm.get("removed_permissions") or []
+            permissions = list((set(role_perms) | set(added)) - set(removed))
+        except Exception:
+            permissions = ["view_tickets", "manage_tickets"]
+    return jsonify({
+        "user_id": tg_id,
+        "is_superadmin": is_superadmin,
+        "permissions": permissions,
+        "sections": {},
+        "all_permissions": [],
+    })
+
+
+# ==================== TICKETS ====================
+
+def _notify_user_support(user_id: int, text: str) -> bool:
+    """Отправляет сообщение пользователю через support-бот."""
+    try:
+        import requests as _req
+        from config import SUPPORT_BOT_TOKEN
+        r = _req.post(
+            f"https://api.telegram.org/bot{SUPPORT_BOT_TOKEN}/sendMessage",
+            json={"chat_id": user_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True},
+            timeout=10,
+        )
+        return r.status_code == 200
+    except Exception as e:
+        app.logger.error(f"notify_support user={user_id}: {e}")
+        return False
+
+
+@app.route('/admin-api/tickets/<int:ticket_id>', methods=['GET', 'OPTIONS'])
+def get_ticket_api(ticket_id):
+    """Тикет + все сообщения."""
+    if request.method == 'OPTIONS':
+        return make_response('', 204)
+    try:
+        t_r = sb.table("support_tickets").select("*").eq("id", ticket_id).limit(1).execute()
+        if not t_r.data:
+            return jsonify({"success": False, "error": "ticket not found"}), 404
+        ticket = t_r.data[0]
+        # Данные пользователя
+        u_r = sb.table("users").select("user_id,first_name,last_name,username").eq("user_id", ticket["user_id"]).limit(1).execute()
+        ticket["user"] = u_r.data[0] if u_r.data else {}
+        # Данные назначенного админа
+        if ticket.get("assigned_admin_id"):
+            a_r = sb.table("support_admins").select("user_id,full_name,username").eq("user_id", ticket["assigned_admin_id"]).limit(1).execute()
+            ticket["assigned_admin"] = a_r.data[0] if a_r.data else {"user_id": ticket["assigned_admin_id"]}
+        msgs_r = sb.table("support_messages").select("*").eq("ticket_id", ticket_id).order("created_at").execute()
+        return jsonify({"success": True, "ticket": ticket, "messages": msgs_r.data or []})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/admin-api/tickets/<int:ticket_id>/messages', methods=['GET', 'OPTIONS'])
+def ticket_messages(ticket_id):
+    """Новые сообщения в тикете после указанного id."""
+    if request.method == 'OPTIONS':
+        return make_response('', 204)
+    try:
+        after = int(request.args.get("after", 0))
+        q = sb.table("support_messages").select("*").eq("ticket_id", ticket_id).order("id")
+        if after:
+            q = q.gt("id", after)
+        r = q.execute()
+        return jsonify({"success": True, "messages": r.data or []})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/admin-api/tickets/<int:ticket_id>/take', methods=['POST', 'OPTIONS'])
+def take_ticket(ticket_id):
+    """Взять тикет в работу."""
+    if request.method == 'OPTIONS':
+        return make_response('', 204)
+    try:
+        admin_tg_id = request.admin_tg_id
+        sb.table("support_tickets").update({
+            "status": "in_progress",
+            "assigned_admin_id": admin_tg_id,
+        }).eq("id", ticket_id).execute()
+        sb.table("support_messages").insert({
+            "ticket_id": ticket_id, "sender_type": "system",
+            "message_text": f"Тикет взят в работу администратором (id:{admin_tg_id})",
+            "created_at": datetime.utcnow().isoformat(),
+        }).execute()
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/admin-api/tickets/<int:ticket_id>/close', methods=['POST', 'OPTIONS'])
+def close_ticket(ticket_id):
+    """Закрыть тикет."""
+    if request.method == 'OPTIONS':
+        return make_response('', 204)
+    try:
+        sb.table("support_tickets").update({
+            "status": "closed",
+            "closed_at": datetime.utcnow().isoformat(),
+        }).eq("id", ticket_id).execute()
+        sb.table("support_messages").insert({
+            "ticket_id": ticket_id, "sender_type": "system",
+            "message_text": "Тикет закрыт администратором.",
+            "created_at": datetime.utcnow().isoformat(),
+        }).execute()
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/admin-api/tickets/<int:ticket_id>/reopen', methods=['POST', 'OPTIONS'])
+def reopen_ticket(ticket_id):
+    """Переоткрыть тикет."""
+    if request.method == 'OPTIONS':
+        return make_response('', 204)
+    try:
+        sb.table("support_tickets").update({
+            "status": "open",
+            "closed_at": None,
+        }).eq("id", ticket_id).execute()
+        sb.table("support_messages").insert({
+            "ticket_id": ticket_id, "sender_type": "system",
+            "message_text": "Тикет переоткрыт администратором.",
+            "created_at": datetime.utcnow().isoformat(),
+        }).execute()
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/admin-api/tickets/<int:ticket_id>/reply', methods=['POST', 'OPTIONS'])
+def reply_ticket(ticket_id):
+    """Ответить на тикет от имени поддержки."""
+    if request.method == 'OPTIONS':
+        return make_response('', 204)
+    try:
+        data = request.get_json() or {}
+        text = (data.get("text") or "").strip()
+        if not text:
+            return jsonify({"success": False, "error": "text required"}), 400
+        t_r = sb.table("support_tickets").select("user_id,status").eq("id", ticket_id).limit(1).execute()
+        if not t_r.data:
+            return jsonify({"success": False, "error": "ticket not found"}), 404
+        ticket = t_r.data[0]
+        user_id = ticket["user_id"]
+        # Определяем имя/никнейм отправителя
+        admin_tg_id = request.admin_tg_id
+        a_r = sb.table("support_admins").select("full_name,username").eq("tg_id", admin_tg_id).limit(1).execute()
+        adm = a_r.data[0] if a_r.data else {}
+        sender_name = adm.get("full_name") or adm.get("username") or f"Поддержка (id:{admin_tg_id})"
+        sb.table("support_messages").insert({
+            "ticket_id": ticket_id,
+            "sender_type": "admin",
+            "sender_id": admin_tg_id,
+            "sender_name": sender_name,
+            "message_text": text,
+            "created_at": datetime.utcnow().isoformat(),
+        }).execute()
+        # Уведомить пользователя через support-бот
+        msg = f"💬 <b>Ответ поддержки</b> (тикет #{ticket_id}):\n\n{text}"
+        _notify_user_support(user_id, msg)
+        # Если тикет открыт — переводим в in_progress
+        if ticket.get("status") == "open":
+            sb.table("support_tickets").update({
+                "status": "in_progress",
+                "assigned_admin_id": admin_tg_id,
+            }).eq("id", ticket_id).execute()
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# ==================== WATCHLIST ====================
+
+@app.route('/admin-api/watchlist', methods=['GET', 'POST', 'OPTIONS'])
+def watchlist_api():
+    """Список VIP-пользователей для мониторинга."""
+    if request.method == 'OPTIONS':
+        return make_response('', 204)
+    try:
+        if request.method == 'GET':
+            r = sb.table("watchlist").select("*").order("created_at", desc=True).execute()
+            return jsonify({"watchlist": r.data or []})
+        data = request.get_json() or {}
+        uid = int(data.get("user_id") or 0)
+        if not uid:
+            return jsonify({"success": False, "error": "user_id required"}), 400
+        # Проверяем что юзер существует
+        u_r = sb.table("users").select("user_id").eq("user_id", uid).limit(1).execute()
+        if not u_r.data:
+            return jsonify({"success": False, "error": "user not found"}), 404
+        # Идемпотентно — не добавляем дважды
+        ex = sb.table("watchlist").select("id").eq("user_id", uid).limit(1).execute()
+        if not ex.data:
+            sb.table("watchlist").insert({
+                "user_id": uid,
+                "created_at": datetime.utcnow().isoformat(),
+            }).execute()
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/admin-api/watchlist/<int:uid>', methods=['DELETE', 'OPTIONS'])
+def watchlist_remove(uid):
+    """Удалить пользователя из watchlist."""
+    if request.method == 'OPTIONS':
+        return make_response('', 204)
+    try:
+        sb.table("watchlist").delete().eq("user_id", uid).execute()
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/admin-api/watchlist_batch_audit', methods=['GET', 'OPTIONS'])
+def watchlist_batch_audit():
+    """Запустить диагностику для всех пользователей из watchlist."""
+    if request.method == 'OPTIONS':
+        return make_response('', 204)
+    try:
+        wl_r = sb.table("watchlist").select("user_id").execute()
+        uids = [row["user_id"] for row in (wl_r.data or [])]
+        results = []
+        for uid in uids:
+            try:
+                report = _build_audit_report(uid)
+                results.append({
+                    "user_id": uid,
+                    "score": report["score"],
+                    "issues": report["issues"],
+                    "active_sub": report["active_sub"],
+                    "server_checks": report["server_checks"],
+                    "sub_url_check": report["sub_url_check"],
+                    "ts": report["ts"],
+                })
+            except Exception as e:
+                results.append({
+                    "user_id": uid, "score": "error",
+                    "issues": [str(e)], "active_sub": None,
+                    "server_checks": [], "sub_url_check": None,
+                    "ts": datetime.utcnow().isoformat() + "Z",
+                })
+        return jsonify({"success": True, "results": results, "ts": datetime.utcnow().isoformat() + "Z"})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# ==================== FINANCE ====================
+
+@app.route('/admin-api/finance/summary', methods=['GET', 'OPTIONS'])
+def finance_summary():
+    """Суммарные показатели: доходы, расходы, вложения."""
+    if request.method == 'OPTIONS':
+        return make_response('', 204)
+    try:
+        pays_r = sb.table("payments").select("amount").eq("status", "succeeded").execute()
+        total_income = sum(float(p.get("amount") or 0) for p in (pays_r.data or []))
+        exp_r = sb.table("finance_expenses").select("amount").execute()
+        total_expenses = sum(float(e.get("amount") or 0) for e in (exp_r.data or []))
+        inv_r = sb.table("finance_investments").select("amount").execute()
+        total_invested = sum(float(i.get("amount") or 0) for i in (inv_r.data or []))
+        return jsonify({"summary": {
+            "total_income": round(total_income, 2),
+            "total_expenses": round(total_expenses, 2),
+            "total_invested": round(total_invested, 2),
+        }})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/admin-api/finance/expenses', methods=['GET', 'POST', 'OPTIONS'])
+def finance_expenses():
+    """Список расходов / добавить расход."""
+    if request.method == 'OPTIONS':
+        return make_response('', 204)
+    try:
+        if request.method == 'GET':
+            r = sb.table("finance_expenses").select("*").order("expense_date", desc=True).execute()
+            return jsonify(r.data or [])
+        data = request.get_json() or {}
+        r = sb.table("finance_expenses").insert({
+            "amount": float(data.get("amount") or 0),
+            "category": data.get("category", ""),
+            "description": data.get("description", ""),
+            "expense_date": data.get("expense_date") or datetime.utcnow().date().isoformat(),
+            "is_recurring": bool(data.get("is_recurring", False)),
+            "recurring_period": data.get("recurring_period") or None,
+            "created_at": datetime.utcnow().isoformat(),
+            "created_by": request.admin_tg_id,
+        }).execute()
+        return jsonify({"success": True, "id": (r.data or [{}])[0].get("id")})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/admin-api/finance/expenses/<int:exp_id>', methods=['PUT', 'DELETE', 'OPTIONS'])
+def finance_expense_item(exp_id):
+    if request.method == 'OPTIONS':
+        return make_response('', 204)
+    try:
+        if request.method == 'DELETE':
+            sb.table("finance_expenses").delete().eq("id", exp_id).execute()
+            return jsonify({"success": True})
+        data = request.get_json() or {}
+        upd = {k: data[k] for k in ("amount", "category", "description", "expense_date", "is_recurring", "recurring_period") if k in data}
+        sb.table("finance_expenses").update(upd).eq("id", exp_id).execute()
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/admin-api/finance/investments', methods=['GET', 'POST', 'OPTIONS'])
+def finance_investments():
+    """Список вложений / добавить вложение."""
+    if request.method == 'OPTIONS':
+        return make_response('', 204)
+    try:
+        if request.method == 'GET':
+            r = sb.table("finance_investments").select("*").order("invested_at", desc=True).execute()
+            return jsonify(r.data or [])
+        data = request.get_json() or {}
+        r = sb.table("finance_investments").insert({
+            "amount": float(data.get("amount") or 0),
+            "source_id": data.get("source_id"),
+            "note": data.get("note", ""),
+            "invested_at": data.get("invested_at") or datetime.utcnow().date().isoformat(),
+            "created_at": datetime.utcnow().isoformat(),
+            "created_by": request.admin_tg_id,
+        }).execute()
+        return jsonify({"success": True, "id": (r.data or [{}])[0].get("id")})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/admin-api/finance/investments/<int:inv_id>', methods=['DELETE', 'OPTIONS'])
+def finance_investment_item(inv_id):
+    if request.method == 'OPTIONS':
+        return make_response('', 204)
+    try:
+        sb.table("finance_investments").delete().eq("id", inv_id).execute()
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/admin-api/finance/planned', methods=['GET', 'POST', 'OPTIONS'])
+def finance_planned():
+    """Список плановых расходов / добавить."""
+    if request.method == 'OPTIONS':
+        return make_response('', 204)
+    try:
+        if request.method == 'GET':
+            r = sb.table("finance_planned").select("*").order("planned_date").execute()
+            return jsonify(r.data or [])
+        data = request.get_json() or {}
+        r = sb.table("finance_planned").insert({
+            "estimated_amount": float(data.get("estimated_amount") or 0) or None,
+            "category": data.get("category", ""),
+            "description": data.get("description", ""),
+            "planned_date": data.get("planned_date") or None,
+            "is_done": False,
+            "created_at": datetime.utcnow().isoformat(),
+            "created_by": request.admin_tg_id,
+        }).execute()
+        return jsonify({"success": True, "id": (r.data or [{}])[0].get("id")})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/admin-api/finance/planned/<int:plan_id>', methods=['PUT', 'DELETE', 'OPTIONS'])
+def finance_planned_item(plan_id):
+    if request.method == 'OPTIONS':
+        return make_response('', 204)
+    try:
+        if request.method == 'DELETE':
+            sb.table("finance_planned").delete().eq("id", plan_id).execute()
+            return jsonify({"success": True})
+        data = request.get_json() or {}
+        upd = {k: data[k] for k in ("estimated_amount", "category", "description", "planned_date", "is_done") if k in data}
+        sb.table("finance_planned").update(upd).eq("id", plan_id).execute()
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/admin-api/finance/sources', methods=['GET', 'OPTIONS'])
+def finance_sources():
+    """Список источников финансирования."""
+    if request.method == 'OPTIONS':
+        return make_response('', 204)
+    try:
+        r = sb.table("finance_sources").select("*").order("id").execute()
+        return jsonify(r.data or [])
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/admin-api/finance/breakdown', methods=['GET', 'OPTIONS'])
+def finance_breakdown():
+    """Финансовая раскладка по источникам."""
+    if request.method == 'OPTIONS':
+        return make_response('', 204)
+    try:
+        sources_r = sb.table("finance_sources").select("*").execute()
+        sources = sources_r.data or []
+        inv_r = sb.table("finance_investments").select("source_id,amount").execute()
+        exp_r = sb.table("finance_expenses").select("source_id,amount").execute()
+
+        from collections import defaultdict
+        inv_by_src = defaultdict(float)
+        for i in (inv_r.data or []):
+            if i.get("source_id"):
+                inv_by_src[i["source_id"]] += float(i.get("amount") or 0)
+        exp_by_src = defaultdict(float)
+        for e in (exp_r.data or []):
+            if e.get("source_id"):
+                exp_by_src[e["source_id"]] += float(e.get("amount") or 0)
+
+        rows = []
+        total_balance = 0.0
+        for src in sources:
+            sid = src["id"]
+            contributed = round(inv_by_src.get(sid, 0), 2)
+            spent = round(exp_by_src.get(sid, 0), 2)
+            balance = round(contributed - spent, 2)
+            total_balance += balance
+            rows.append({"source": src, "contributed": contributed, "spent": spent, "balance": balance})
+
+        return jsonify({"sources": rows, "total_balance": round(total_balance, 2)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ==================== ROLES & ADMIN USERS ====================
+
+@app.route('/admin-api/roles', methods=['GET', 'POST', 'OPTIONS'])
+def admin_roles_list():
+    if request.method == 'OPTIONS':
+        return make_response('', 204)
+    try:
+        if request.method == 'GET':
+            r = sb.table("admin_roles").select("*").order("id").execute()
+            return jsonify(r.data or [])
+        data = request.get_json() or {}
+        r = sb.table("admin_roles").insert({
+            "name": data.get("name", ""),
+            "description": data.get("description", ""),
+            "permissions": data.get("permissions", []),
+            "created_by": request.admin_tg_id,
+        }).execute()
+        return jsonify({"success": True, "id": (r.data or [{}])[0].get("id")})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/admin-api/roles/<int:role_id>', methods=['PUT', 'DELETE', 'OPTIONS'])
+def admin_role_item(role_id):
+    if request.method == 'OPTIONS':
+        return make_response('', 204)
+    try:
+        if request.method == 'DELETE':
+            sb.table("admin_roles").delete().eq("id", role_id).execute()
+            return jsonify({"success": True})
+        data = request.get_json() or {}
+        upd = {k: data[k] for k in ("name", "description", "permissions") if k in data}
+        sb.table("admin_roles").update(upd).eq("id", role_id).execute()
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/admin-api/admin-users', methods=['GET', 'POST', 'OPTIONS'])
+def admin_users_list():
+    if request.method == 'OPTIONS':
+        return make_response('', 204)
+    try:
+        if request.method == 'GET':
+            r = sb.table("support_admins").select("*").order("added_at").execute()
+            return jsonify(r.data or [])
+        data = request.get_json() or {}
+        uid = data.get("user_id")
+        if not uid:
+            return jsonify({"success": False, "error": "user_id required"}), 400
+        fields = {
+            "user_id": int(uid),
+            "full_name": data.get("full_name", ""),
+            "username": data.get("username", ""),
+            "is_active": bool(data.get("is_active", True)),
+            "role_id": data.get("role_id") or None,
+            "added_permissions": data.get("added_permissions", []),
+            "removed_permissions": data.get("removed_permissions", []),
+        }
+        existing_r = sb.table("support_admins").select("user_id").eq("user_id", int(uid)).limit(1).execute()
+        if existing_r.data:
+            sb.table("support_admins").update(fields).eq("user_id", int(uid)).execute()
+        else:
+            fields["added_at"] = datetime.utcnow().isoformat()
+            sb.table("support_admins").insert(fields).execute()
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/admin-api/admin-users/<int:uid>', methods=['DELETE', 'OPTIONS'])
+def admin_user_item(uid):
+    if request.method == 'OPTIONS':
+        return make_response('', 204)
+    try:
+        sb.table("support_admins").update({"is_active": False}).eq("user_id", uid).execute()
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/admin-api/export/csv', methods=['GET', 'OPTIONS'])
+def export_csv():
+    """Экспорт данных в CSV: ?type=payments|users|subscriptions"""
+    if request.method == 'OPTIONS':
+        return make_response('', 204)
+    import csv, io
+    t = request.args.get("type", "payments")
+    try:
+        if t == "payments":
+            r = sb.table("payments").select("*").order("created_at", desc=True).limit(5000).execute()
+            fields = ["id", "created_at", "user_id", "amount", "currency", "status", "devices", "months", "email", "provider_payment_id", "receipt_status", "campaign_code"]
+        elif t == "users":
+            r = sb.table("users").select("*").order("created_at", desc=True).limit(5000).execute()
+            fields = ["user_id", "username", "first_name", "last_name", "created_at", "bonus_days", "referrer_id", "campaign_code"]
+        elif t == "subscriptions":
+            r = sb.table("subscriptions").select("*").order("created_at", desc=True).limit(5000).execute()
+            fields = ["id", "user_id", "devices", "status", "started_at", "expires_at", "sub_url"]
+        else:
+            return jsonify({"success": False, "error": "unknown type"}), 400
+
+        output = io.StringIO()
+        writer = csv.DictWriter(output, fieldnames=fields, extrasaction='ignore')
+        writer.writeheader()
+        for row in (r.data or []):
+            writer.writerow({f: row.get(f, "") for f in fields})
+        csv_bytes = output.getvalue().encode("utf-8-sig")
+        return Response(
+            csv_bytes,
+            mimetype="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{t}_{datetime.utcnow().strftime("%Y%m%d")}.csv"'},
+        )
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @app.route('/yookassa/webhook', methods=['POST'])
@@ -1789,6 +2860,8 @@ _DB_PROXY_TABLES = {
     "campaign_clicks": "r",
     "user_devices": "rw",
     "server_installations": "r",
+    "broadcasts": "r",
+    "admin_roles": "r",
     # Не добавлены намеренно: admin_sessions, admin_login_attempts
     # (они никогда не должны быть доступны через generic API)
 }
@@ -1806,6 +2879,393 @@ def _db_proxy_check(table: str, mode: str):
     if mode == "w" and "w" not in allowed_modes:
         return False, (jsonify({"success": False, "error": "write_not_allowed"}), 403)
     return True, None
+
+
+# ==================== BROADCASTS ====================
+
+def _get_recipient_ids(audience, campaign_filter=None, target_user_id=None):
+    """Возвращает список user_id для указанной аудитории рассылки."""
+    if audience == "single":
+        return [target_user_id] if target_user_id else []
+
+    users_r = sb.table("users").select("user_id,campaign_code").execute()
+    all_users = users_r.data or []
+
+    if campaign_filter and campaign_filter != "all":
+        all_users = [u for u in all_users if u.get("campaign_code") == campaign_filter]
+
+    all_ids = [u["user_id"] for u in all_users]
+
+    if audience == "active":
+        subs_r = sb.table("subscriptions").select("user_id").eq("status", "active").execute()
+        active_set = {s["user_id"] for s in (subs_r.data or [])}
+        return [uid for uid in all_ids if uid in active_set]
+    elif audience == "inactive":
+        subs_r = sb.table("subscriptions").select("user_id").eq("status", "active").execute()
+        active_set = {s["user_id"] for s in (subs_r.data or [])}
+        return [uid for uid in all_ids if uid not in active_set]
+    elif audience == "expires_6h":
+        from datetime import timedelta
+        now = datetime.utcnow()
+        cutoff = (now + timedelta(hours=6)).isoformat()
+        subs_r = sb.table("subscriptions").select("user_id").eq("status", "active").lte("expires_at", cutoff).gte("expires_at", now.isoformat()).execute()
+        exp_set = {s["user_id"] for s in (subs_r.data or [])}
+        return [uid for uid in all_ids if uid in exp_set]
+    elif audience == "expired_unpaid_14d":
+        from datetime import timedelta
+        cutoff_from = (datetime.utcnow() - timedelta(days=14)).isoformat()
+        subs_r = sb.table("subscriptions").select("user_id").eq("status", "inactive").gte("expires_at", cutoff_from).execute()
+        exp_ids = {s["user_id"] for s in (subs_r.data or [])}
+        pay_r = sb.table("payments").select("user_id").eq("status", "succeeded").gte("paid_at", cutoff_from).execute()
+        paid_ids = {p["user_id"] for p in (pay_r.data or [])}
+        return [uid for uid in all_ids if uid in exp_ids and uid not in paid_ids]
+    elif audience == "utm_no_device":
+        dev_r = sb.table("user_devices").select("user_id").eq("is_active", True).execute()
+        dev_set = {d["user_id"] for d in (dev_r.data or [])}
+        camp_users = [u["user_id"] for u in all_users if u.get("campaign_code")]
+        return [uid for uid in camp_users if uid not in dev_set]
+    elif audience == "custom_list":
+        return all_ids  # caller передаёт свой список
+    else:  # all
+        return all_ids
+
+
+@app.route('/admin-api/broadcasts', methods=['GET', 'OPTIONS'])
+def list_broadcasts():
+    """История рассылок."""
+    if request.method == 'OPTIONS':
+        return make_response('', 204)
+    try:
+        r = sb.table("broadcasts").select("*").order("created_at", desc=True).limit(100).execute()
+        return jsonify({"broadcasts": r.data or []})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/admin-api/broadcast/preview', methods=['POST', 'OPTIONS'])
+def broadcast_preview():
+    """Предпросмотр: сколько пользователей получат рассылку."""
+    if request.method == 'OPTIONS':
+        return make_response('', 204)
+    try:
+        data = request.get_json() or {}
+        audience = data.get("audience", "all")
+        campaign_filter = data.get("campaign_filter") or "all"
+        target_user_id = data.get("target_user_id")
+        ids = _get_recipient_ids(audience, campaign_filter, target_user_id)
+        return jsonify({"success": True, "count": len(ids)})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/admin-api/broadcast/send', methods=['POST', 'OPTIONS'])
+def broadcast_send():
+    """Отправить рассылку с сохранением в историю."""
+    if request.method == 'OPTIONS':
+        return make_response('', 204)
+    try:
+        data = request.get_json() or {}
+        audience = data.get("audience", "all")
+        message_text = (data.get("message_text") or "").strip()
+        campaign_filter = data.get("campaign_filter") or "all"
+        target_user_id = data.get("target_user_id")
+        bonus_days = int(data.get("bonus_days") or 0)
+
+        if not message_text:
+            return jsonify({"success": False, "error": "message_text required"}), 400
+
+        ids = _get_recipient_ids(audience, campaign_filter, target_user_id)
+
+        sent = 0
+        blocked = 0
+        for uid in ids:
+            if notify_user(uid, message_text):
+                sent += 1
+                if bonus_days > 0:
+                    try:
+                        issue_subscription(uid, None, bonus_days)
+                    except Exception:
+                        pass
+            else:
+                blocked += 1
+
+        try:
+            sb.table("broadcasts").insert({
+                "audience": audience,
+                "campaign_filter": campaign_filter if campaign_filter != "all" else None,
+                "target_user_id": target_user_id,
+                "message_text": message_text,
+                "recipients_count": len(ids),
+                "sent_count": sent,
+                "blocked_count": blocked,
+                "bonus_days": bonus_days,
+                "status": "completed" if blocked == 0 else ("partial" if sent > 0 else "failed"),
+                "created_at": datetime.utcnow().isoformat(),
+            }).execute()
+        except Exception:
+            pass
+
+        return jsonify({"success": True, "sent": sent, "total": len(ids)})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# ==================== MONITOR ====================
+
+@app.route('/admin-api/monitor/settings', methods=['GET', 'POST', 'OPTIONS'])
+def monitor_settings():
+    """Настройки демона мониторинга (интервал проверок)."""
+    if request.method == 'OPTIONS':
+        return make_response('', 204)
+    try:
+        if request.method == 'GET':
+            r = sb.table("monitor_settings").select("*").eq("id", 1).limit(1).execute()
+            settings = r.data[0] if r.data else {"interval_sec": 300, "enabled": True}
+            return jsonify({"settings": settings})
+        else:
+            body = request.get_json() or {}
+            interval = int(body.get("interval_sec", 300))
+            # upsert записи с id=1
+            try:
+                sb.table("monitor_settings").update({"interval_sec": interval}).eq("id", 1).execute()
+            except Exception:
+                sb.table("monitor_settings").insert({"id": 1, "interval_sec": interval, "enabled": True}).execute()
+            return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/admin-api/monitor/latest', methods=['GET', 'OPTIONS'])
+def monitor_latest():
+    """Последнее состояние каждого сервера."""
+    if request.method == 'OPTIONS':
+        return make_response('', 204)
+    try:
+        servers_r = sb.table("servers").select("*").eq("is_active", True).order("sort_order").execute()
+        servers = servers_r.data or []
+
+        from datetime import timedelta
+        cutoff_24h = (datetime.utcnow() - timedelta(hours=24)).isoformat()
+
+        result = []
+        for srv in servers:
+            code = srv["code"]
+            # последняя запись здоровья
+            h_r = sb.table("server_health").select("*").eq("server_code", code).order("checked_at", desc=True).limit(1).execute()
+            health = h_r.data[0] if h_r.data else {}
+
+            # uptime за 24 часа
+            all_r = sb.table("server_health").select("is_up").eq("server_code", code).gte("checked_at", cutoff_24h).execute()
+            all_checks = all_r.data or []
+            uptime_24h = None
+            if all_checks:
+                up_count = sum(1 for c in all_checks if c.get("is_up"))
+                uptime_24h = round(up_count / len(all_checks) * 100, 1)
+
+            result.append({
+                "code": code,
+                "name": srv.get("country_name", code),
+                "flag": srv.get("country_flag", ""),
+                "ip": srv.get("server_ip", ""),
+                "sni": srv.get("sni", ""),
+                "health": health,
+                "uptime_24h": uptime_24h,
+            })
+
+        return jsonify({"servers": result})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/admin-api/monitor/health', methods=['GET', 'OPTIONS'])
+def monitor_health():
+    """История проверок серверов за N часов."""
+    if request.method == 'OPTIONS':
+        return make_response('', 204)
+    try:
+        hours = int(request.args.get("hours", 6))
+        from datetime import timedelta
+        cutoff = (datetime.utcnow() - timedelta(hours=hours)).isoformat()
+        r = sb.table("server_health").select("server_code,checked_at,is_up,latency_ms,clients_count,target_ok").gte("checked_at", cutoff).order("checked_at").execute()
+        return jsonify({"health": r.data or []})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ==================== ANALYTICS ====================
+
+@app.route('/admin-api/analytics/funnel', methods=['GET', 'OPTIONS'])
+def analytics_funnel():
+    """Воронка конверсии: регистрации → триал → покупка → активная."""
+    if request.method == 'OPTIONS':
+        return make_response('', 204)
+    try:
+        period = int(request.args.get("period", 30))
+        campaign = request.args.get("campaign", "all")
+        from datetime import timedelta
+        cutoff = (datetime.utcnow() - timedelta(days=period)).isoformat()
+
+        users_q = sb.table("users").select("user_id,campaign_code").gte("created_at", cutoff)
+        if campaign != "all":
+            users_q = users_q.eq("campaign_code", campaign)
+        users_r = users_q.execute()
+        user_ids = [u["user_id"] for u in (users_r.data or [])]
+        total_reg = len(user_ids)
+
+        if not user_ids:
+            return jsonify({"success": True, "funnel": [
+                {"step": "Зарегистрировались", "count": 0, "pct": 100},
+                {"step": "Получили триал", "count": 0, "pct": 0},
+                {"step": "Оформили подписку", "count": 0, "pct": 0},
+                {"step": "Активная подписка", "count": 0, "pct": 0},
+            ]})
+
+        uid_set = set(user_ids)
+
+        # триал = есть запись в subscriptions (status не важен)
+        subs_r = sb.table("subscriptions").select("user_id").gte("created_at", cutoff).execute()
+        trialed = len({s["user_id"] for s in (subs_r.data or []) if s["user_id"] in uid_set})
+
+        # оформили = есть успешный платёж
+        pay_r = sb.table("payments").select("user_id").eq("status", "succeeded").gte("paid_at", cutoff).execute()
+        paid = len({p["user_id"] for p in (pay_r.data or []) if p["user_id"] in uid_set})
+
+        # активная подписка сейчас
+        act_r = sb.table("subscriptions").select("user_id").eq("status", "active").execute()
+        active_now = len({s["user_id"] for s in (act_r.data or []) if s["user_id"] in uid_set})
+
+        def pct(n):
+            return round(n / total_reg * 100, 1) if total_reg else 0
+
+        funnel = [
+            {"step": "Зарегистрировались", "count": total_reg, "pct": 100},
+            {"step": "Получили триал", "count": trialed, "pct": pct(trialed)},
+            {"step": "Оформили подписку", "count": paid, "pct": pct(paid)},
+            {"step": "Активная подписка", "count": active_now, "pct": pct(active_now)},
+        ]
+        return jsonify({"success": True, "funnel": funnel})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/admin-api/analytics/cohorts', methods=['GET', 'OPTIONS'])
+def analytics_cohorts():
+    """Когортный анализ: конверсия и LTV по месяцам регистрации."""
+    if request.method == 'OPTIONS':
+        return make_response('', 204)
+    try:
+        users_r = sb.table("users").select("user_id,created_at,campaign_code").execute()
+        users = users_r.data or []
+
+        pay_r = sb.table("payments").select("user_id,amount,paid_at").eq("status", "succeeded").execute()
+        payments = pay_r.data or []
+
+        # группировка пользователей по месяцу
+        from collections import defaultdict
+        cohorts_map = defaultdict(list)
+        for u in users:
+            if not u.get("created_at"):
+                continue
+            month = u["created_at"][:7]  # "YYYY-MM"
+            cohorts_map[month].append(u["user_id"])
+
+        pay_by_user = defaultdict(float)
+        for p in payments:
+            pay_by_user[p["user_id"]] += float(p.get("amount") or 0)
+
+        cohorts = []
+        for month in sorted(cohorts_map.keys(), reverse=True)[:12]:
+            uid_list = cohorts_map[month]
+            new_users = len(uid_list)
+            paid_users = sum(1 for uid in uid_list if pay_by_user.get(uid, 0) > 0)
+            total_ltv = sum(pay_by_user.get(uid, 0) for uid in uid_list)
+            cohorts.append({
+                "month": month,
+                "new_users": new_users,
+                "paid_users": paid_users,
+                "paid_pct": round(paid_users / new_users * 100, 1) if new_users else 0,
+                "ltv_per_user": round(total_ltv / new_users, 2) if new_users else 0,
+            })
+
+        # UTM-когорты
+        camps_r = sb.table("campaigns").select("code,name,cost").execute()
+        camps = {c["code"]: c for c in (camps_r.data or [])}
+
+        utm_map = defaultdict(list)
+        for u in users:
+            code = u.get("campaign_code")
+            if code:
+                utm_map[code].append(u["user_id"])
+
+        utm_cohorts = []
+        for code, uid_list in utm_map.items():
+            new_users = len(uid_list)
+            total_ltv = sum(pay_by_user.get(uid, 0) for uid in uid_list)
+            ltv_per_user = round(total_ltv / new_users, 2) if new_users else 0
+            camp = camps.get(code, {})
+            cost = float(camp.get("cost") or 0)
+            cac = round(cost / new_users, 2) if new_users and cost else 0
+            roi_pct = round((total_ltv - cost) / cost * 100) if cost > 0 else None
+            utm_cohorts.append({
+                "name": camp.get("name") or code,
+                "new_users": new_users,
+                "ltv_per_user": ltv_per_user,
+                "cac": cac,
+                "roi_pct": roi_pct,
+            })
+        utm_cohorts.sort(key=lambda x: x["new_users"], reverse=True)
+
+        return jsonify({"success": True, "cohorts": cohorts, "utm_cohorts": utm_cohorts})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/admin-api/analytics/calendar', methods=['GET', 'OPTIONS'])
+def analytics_calendar():
+    """Календарь истечений подписок на ближайшие 30 дней."""
+    if request.method == 'OPTIONS':
+        return make_response('', 204)
+    try:
+        from datetime import timedelta
+        now = datetime.utcnow()
+        cutoff = (now + timedelta(days=30)).isoformat()
+        subs_r = sb.table("subscriptions").select("user_id,expires_at,devices").eq("status", "active").gte("expires_at", now.isoformat()).lte("expires_at", cutoff).execute()
+        subs = subs_r.data or []
+
+        # загрузим имена юзеров
+        if subs:
+            uid_list = list({s["user_id"] for s in subs})
+            # Supabase ограничивает in() — разобьём если нужно
+            users_r = sb.table("users").select("user_id,first_name,username").in_("user_id", uid_list[:500]).execute()
+            user_map = {u["user_id"]: u for u in (users_r.data or [])}
+        else:
+            user_map = {}
+
+        from collections import defaultdict
+        days_map = defaultdict(list)
+        for s in subs:
+            exp = s["expires_at"]
+            day = exp[:10]
+            days_left = (datetime.fromisoformat(exp.replace("Z", "+00:00")).replace(tzinfo=None) - now).days
+            u = user_map.get(s["user_id"], {})
+            name = u.get("first_name") or (("@" + u["username"]) if u.get("username") else f"id:{s['user_id']}")
+            days_map[day].append({
+                "user_id": s["user_id"],
+                "name": name,
+                "devices": s["devices"],
+                "days_left": max(0, days_left),
+            })
+
+        days = [{"date": d, "items": days_map[d]} for d in sorted(days_map.keys())]
+        total = len(subs)
+        next7_cutoff = (now + timedelta(days=7)).isoformat()[:10]
+        next3_cutoff = (now + timedelta(days=3)).isoformat()[:10]
+        next7 = sum(len(v) for k, v in days_map.items() if k <= next7_cutoff)
+        next3 = sum(len(v) for k, v in days_map.items() if k <= next3_cutoff)
+
+        return jsonify({"success": True, "days": days, "summary": {"total": total, "next7": next7, "next3": next3}})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 def _db_proxy_log(table: str, op: str):
@@ -1964,6 +3424,5 @@ def db_proxy(table):
 
 
 if __name__ == '__main__':
-    import threading
     threading.Thread(target=healthcheck_loop, daemon=True).start()
     app.run(host='127.0.0.1', port=5000)
