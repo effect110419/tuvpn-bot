@@ -3293,6 +3293,84 @@ def analytics_calendar():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+# ==================== TODAY STATS ====================
+
+@app.route('/admin-api/analytics/today', methods=['GET', 'OPTIONS'])
+def analytics_today():
+    """Статистика за сегодня: выручка, новые юзеры, платежи."""
+    if request.method == 'OPTIONS':
+        return make_response("", 204)
+    try:
+        today = datetime.utcnow().strftime('%Y-%m-%d')
+        yesterday = (datetime.utcnow() - timedelta(days=1)).strftime('%Y-%m-%d')
+
+        pays_today = sb.table("payments").select("amount").eq("status", "succeeded").gte("paid_at", today + "T00:00:00").execute().data
+        pays_yday = sb.table("payments").select("amount").eq("status", "succeeded").gte("paid_at", yesterday + "T00:00:00").lt("paid_at", today + "T00:00:00").execute().data
+        rev_today = sum(float(p.get("amount", 0)) for p in pays_today)
+        rev_yday = sum(float(p.get("amount", 0)) for p in pays_yday)
+
+        users_today = sb.table("users").select("user_id", count="exact").gte("created_at", today + "T00:00:00").execute()
+        users_yday = sb.table("users").select("user_id", count="exact").gte("created_at", yesterday + "T00:00:00").lt("created_at", today + "T00:00:00").execute()
+
+        open_tix = sb.table("support_tickets").select("id", count="exact").in_("status", ["open", "in_progress"]).execute()
+
+        # Последний статус каждого сервера из server_health
+        latest_health = sb.table("server_health").select("server_code,status").order("checked_at", desc=True).limit(100).execute().data
+        seen_srv = set()
+        offline_count = 0
+        for row in latest_health:
+            code = row.get("server_code") or row.get("code")
+            if code and code not in seen_srv:
+                seen_srv.add(code)
+                if row.get("status") != "online":
+                    offline_count += 1
+
+        return jsonify({
+            "success": True,
+            "revenue_today": rev_today,
+            "revenue_yesterday": rev_yday,
+            "payments_today": len(pays_today),
+            "new_users_today": users_today.count or 0,
+            "new_users_yesterday": users_yday.count or 0,
+            "open_tickets": open_tix.count or 0,
+            "servers_offline": offline_count,
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# ==================== ALERTS ====================
+
+@app.route('/admin-api/alerts', methods=['GET', 'OPTIONS'])
+def admin_alerts():
+    """Алерты для колокольчика: тикеты, серверы offline, платежи без чека."""
+    if request.method == 'OPTIONS':
+        return make_response("", 204)
+    try:
+        alerts = []
+
+        open_tix = sb.table("support_tickets").select("id", count="exact").in_("status", ["open", "in_progress"]).execute()
+        tcnt = open_tix.count or 0
+        if tcnt:
+            alerts.append({"type": "tickets", "title": f"Открытых тикетов: {tcnt}", "count": tcnt, "page": "tickets"})
+
+        no_receipt = sb.table("payments").select("id", count="exact").eq("status", "succeeded").eq("provider", "yookassa").is_("receipt_url", "null").execute()
+        rcnt = no_receipt.count or 0
+        if rcnt:
+            alerts.append({"type": "receipt", "title": f"Без чека ЮКасса: {rcnt}", "count": rcnt, "page": "payments"})
+
+        today_start = datetime.utcnow().strftime('%Y-%m-%d') + "T00:00:00"
+        tomorrow_start = (datetime.utcnow() + timedelta(days=1)).strftime('%Y-%m-%d') + "T00:00:00"
+        expiring = sb.table("subscriptions").select("user_id", count="exact").eq("status", "active").gte("expires_at", today_start).lt("expires_at", tomorrow_start).execute()
+        ecnt = expiring.count or 0
+        if ecnt:
+            alerts.append({"type": "expiring", "title": f"Истекает сегодня: {ecnt}", "count": ecnt, "page": "subs"})
+
+        return jsonify({"success": True, "alerts": alerts, "total": sum(a["count"] for a in alerts)})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 def _db_proxy_log(table: str, op: str):
     """Минимальное логирование действий админа на таблицах."""
     admin = getattr(request, "admin_tg_id", None)

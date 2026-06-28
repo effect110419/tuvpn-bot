@@ -1,4 +1,4 @@
-/* === MKT FIX === === REBRAND v4 === цвета Deep Ocean применены */
+﻿/* === MKT FIX === === REBRAND v4 === цвета Deep Ocean применены */
 /* =====================================================================
    TuVPN Admin v3 — Linear-style, command-palette, keyboard-first
    ===================================================================== */
@@ -158,6 +158,7 @@ function canViewSection(pageKey) {
     referrals: 'view_referrals', analytics: 'view_analytics', broadcast: 'view_broadcast',
     monitor: 'view_monitor', tickets: 'view_tickets', servers: 'view_servers',
     settings: 'view_settings', finance: 'view_finance', roles: 'view_roles',
+    audit: 'superadmin', watchlist: 'superadmin',
   };
   const perm = map[pageKey];
   if (!perm) return true;
@@ -716,6 +717,8 @@ async function loadAll() {
     }
 
     renderAll();
+    updateSidebarProfile();
+    fetchAlerts();
     $('#liveDot').textContent = 'обновлено ' + new Date().toLocaleTimeString('ru-RU');
   } catch (e) {
     console.error(e);
@@ -738,10 +741,11 @@ const PAGE_META = {
   broadcast:  { sec: 'Маркетинг', title: 'Рассылка' },
   
   monitor:    { sec: 'Инфраструктура', title: 'Мониторинг' },
-  
   analytics:  { sec: 'Маркетинг', title: 'Аналитика' },
   finance:    { sec: 'Система', title: 'Финансы' },
   roles:      { sec: 'Система', title: 'Роли и доступы' },
+  audit:      { sec: 'Инструменты', title: 'Диагностика' },
+  watchlist:  { sec: 'Инструменты', title: 'VIP-мониторинг' },
 };
 
 function goPage(page) {
@@ -756,11 +760,13 @@ function goPage(page) {
 }
 
 function renderPage(page) {
-  // PAGE logs REMOVED
-if (page === 'broadcast') { renderBroadcast(); return; }
+  if (page === 'broadcast') { renderBroadcast(); return; }
   if (page === 'monitor') { renderMonitor(); return; }
-  // PAGE map REMOVED
-if (page === 'analytics') { renderAnalytics(); return; }
+  if (page === 'analytics') { renderAnalytics(); return; }
+  if (page === 'finance') { if (typeof renderFinancePage === 'function') renderFinancePage(); return; }
+  if (page === 'roles') { if (typeof renderRolesPage === 'function') renderRolesPage(); return; }
+  if (page === 'audit') { /* audit_frontend.js handles this */ return; }
+  if (page === 'watchlist') { /* audit_frontend.js handles this */ return; }
   const fns = {
     dashboard: renderDashboard,
     users: renderUsers,
@@ -787,8 +793,64 @@ function renderNavCounts() {
   $('#navPaymentsCount').textContent = state.payments.length;
   $('#navPromosCount').textContent = state.promos.filter(p => p.is_active).length;
   $('#navRefsCount').textContent = state.refs.length;
-  $('#navTicketsCount').textContent = state.tickets.filter(t => t.status === 'open' || t.status === 'in_progress').length;
+  const openTickets = state.tickets.filter(t => t.status === 'open' || t.status === 'in_progress').length;
+  const tc = $('#navTicketsCount');
+  tc.textContent = openTickets;
+  tc.classList.toggle('nav-count-alert-active', openTickets > 0);
   $('#navServersCount').textContent = state.servers.length;
+}
+
+function updateSidebarProfile() {
+  const me = state.me;
+  if (!me) return;
+  let name = me.name;
+  if (!name && state.users) {
+    const u = state.users.find(x => x.user_id === me.user_id);
+    if (u) name = [u.first_name, u.last_name].filter(Boolean).join(' ') || u.username;
+  }
+  if (!name) name = 'Admin';
+  const initial = (name[0] || 'A').toUpperCase();
+  const avatarEl = $('#sidebarAvatar');
+  const nameEl = $('#sidebarName');
+  if (avatarEl) avatarEl.textContent = initial;
+  if (nameEl) nameEl.textContent = name;
+  if (state.isSuperadmin) {
+    const subEl = $('#sidebarSub');
+    if (subEl) subEl.textContent = 'суперадмин';
+  }
+}
+
+async function fetchAlerts() {
+  try {
+    const r = await proxy('/admin-api/alerts');
+    if (!r.success) return;
+    const alerts = r.alerts || [];
+    const badge = $('#bellBadge');
+    const list = $('#alertsList');
+    if (!badge || !list) return;
+    const total = r.total || 0;
+    if (total > 0) {
+      badge.textContent = total;
+      badge.style.display = '';
+    } else {
+      badge.style.display = 'none';
+    }
+    list.innerHTML = alerts.length
+      ? alerts.map(a => {
+          const icons = { tickets: '💬', receipt: '🧾', expiring: '⏰' };
+          return `<div class="alert-item" onclick="goPage('${esc(a.page)}');closeAlertsDrop()">
+            <span class="alert-ico">${icons[a.type] || '⚠️'}</span>
+            <span class="alert-title">${esc(a.title)}</span>
+            <svg class="alert-arr" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg>
+          </div>`;
+        }).join('')
+      : '<div class="alerts-empty">Всё хорошо 👍</div>';
+  } catch (e) {}
+}
+
+function closeAlertsDrop() {
+  const d = $('#alertsDrop');
+  if (d) d.style.display = 'none';
 }
 
 /* ===================== MODAL HELPERS ===================== */
@@ -1066,6 +1128,21 @@ document.addEventListener('DOMContentLoaded', () => {
   $('#quickGrantBtn').addEventListener('click', () => { $('#grantUid').value = ''; $('#grantUserHint').textContent = 'Пользователь должен сначала запустить бот.'; openModal('grantModal'); });
   $('#cmdTrigger').addEventListener('click', openCmd);
 
+  // Колокольчик алертов
+  const bellBtn = $('#bellBtn');
+  const alertsDrop = $('#alertsDrop');
+  if (bellBtn && alertsDrop) {
+    bellBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const isOpen = alertsDrop.style.display !== 'none';
+      alertsDrop.style.display = isOpen ? 'none' : '';
+      if (!isOpen) fetchAlerts();
+    });
+    document.addEventListener('click', (e) => {
+      if (!$('#bellWrap').contains(e.target)) alertsDrop.style.display = 'none';
+    });
+  }
+
   // Cmd palette
   $('#cmdInput').addEventListener('input', renderCmdList);
 
@@ -1172,6 +1249,7 @@ function renderDashboard() {
     <div class="page-sub">Общая картина по системе TuVPN</div>
 
     <div id="pulseBlock"></div>
+    <div id="todayStatsBlock"></div>
 
     <div class="kpi-grid">
       <div class="kpi">
@@ -1322,8 +1400,60 @@ function renderDashboard() {
   $('#goPayments').addEventListener('click', () => goPage('payments'));
   $('#goTickets').addEventListener('click', () => goPage('tickets'));
 
-  // Live-пульс
+  // Live-пульс + сегодняшняя статистика
   renderDashboardPulse();
+  renderTodayStats();
+}
+
+async function renderTodayStats() {
+  const host = $('#todayStatsBlock');
+  if (!host) return;
+  host.innerHTML = '<div class="today-row today-row-loading"><span class="muted" style="font-size:12px">Загрузка статистики дня...</span></div>';
+  try {
+    const d = await proxy('/admin-api/analytics/today');
+    if (!d.success) { host.innerHTML = ''; return; }
+
+    function pctDelta(today, yesterday) {
+      if (!yesterday) return today > 0 ? '+100%' : null;
+      const delta = Math.round((today - yesterday) / yesterday * 100);
+      return (delta >= 0 ? '+' : '') + delta + '%';
+    }
+    function deltaClass(today, yesterday) {
+      if (!yesterday && today === 0) return 'flat';
+      if (!yesterday) return 'up';
+      return today >= yesterday ? 'up' : 'dn';
+    }
+
+    const revDelta = pctDelta(d.revenue_today, d.revenue_yesterday);
+    const usersDelta = pctDelta(d.new_users_today, d.new_users_yesterday);
+
+    host.innerHTML = `
+      <div class="today-row">
+        <div class="today-label">Сегодня</div>
+        <div class="today-kpi">
+          <div class="today-cell">
+            <div class="today-val">${money(d.revenue_today)}</div>
+            <div class="today-sub">выручка ${revDelta ? `<span class="kpi-delta-sm ${deltaClass(d.revenue_today, d.revenue_yesterday)}">${revDelta}</span>` : ''}</div>
+          </div>
+          <div class="today-cell">
+            <div class="today-val">${d.payments_today}</div>
+            <div class="today-sub">платежей</div>
+          </div>
+          <div class="today-cell">
+            <div class="today-val">${d.new_users_today}</div>
+            <div class="today-sub">новых юзеров ${usersDelta ? `<span class="kpi-delta-sm ${deltaClass(d.new_users_today, d.new_users_yesterday)}">${usersDelta}</span>` : ''}</div>
+          </div>
+          <div class="today-cell ${d.open_tickets > 0 ? 'today-cell-warn' : ''}">
+            <div class="today-val">${d.open_tickets}</div>
+            <div class="today-sub">открытых тикетов</div>
+          </div>
+          <div class="today-cell ${d.servers_offline > 0 ? 'today-cell-err' : ''}">
+            <div class="today-val">${d.servers_offline}</div>
+            <div class="today-sub">серверов offline</div>
+          </div>
+        </div>
+      </div>`;
+  } catch (e) { host.innerHTML = ''; }
 }
 
 function renderMainChart(kind) {
@@ -1722,6 +1852,10 @@ function renderPayments() {
       </select>
       <div class="toolbar-grow"></div>
       <span class="counter" id="paymentsCounter">—</span>
+      <button class="btn btn-ghost btn-sm" id="exportCsvBtn" title="Скачать CSV">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
+        <span class="label-desktop">CSV</span>
+      </button>
     </div>
 
     <div class="card">
@@ -1739,7 +1873,45 @@ function renderPayments() {
   $('#paymentsSearch').addEventListener('input', renderPaymentsTable);
   $('#paymentsFilter').addEventListener('change', renderPaymentsTable);
   $('#paymentsReceiptFilter').addEventListener('change', renderPaymentsTable);
+  $('#exportCsvBtn').addEventListener('click', exportPaymentsCsv);
   renderPaymentsTable();
+}
+
+function exportPaymentsCsv() {
+  const f = $('#paymentsFilter').value;
+  const rf = $('#paymentsReceiptFilter').value;
+  const search = ($('#paymentsSearch').value || '').toLowerCase().trim();
+  let list = state.payments.slice();
+  if (f !== 'all') list = list.filter(p => p.status === f);
+  if (rf === 'pending') list = list.filter(p => p.receipt_status !== 'registered' && p.receipt_status !== 'not_required');
+  if (rf === 'registered') list = list.filter(p => p.receipt_status === 'registered');
+  if (search) {
+    list = list.filter(p => {
+      const u = state.users.find(x => x.user_id === p.user_id) || {};
+      const name = [u.first_name, u.last_name].filter(Boolean).join(' ');
+      return String(p.user_id).includes(search) || (u.username || '').toLowerCase().includes(search)
+        || name.toLowerCase().includes(search) || (p.provider_payment_id || '').includes(search);
+    });
+  }
+  const rows = [['Дата', 'user_id', 'Имя', 'Username', 'Сумма', 'Устройства', 'Месяцев', 'Провайдер', 'Статус', 'Email', 'Промо', 'Чек']];
+  list.forEach(p => {
+    const u = state.users.find(x => x.user_id === p.user_id) || {};
+    const name = [u.first_name, u.last_name].filter(Boolean).join(' ');
+    rows.push([
+      (p.paid_at || p.created_at || '').slice(0, 10),
+      p.user_id, name, u.username || '', p.amount,
+      p.devices || '', p.months || '',
+      p.provider || '', p.status || '',
+      p.metadata?.email || '', p.promo_code || '', p.receipt_url || '',
+    ]);
+  });
+  const csv = rows.map(r => r.map(v => '"' + String(v ?? '').replace(/"/g, '""') + '"').join(',')).join('\n');
+  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'payments_' + new Date().toISOString().slice(0, 10) + '.csv';
+  a.click(); URL.revokeObjectURL(url);
+  toast('CSV скачан', 'success');
 }
 
 function renderPaymentsTable() {
@@ -2469,27 +2641,36 @@ async function recheckAllServers() {
    ====================== PAGE: SETTINGS ============================
    ===================================================================== */
 function renderSettings() {
+  const TARIFFS = [
+    { devices: 1, label: '1 устройство', m1: 149, m3: 399, m12: 1399 },
+    { devices: 2, label: '2 устройства',  m1: 249, m3: 649, m12: 2299 },
+    { devices: 5, label: '5 устройств',   m1: 599, m3: 1599, m12: 5499 },
+  ];
+  const tariffRows = TARIFFS.map(t => `
+    <tr>
+      <td><b>${t.label}</b></td>
+      <td class="text-r">${money(t.m1)}</td>
+      <td class="text-r">${money(t.m3)}</td>
+      <td class="text-r">${money(t.m12)}</td>
+    </tr>
+  `).join('');
+
   $('#page-settings').innerHTML = `
     <div class="page-title">Настройки</div>
-    <div class="page-sub">Конфигурация админки</div>
+    <div class="page-sub">Конфигурация и справка по системе</div>
+
+    <div class="card" style="margin-bottom:14px">
+      <div class="card-head"><div class="card-title">💳 Тарифная сетка</div><div class="card-sub">Актуальные цены бота</div></div>
+      <div class="tbl-wrap">
+        <table class="tbl">
+          <thead><tr><th>Тариф</th><th class="text-r">1 месяц</th><th class="text-r">3 месяца</th><th class="text-r">12 месяцев</th></tr></thead>
+          <tbody>${tariffRows}</tbody>
+        </table>
+      </div>
+      <div style="padding:8px 18px 12px; font-size:12px; color:var(--fg-3)">Цены в ₽. Telegram Stars: отдельный прайс. Для изменения цен — правка <code>PRICES</code> в bot.py.</div>
+    </div>
 
     <div class="grid-1-1">
-      <div class="card">
-        <div class="card-head"><div class="card-title">🔒 Смена пароля</div></div>
-        <div class="card-pad">
-          <div class="field">
-            <label class="label">Текущий пароль</label>
-            <input id="oldPass" type="password" class="input" placeholder="••••••">
-          </div>
-          <div class="field">
-            <label class="label">Новый пароль</label>
-            <input id="newPass" type="password" class="input" placeholder="••••••">
-          </div>
-          <button class="btn btn-primary" id="changePassBtn">Сменить пароль</button>
-          <div class="help mt-3">Пароль хранится локально в этом браузере (localStorage). Чтобы войти с другого устройства — пароль нужен будет тот же.</div>
-        </div>
-      </div>
-
       <div class="card">
         <div class="card-head"><div class="card-title">📊 Состояние БД</div></div>
         <div class="card-pad">
@@ -2500,6 +2681,16 @@ function renderSettings() {
           <div class="info"><span class="info-k">Тикетов</span><span class="info-v num">${num(state.tickets.length)}</span></div>
           <div class="info"><span class="info-k">Рефералов</span><span class="info-v num">${num(state.refs.length)}</span></div>
           <div class="info"><span class="info-k">Серверов</span><span class="info-v num">${num(state.servers.length)}</span></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><div class="card-title">🔑 Доступ и роли</div></div>
+        <div class="card-pad">
+          ${state.isSuperadmin ? `<div class="info"><span class="info-k">Роль</span><span class="info-v"><span class="tag tag-yellow">Суперадмин</span></span></div>` : `<div class="info"><span class="info-k">Права</span><span class="info-v num">${state.myPermissions ? state.myPermissions.size : 0}</span></div>`}
+          <div class="info"><span class="info-k">Telegram ID</span><span class="info-v mono">${state.me ? state.me.user_id : '—'}</span></div>
+          <div class="info"><span class="info-k">Сессия</span><span class="info-v">cookie-based (7 дней)</span></div>
+          ${state.isSuperadmin ? `<button class="btn btn-ghost btn-sm" style="margin-top:10px" onclick="goPage('roles')">Управление ролями →</button>` : ''}
         </div>
       </div>
     </div>
@@ -2525,7 +2716,6 @@ function renderSettings() {
       </div>
     </div>
   `;
-  $('#changePassBtn').addEventListener('click', changePass);
 }
 
 /* =====================================================================
@@ -4467,180 +4657,9 @@ if (typeof openBroadcastForm === 'function') {
 
 
 
-// ============================================================
-// РАЗДЕЛ: ФИНАНСЫ
-// ============================================================
-
-
-
-
-function fmt(n) {
-  return Number(n).toLocaleString('ru-RU', {minimumFractionDigits:0, maximumFractionDigits:2});
-}
-
-function renderExpensesRows(expenses, canEdit) {
-  if (!expenses.length) return '<tr><td colspan="6" class="empty-cell">Нет расходов</td></tr>';
-  return expenses.map(e => `
-    <tr data-category="${e.category}">
-      <td>${e.expense_date||'—'}</td>
-      <td>${EXPENSE_CATEGORIES[e.category]||e.category}</td>
-      <td>${e.description}</td>
-      <td>₽${fmt(e.amount)}</td>
-      <td>${e.is_recurring ? (e.recurring_period==='monthly'?'🔁 Ежемес.':'🔁 Ежегод.') : '—'}</td>
-      ${canEdit ? `<td class="actions-cell">
-        <button class="btn-icon" onclick="editExpense(${e.id})" title="Редактировать">✏️</button>
-        <button class="btn-icon btn-danger-icon" onclick="deleteExpense(${e.id})" title="Удалить">🗑</button>
-      </td>` : ''}
-    </tr>
-  `).join('');
-}
-
-
-
-
-async function editExpense(id) {
-  const e = state.financeExpenses.find(x=>x.id===id);
-  if (e) openAddExpenseModal(e);
-}
-
-
-
-
-
-
-
-async function markPlannedDone(id) {
-  await fetch(`/admin-api/finance/planned/${id}`, { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({is_done:true}) });
-  showToast('Отмечено','success'); renderFinancePage();
-}
-
-
-async function changePass() {
-  const newPass = prompt('Новый пароль панели:');
-  if (!newPass) return;
-  const res = await fetch('/admin-api/change-panel-password', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({password: newPass})
-  });
-  if (res.ok) showToast('Пароль изменён', 'success');
-  else showToast('Ошибка', 'error');
-}
-
-
 /* ===================================================================== */
-/* ============ FINANCE & ROLES — REBUILD в стиле проекта ============== */
+/* ============ FINANCE & ROLES ======================================== */
 /* ===================================================================== */
-
-// Категории расходов
-
-// Группы прав для UI
-
-// =========================================================
-// FINANCE
-// =========================================================
-
-
-
-function renderFinPlannedTable() {
-  const tbody = $('#finPlannedTbody');
-  if (!tbody) return;
-  const canEdit = hasPermission('edit_finance');
-  const list = state.finance.planned.slice().sort((a, b) => (a.planned_date || 'z').localeCompare(b.planned_date || 'z'));
-
-  if (!list.length) {
-    tbody.innerHTML = `<tr><td colspan="${canEdit ? 6 : 5}"><div class="empty"><div class="title">Нет плановых покупок</div></div></td></tr>`;
-    return;
-  }
-  tbody.innerHTML = list.map(p => {
-    const cat = EXPENSE_CATEGORIES[p.category] || { label: p.category };
-    return `<tr class="${p.is_done ? 'row-done' : ''}">
-      <td><input type="checkbox" ${p.is_done ? 'checked' : ''} ${canEdit ? `data-tog-id="${p.id}"` : 'disabled'}></td>
-      <td><span class="mono">${esc(p.planned_date || '—')}</span></td>
-      <td>${cat.label}</td>
-      <td>${esc(p.description)}</td>
-      <td class="text-r">${p.estimated_amount ? money(p.estimated_amount) : '—'}</td>
-      ${canEdit ? `<td class="text-r">
-        <button class="btn btn-ghost btn-sm" data-act="del-p" data-id="${p.id}">🗑</button>
-      </td>` : ''}
-    </tr>`;
-  }).join('');
-  $$('#finPlannedTbody [data-tog-id]').forEach(c => c.addEventListener('change', () =>
-    togglePlanned(Number(c.dataset.togId), c.checked)));
-  $$('#finPlannedTbody [data-act="del-p"]').forEach(b => b.addEventListener('click', () =>
-    confirmDeletePlanned(Number(b.dataset.id))));
-}
-
-// ---- Модалки финансов ----
-
-
-
-async function confirmDeleteExpense(id) {
-  if (!confirm('Удалить расход?')) return;
-  const r = await fetch(`/admin-api/finance/expenses/${id}`, { method: 'DELETE' });
-  if (r.ok) { toast('Удалено', 'success'); renderFinancePage(); }
-  else toast('Ошибка удаления', 'error');
-}
-
-
-
-function openPlannedModal() {
-  $('#finPlanId').value = '';
-  $('#finPlanDate').value = '';
-  $('#finPlanCategory').value = 'servers';
-  $('#finPlanDesc').value = '';
-  $('#finPlanAmount').value = '';
-  openModal('finPlannedModal');
-}
-
-
-async function togglePlanned(id, isDone) {
-  const r = await fetch(`/admin-api/finance/planned/${id}`, {
-    method: 'PUT', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ is_done: isDone })
-  });
-  if (!r.ok) toast('Ошибка', 'error');
-}
-
-async function confirmDeletePlanned(id) {
-  if (!confirm('Удалить плановую покупку?')) return;
-  const r = await fetch(`/admin-api/finance/planned/${id}`, { method: 'DELETE' });
-  if (r.ok) { toast('Удалено', 'success'); renderFinancePage(); }
-  else toast('Ошибка', 'error');
-}
-
-
-// =========================================================
-// ROLES & ADMINS — только для суперадмина
-// =========================================================
-
-
-
-
-// ---- Модалка роли ----
-
-
-
-// ---- Модалка админа ----
-
-
-
-
-// =========================================================
-// page-роутер — регистрация finance/roles
-// =========================================================
-(function () {
-  // подождём пока renderPage будет в scope
-  const _orig = window.renderPage;
-  if (typeof _orig === 'function') {
-    window.renderPage = function (page) {
-      if (page === 'finance') { renderFinancePage(); return; }
-      if (page === 'roles') { renderRolesPage(); return; }
-      return _orig(page);
-    };
-  }
-})();
-
 
 /* hooks: привязка save-кнопок модалок (через делегирование, на всякий) */
 (function() {
@@ -5060,20 +5079,7 @@ async function saveAdmin() {
 }
 
 
-// =========================================================
-// page-роутер — регистрация finance/roles
-// =========================================================
-(function () {
-  // подождём пока renderPage будет в scope
-  const _orig = window.renderPage;
-  if (typeof _orig === 'function') {
-    window.renderPage = function (page) {
-      if (page === 'finance') { renderFinancePage(); return; }
-      if (page === 'roles') { renderRolesPage(); return; }
-      return _orig(page);
-    };
-  }
-})();
+
 
 
 /* ===================================================== */
