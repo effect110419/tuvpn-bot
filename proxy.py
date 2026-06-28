@@ -553,20 +553,24 @@ def subscription(client_uuid):
         "subscription-userinfo": f"upload=0; download=0; total=0; expire={expire_ts}",
     }
 
-    # Shadowrocket ожидает base64-строку из vless:// URI, а не JSON
-    if "Shadowrocket" in user_agent:
-        body = subscription_generator.build_vless_subscription(servers, client_uuid)
-        headers = {"Content-Type": "text/plain; charset=utf-8", **common_headers}
+    # Happ определяется по своим кастомным заголовкам — только он присылает X-Hwid.
+    # Happ ожидает полный JSON Xray-конфиг с правилами маршрутизации.
+    # Все остальные клиенты (Изи VPN, Shadowrocket, V2RayNG и т.д.) используют
+    # стандартный формат: base64-строка из vless:// URI.
+    is_happ = bool(hwid)
+    if is_happ:
+        announcement_b64 = "4pqg77iPINCd0LUg0YDQsNCx0L7RgtCw0LXRgj8g0J3QsNC20LzQuCDwn5SEINC4INCy0YvQsdC10YDQuCDQtNGA0YPQs9GD0Y4g0LvQvtC60LDRhtC40Y4uIPCfk4Ug0J/RgNC+0LTQu9C10LLQsNC5INC30LDRgNCw0L3QtdC1IOKAlCBUZWxlZ3JhbSDQt9Cw0LzQtdC00LvRj9GO0YIh"
+        configs = subscription_generator.build_subscription(servers, client_uuid)
+        body = _json.dumps(configs, ensure_ascii=False, separators=(",", ":"))
+        headers = {
+            "Content-Type": "application/json; charset=utf-8",
+            **common_headers,
+            "announce": "base64:" + announcement_b64,
+        }
         return Response(body, headers=headers)
 
-    announcement_b64 = "4pqg77iPINCd0LUg0YDQsNCx0L7RgtCw0LXRgj8g0J3QsNC20LzQuCDwn5SEINC4INCy0YvQsdC10YDQuCDQtNGA0YPQs9GD0Y4g0LvQvtC60LDRhtC40Y4uIPCfk4Ug0J/RgNC+0LTQu9C10LLQsNC5INC30LDRgNCw0L3QtdC1IOKAlCBUZWxlZ3JhbSDQt9Cw0LzQtdC00LvRj9GO0YIh"
-    configs = subscription_generator.build_subscription(servers, client_uuid)
-    body = _json.dumps(configs, ensure_ascii=False, separators=(",", ":"))
-    headers = {
-        "Content-Type": "application/json; charset=utf-8",
-        **common_headers,
-        "announce": "base64:" + announcement_b64,
-    }
+    body = subscription_generator.build_vless_subscription(servers, client_uuid)
+    headers = {"Content-Type": "text/plain; charset=utf-8", **common_headers}
     return Response(body, headers=headers)
 
 
