@@ -1,10 +1,11 @@
 """
-TuVPN — генератор JSON-конфигов для Happ Plus / V2RayN.
+TuVPN — генератор подписок.
 
-Возвращает массив JSON-конфигов (по одному на каждый активный сервер) —
-формат совместим с Happ Plus (тот же что у ONEOK и других серьёзных VPN).
+JSON-формат (для V2RayN/PC-клиентов) + VLESS URI формат для Shadowrocket.
 """
 import json
+import base64
+from urllib.parse import quote
 from routing_rules import (
     DIRECT_DOMAINS, DIRECT_GEOSITE, DIRECT_GEOIP,
     PROXY_DOMAINS, PROXY_GEOSITE,
@@ -35,11 +36,31 @@ def build_server_config(server: dict, client_uuid: str) -> dict:
 
 
 def build_subscription(servers: list, client_uuid: str) -> list:
-    """
-    Главная функция: собирает массив конфигов для всех активных серверов.
-    Возвращает list[dict] — потом сериализуется в JSON и отдаётся клиенту.
-    """
+    """Массив JSON-конфигов (V2RayN и совместимые)."""
     return [build_server_config(s, client_uuid) for s in servers]
+
+
+def build_vless_uri(server: dict, client_uuid: str) -> str:
+    """vless:// URI для Shadowrocket и совместимых клиентов."""
+    ip = server["server_ip"]
+    port = int(server["server_port"])
+    pbk = server["public_key"]
+    sid = server["short_id"]
+    sni = server.get("sni") or "www.bing.com"
+    fp = server.get("fingerprint") or "chrome"
+    flow = server.get("flow") or "xtls-rprx-vision"
+    remark = quote(f"{server['country_flag']} {server['country_name']}")
+    return (
+        f"vless://{client_uuid}@{ip}:{port}"
+        f"?type=tcp&security=reality&pbk={pbk}&fp={fp}"
+        f"&sni={sni}&sid={sid}&flow={flow}#{remark}"
+    )
+
+
+def build_vless_subscription(servers: list, client_uuid: str) -> str:
+    """Base64-строка из vless:// URI — формат подписки для Shadowrocket."""
+    uris = "\n".join(build_vless_uri(s, client_uuid) for s in servers)
+    return base64.b64encode(uris.encode()).decode()
 
 
 # ============================================================

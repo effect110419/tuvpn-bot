@@ -545,16 +545,26 @@ def subscription(client_uuid):
     if not servers:
         return Response("No active servers", status=503)
 
-    configs = subscription_generator.build_subscription(servers, client_uuid)
-    body = _json.dumps(configs, ensure_ascii=False, separators=(",", ":"))
     expire_ts = get_client_expire(client_uuid)
-    announcement_b64 = "4pqg77iPINCd0LUg0YDQsNCx0L7RgtCw0LXRgj8g0J3QsNC20LzQuCDwn5SEINC4INCy0YvQsdC10YDQuCDQtNGA0YPQs9GD0Y4g0LvQvtC60LDRhtC40Y4uIPCfk4Ug0J/RgNC+0LTQu9C10LLQsNC5INC30LDRgNCw0L3QtdC1IOKAlCBUZWxlZ3JhbSDQt9Cw0LzQtdC00LvRj9GO0YIh"
-    headers = {
-        "Content-Type": "application/json; charset=utf-8",
+    common_headers = {
         "profile-title": "TuVPN",
         "profile-update-interval": "6",
         "support-url": "https://t.me/MaxArtVPN_bot",
         "subscription-userinfo": f"upload=0; download=0; total=0; expire={expire_ts}",
+    }
+
+    # Shadowrocket ожидает base64-строку из vless:// URI, а не JSON
+    if "Shadowrocket" in user_agent:
+        body = subscription_generator.build_vless_subscription(servers, client_uuid)
+        headers = {"Content-Type": "text/plain; charset=utf-8", **common_headers}
+        return Response(body, headers=headers)
+
+    announcement_b64 = "4pqg77iPINCd0LUg0YDQsNCx0L7RgtCw0LXRgj8g0J3QsNC20LzQuCDwn5SEINC4INCy0YvQsdC10YDQuCDQtNGA0YPQs9GD0Y4g0LvQvtC60LDRhtC40Y4uIPCfk4Ug0J/RgNC+0LTQu9C10LLQsNC5INC30LDRgNCw0L3QtdC1IOKAlCBUZWxlZ3JhbSDQt9Cw0LzQtdC00LvRj9GO0YIh"
+    configs = subscription_generator.build_subscription(servers, client_uuid)
+    body = _json.dumps(configs, ensure_ascii=False, separators=(",", ":"))
+    headers = {
+        "Content-Type": "application/json; charset=utf-8",
+        **common_headers,
         "announce": "base64:" + announcement_b64,
     }
     return Response(body, headers=headers)
