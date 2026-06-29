@@ -446,6 +446,7 @@ def make_howto_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🍏 У меня iPhone / iPad", callback_data="howto_ios")],
         [InlineKeyboardButton(text="🤖 У меня Android", callback_data="howto_android")],
+        [InlineKeyboardButton(text="💻 Компьютер (Windows / Mac)", callback_data="howto_desktop")],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="back")],
     ])
 
@@ -637,7 +638,7 @@ async def start(message: types.Message):
 
 @dp.message(Command("menu"))
 async def menu(message: types.Message):
-    await message.answer("Главное меню:", reply_markup=main_menu())
+    await message.answer("🏠 <b>Главное меню</b>\n\nВыберите действие:", reply_markup=main_menu(), parse_mode="HTML")
 
 @dp.callback_query(lambda c: c.data == "connect")
 async def connect(callback: types.CallbackQuery):
@@ -1053,16 +1054,16 @@ async def process_successful_payment(message: types.Message):
     # Записываем платёж в БД
     try:
         sb.table("payments").insert({
+            "provider": "telegram_stars",
             "user_id": user_id,
             "provider_payment_id": sp.telegram_payment_charge_id or sp.provider_payment_charge_id or f"stars_{user_id}_{int(datetime.now().timestamp())}",
             "amount": stars_amount,
+            "currency": "XTR",
+            "devices": devices,
+            "months": int(months),
             "status": "succeeded",
             "paid_at": datetime.now().isoformat(),
             "metadata": {
-                "currency": "XTR",
-                "provider": "telegram_stars",
-                "devices": devices,
-                "months": months,
                 "stars": stars_amount,
                 "telegram_payment_charge_id": sp.telegram_payment_charge_id,
             },
@@ -1249,7 +1250,7 @@ async def about(callback: types.CallbackQuery):
         "🏎 Скорость → Без тормозов и просадок\n"
         "🌍 Серверы: Финляндия 🇫🇮 · Нидерланды 🇳🇱 · Германия 🇩🇪\n"
         "👁 Без логов → Мы не следим за тобой\n"
-        "📲 Устройства → Android, iPhone, ПК\n"
+        "📲 Устройства → iOS, Android, Windows, macOS\n"
         "🎬 Контент → YouTube, Instagram без ограничений\n"
         "💬 Telegram → Работает даже при замедлении\n"
         "🔑 Просто → Один клик — и ты в сети\n"
@@ -1301,8 +1302,12 @@ async def referral(callback: types.CallbackQuery):
             stats_block += f" (из них оплатили: {invited_paid})"
         stats_block += f"\n🎁 В копилке: <b>{bonus_days_balance} дн.</b>\n\n"
 
+    share_text = f"Попробуй TuVPN — дарю тебе 7 дней VPN бесплатно! 🎁"
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📤 Поделиться ссылкой", switch_inline_query=ref_link)],
+        [InlineKeyboardButton(
+            text="📤 Поделиться ссылкой",
+            url=f"https://t.me/share/url?url={ref_link}&text={share_text}"
+        )],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="back")],
     ])
     await safe_edit(
@@ -1343,12 +1348,13 @@ async def howto_ios(callback: types.CallbackQuery):
     await safe_edit(
         callback,
         "🍏 <b>Подключение на iPhone / iPad</b>\n\n"
-        "1️⃣ Установите бесплатное приложение <b>Изи VPN</b>\n"
-        "👉 <a href=\"https://apps.apple.com/ru/app/изи-vpn/id6746414734\">Открыть в App Store</a>\n\n"
+        "1️⃣ Установите бесплатное приложение <b>Happ - Proxy Utility</b>\n"
+        "👉 <a href=\"https://apps.apple.com/ru/app/happ-proxy-utility/id6783623643\">Открыть в App Store</a>\n\n"
         "2️⃣ Нажмите «🔗 Получить ссылку подключения» ниже\n\n"
         "3️⃣ Скопируйте ссылку\n\n"
-        "4️⃣ В приложении нажмите <b>➕</b> → <b>«Из буфера»</b> или вставьте ссылку вручную\n\n"
-        "5️⃣ Выберите сервер и нажмите кнопку подключения 🟢\n\n"
+        "4️⃣ Откройте Happ → нажмите <b>➕</b> → <b>«Из буфера обмена»</b>\n\n"
+        "5️⃣ Выберите любой сервер и нажмите кнопку подключения 🟢\n\n"
+        "6️⃣ Разрешите добавление VPN-конфигурации\n\n"
         "❓ Не получилось? Напишите @TuVPNSupport_bot",
         kb
     )
@@ -1365,12 +1371,36 @@ async def howto_android(callback: types.CallbackQuery):
     await safe_edit(
         callback,
         "🤖 <b>Подключение на Android</b>\n\n"
-        "1️⃣ Установите приложение <b>v2RayTun</b>\n"
-        "👉 <a href=\"https://play.google.com/store/apps/details?id=com.v2raytun.android\">Открыть в Google Play</a>\n\n"
+        "1️⃣ Установите бесплатное приложение <b>Happ - Proxy Utility</b>\n"
+        "👉 <a href=\"https://play.google.com/store/apps/details?id=com.happproxy\">Открыть в Google Play</a>\n\n"
         "2️⃣ Нажмите «🔗 Получить ссылку подключения» ниже\n\n"
         "3️⃣ Скопируйте ссылку\n\n"
-        "4️⃣ В v2RayTun нажмите <b>➕</b> → <b>«Импорт из буфера обмена»</b>\n\n"
-        "5️⃣ Нажмите кнопку подключения 🟢\n\n"
+        "4️⃣ Откройте Happ → нажмите <b>➕</b> → <b>«Из буфера обмена»</b>\n\n"
+        "5️⃣ Выберите любой сервер и нажмите кнопку подключения 🟢\n\n"
+        "6️⃣ Разрешите приложению управлять VPN\n\n"
+        "❓ Не получилось? Напишите @TuVPNSupport_bot",
+        kb
+    )
+    await callback.answer()
+
+
+@dp.callback_query(lambda c: c.data == "howto_desktop")
+async def howto_desktop(callback: types.CallbackQuery):
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔗 Получить ссылку подключения", callback_data="connection_link")],
+        [InlineKeyboardButton(text="◀️ Другое устройство", callback_data="howto")],
+        [InlineKeyboardButton(text="🏠 В меню", callback_data="back")],
+    ])
+    await safe_edit(
+        callback,
+        "💻 <b>Подключение на компьютере</b>\n\n"
+        "<b>Windows и macOS:</b>\n"
+        "1️⃣ Скачайте бесплатное приложение <b>Hiddify</b>\n"
+        "👉 <a href=\"https://github.com/hiddify/hiddify-app/releases/latest\">Скачать с GitHub</a>\n\n"
+        "2️⃣ Нажмите «🔗 Получить ссылку подключения» ниже\n\n"
+        "3️⃣ Скопируйте ссылку\n\n"
+        "4️⃣ Откройте Hiddify → нажмите <b>➕</b> → <b>«Добавить из буфера»</b>\n\n"
+        "5️⃣ Выберите профиль и нажмите кнопку подключения 🟢\n\n"
         "❓ Не получилось? Напишите @TuVPNSupport_bot",
         kb
     )
@@ -1632,10 +1662,10 @@ async def connection_link(callback: types.CallbackQuery):
         f"<code>{sub['sub_url']}</code>\n\n"
         f"👆 Нажмите на ссылку чтобы скопировать.\n\n"
         f"<b>Дальше всё просто:</b>\n"
-        f"1️⃣ Откройте приложение (Изи VPN / v2RayTun)\n"
+        f"1️⃣ Откройте Happ (или Hiddify на ПК)\n"
         f"2️⃣ Нажмите ➕ → «Добавить из буфера обмена»\n"
-        f"3️⃣ Нажмите кнопку подключения 🟢\n\n"
-        f"❓ Не получается? Нажмите «Как настроить» ниже.",
+        f"3️⃣ Выберите сервер и нажмите кнопку подключения 🟢\n\n"
+        f"❓ Нет приложения или не получается? Нажмите «Как настроить» ниже.",
         kb
     )
     await callback.answer()
@@ -1656,7 +1686,7 @@ async def my_devices(callback: types.CallbackQuery):
         await callback.message.answer(
             f"📱 <b>Мои устройства (0/{device_limit})</b>\n\n"
             f"🔍 У вас пока нет подключённых устройств.\n\n"
-            f"Получите ссылку подписки и откройте её в Изи VPN или v2RayTun — ваше устройство автоматически появится в этом списке.",
+            f"Получите ссылку подписки и откройте её в Happ (iOS/Android) или Hiddify (ПК) — ваше устройство автоматически появится в этом списке.",
             reply_markup=kb
         )
         await callback.answer()
@@ -1833,7 +1863,7 @@ async def profile(callback: types.CallbackQuery):
             else:
                 sub_status = f"⚠️ Истекла {exp.strftime('%d.%m.%Y')}"
                 device_info = f"📱 Лимит устройств: {sub.get('devices', 1)}"
-        except:
+        except Exception:
             sub_status = "❓ Ошибка определения статуса"
             device_info = f"📱 Лимит устройств: {sub.get('devices', 1)}"
     else:

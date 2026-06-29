@@ -1031,48 +1031,6 @@ function bindShortcuts() {
     // Skip if typing in a field
     if (inField) return;
 
-    // "/" — focus first .search input on current page
-    if (e.key === '/') {
-      const s = $('.page.active .search input');
-      if (s) { e.preventDefault(); s.focus(); }
-      return;
-    }
-
-    // R — reload
-    if (e.key.toLowerCase() === 'r' && !e.metaKey && !e.ctrlKey) {
-      e.preventDefault();
-      loadAll();
-      toast('Обновляем...', 'success', { duration: 1500 });
-      return;
-    }
-
-    // N — new (context-aware: на promos -> создать промо; иначе -> выдать подписку)
-    if (e.key.toLowerCase() === 'n') {
-      e.preventDefault();
-      if (state.currentPage === 'promos') { resetPromoModal(); openModal('promoModal'); }
-      else if (state.currentPage === 'servers') openServerModal();
-      else { $('#grantUid').value = ''; openModal('grantModal'); }
-      return;
-    }
-
-    // G prefix — go-to
-    if (e.key.toLowerCase() === 'g') {
-      state.keySeq = 'g';
-      clearTimeout(state.keySeqTimer);
-      state.keySeqTimer = setTimeout(() => state.keySeq = '', 1200);
-      return;
-    }
-
-    if (state.keySeq === 'g') {
-      const map = { d: 'dashboard', u: 'users', s: 'subs', p: 'payments', m: 'marketing', o: 'promos', r: 'referrals', t: 'tickets', v: 'servers', x: 'settings' };
-      const tgt = map[e.key.toLowerCase()];
-      if (tgt) {
-        e.preventDefault();
-        goPage(tgt);
-      }
-      state.keySeq = '';
-      return;
-    }
   });
 }
 
@@ -2320,21 +2278,21 @@ function renderServers() {
       <div class="toolbar-grow"></div>
       <button class="btn btn-ghost btn-sm" id="syncAllBtn">${ICONS.refresh} Синхр. все</button>
       <button class="btn btn-ghost btn-sm" id="recheckAllBtn">${ICONS.refresh} Проверить все</button>
-      <button class="btn btn-primary btn-sm" id="addServerBtn">${ICONS.plus} Добавить сервер <span class="kbd-hint">N</span></button>
+      <button class="btn btn-primary btn-sm" id="addServerBtn">${ICONS.plus} Добавить сервер</button>
     </div>
 
     <div class="srv-grid" id="srvGrid"></div>
 
-    <div style="margin-top: 32px">
+    <div style="margin-top: 24px">
       <div class="card">
-        <div class="card-head"><div class="card-title">Внешние ссылки</div></div>
-        <div class="card-pad" style="display:grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap:8px; padding: 14px 16px">
-          <a class="pill" href="https://supabase.com/dashboard/project/avjvojscvmsdzllaeise" target="_blank">${ICONS.ext} Supabase БД</a>
-          <a class="pill" href="https://yookassa.ru/my" target="_blank">${ICONS.ext} ЮКасса</a>
-          <a class="pill" href="https://t.me/MaxArtVPN_bot" target="_blank">${ICONS.ext} Основной бот</a>
-          <a class="pill" href="https://t.me/TuVPNSupport_bot" target="_blank">${ICONS.ext} Бот поддержки</a>
-          <a class="pill" href="https://github.com/effect110419/tuvpn-bot" target="_blank">${ICONS.ext} GitHub</a>
-          <a class="pill" href="https://my.adminvps.ru" target="_blank">${ICONS.ext} AdminVPS</a>
+        <div class="card-head"><div class="card-title">🔗 Внешние ресурсы</div><div class="card-sub">Быстрый доступ к инструментам</div></div>
+        <div class="srv-ext-grid">
+          <a class="srv-ext-link" href="https://supabase.com/dashboard/project/avjvojscvmsdzllaeise" target="_blank"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg> Supabase</a>
+          <a class="srv-ext-link" href="https://yookassa.ru/my" target="_blank"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg> ЮКасса</a>
+          <a class="srv-ext-link" href="https://t.me/MaxArtVPN_bot" target="_blank"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg> Основной бот</a>
+          <a class="srv-ext-link" href="https://t.me/TuVPNSupport_bot" target="_blank"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg> Бот поддержки</a>
+          <a class="srv-ext-link" href="https://github.com/effect110419/tuvpn-bot" target="_blank"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg> GitHub</a>
+          <a class="srv-ext-link" href="https://my.adminvps.ru" target="_blank"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg> AdminVPS</a>
         </div>
       </div>
     </div>
@@ -2685,34 +2643,13 @@ function renderSettings() {
       </div>
 
       <div class="card">
-        <div class="card-head"><div class="card-title">🔑 Доступ и роли</div></div>
+        <div class="card-head"><div class="card-title">👤 Мой аккаунт</div></div>
         <div class="card-pad">
-          ${state.isSuperadmin ? `<div class="info"><span class="info-k">Роль</span><span class="info-v"><span class="tag tag-yellow">Суперадмин</span></span></div>` : `<div class="info"><span class="info-k">Права</span><span class="info-v num">${state.myPermissions ? state.myPermissions.size : 0}</span></div>`}
           <div class="info"><span class="info-k">Telegram ID</span><span class="info-v mono">${state.me ? state.me.user_id : '—'}</span></div>
-          <div class="info"><span class="info-k">Сессия</span><span class="info-v">cookie-based (7 дней)</span></div>
-          ${state.isSuperadmin ? `<button class="btn btn-ghost btn-sm" style="margin-top:10px" onclick="goPage('roles')">Управление ролями →</button>` : ''}
+          <div class="info"><span class="info-k">Сессия</span><span class="info-v">cookie (7 дней)</span></div>
+          <div class="info"><span class="info-k">Быстрые команды</span><span class="info-v"><span class="kbd-key">⌘K</span> / <span class="kbd-key">Ctrl+K</span></span></div>
+          <div class="info"><span class="info-k">Закрыть модалку</span><span class="info-v"><span class="kbd-key">ESC</span></span></div>
         </div>
-      </div>
-    </div>
-
-    <div class="card mt-3">
-      <div class="card-head"><div class="card-title">⌨️ Горячие клавиши</div></div>
-      <div class="card-pad" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:8px;padding:14px 18px">
-        <div class="info"><span class="info-k">Поиск/команды</span><span class="info-v"><span class="kbd-key">⌘K</span> / <span class="kbd-key">Ctrl+K</span></span></div>
-        <div class="info"><span class="info-k">Обновить</span><span class="info-v"><span class="kbd-key">R</span></span></div>
-        <div class="info"><span class="info-k">Создать (контекст)</span><span class="info-v"><span class="kbd-key">N</span></span></div>
-        <div class="info"><span class="info-k">Поиск на странице</span><span class="info-v"><span class="kbd-key">/</span></span></div>
-        <div class="info"><span class="info-k">Закрыть/отмена</span><span class="info-v"><span class="kbd-key">ESC</span></span></div>
-        <div class="info"><span class="info-k">Дашборд</span><span class="info-v"><span class="kbd-key">G</span> <span class="kbd-key">D</span></span></div>
-        <div class="info"><span class="info-k">Пользователи</span><span class="info-v"><span class="kbd-key">G</span> <span class="kbd-key">U</span></span></div>
-        <div class="info"><span class="info-k">Подписки</span><span class="info-v"><span class="kbd-key">G</span> <span class="kbd-key">S</span></span></div>
-        <div class="info"><span class="info-k">Платежи</span><span class="info-v"><span class="kbd-key">G</span> <span class="kbd-key">P</span></span></div>
-        <div class="info"><span class="info-k">Маркетинг</span><span class="info-v"><span class="kbd-key">G</span> <span class="kbd-key">M</span></span></div>
-        <div class="info"><span class="info-k">Промокоды</span><span class="info-v"><span class="kbd-key">G</span> <span class="kbd-key">O</span></span></div>
-        <div class="info"><span class="info-k">Рефералы</span><span class="info-v"><span class="kbd-key">G</span> <span class="kbd-key">R</span></span></div>
-        <div class="info"><span class="info-k">Тикеты</span><span class="info-v"><span class="kbd-key">G</span> <span class="kbd-key">T</span></span></div>
-        <div class="info"><span class="info-k">Серверы</span><span class="info-v"><span class="kbd-key">G</span> <span class="kbd-key">V</span></span></div>
-        <div class="info"><span class="info-k">Настройки</span><span class="info-v"><span class="kbd-key">G</span> <span class="kbd-key">X</span></span></div>
       </div>
     </div>
   `;
@@ -2927,6 +2864,7 @@ function renderMarketing() {
             <tr>
               <th>Кампания</th>
               <th>Источник</th>
+              <th>Создана</th>
               <th style="text-align:right">Расходы ₽</th>
               <th style="text-align:right">Клики</th>
               <th style="text-align:right">Рег-ции</th>
@@ -2949,6 +2887,7 @@ function renderMarketing() {
                 </div>
               </td>
               <td data-label="Источник"><span class="pill pill-direct">organic</span></td>
+              <td data-label="Создана">—</td>
               <td data-label="Расходы ₽" style="text-align:right">—</td>
               <td data-label="Клики" style="text-align:right">—</td>
               <td data-label="Рег-ции" style="text-align:right">${organicUsers.length}</td>
@@ -2957,8 +2896,9 @@ function renderMarketing() {
               <td data-label="ROI" style="text-align:right"><span class="roi-badge success">∞</span></td>
               <td data-label="Ср.чек ₽" style="text-align:right">${organicPayments.length > 0 ? num(totalOrganicRevenue / organicPayments.length) : '—'}</td>
             </tr>
-            ${campaignStats.map(campaign => `
-              <tr class="campaign-row clickable" data-code="${campaign.code}" onclick="showCampaignDetails('${campaign.code}')">
+            ${campaignStats.map(campaign => {
+              const createdAt = campaign.created_at ? new Date(campaign.created_at).toLocaleDateString('ru-RU', { day:'2-digit', month:'short', year:'2-digit' }) : '—';
+              return `<tr class="campaign-row clickable" data-code="${campaign.code}" onclick="showCampaignDetails('${campaign.code}')">
                 <td data-label="Кампания">
                   <div class="u-cell">
                     <div class="status-dot ${campaign.is_active ? 'active' : 'inactive'}"></div>
@@ -2969,13 +2909,14 @@ function renderMarketing() {
                   </div>
                 </td>
                 <td data-label="Источник"><span class="pill pill-${campaign.source || 'other'}">${getSourceIcon(campaign.source)} ${getSourceLabel(campaign.source)}</span></td>
+                <td data-label="Создана"><span class="muted" style="font-size:12px">${createdAt}</span></td>
                 <td data-label="Расходы ₽" style="text-align:right">${campaign.cost > 0 ? num(campaign.cost) : '—'}</td>
                 <td data-label="Клики" style="text-align:right">${campaign.clicks || '—'}</td>
                 <td data-label="Рег-ции" style="text-align:right">${campaign.registrations || '—'}</td>
                 <td data-label="Оплаты" style="text-align:right">${campaign.payments || '—'}</td>
                 <td data-label="Выручка ₽" style="text-align:right">${campaign.revenue > 0 ? num(campaign.revenue) : '—'}</td>
                 <td data-label="ROI" style="text-align:right">
-                  ${campaign.roi === Infinity ? '<span class="roi-badge success">∞</span>' : 
+                  ${campaign.roi === Infinity ? '<span class="roi-badge success">∞</span>' :
                     campaign.roi > 50 ? `<span class="roi-badge success">+${campaign.roi.toFixed(0)}%</span>` :
                     campaign.roi > 0 ? `<span class="roi-badge warning">+${campaign.roi.toFixed(0)}%</span>` :
                     campaign.roi < -50 ? `<span class="roi-badge danger">${campaign.roi.toFixed(0)}%</span>` :
@@ -2983,8 +2924,8 @@ function renderMarketing() {
                   }
                 </td>
                 <td data-label="Ср.чек ₽" style="text-align:right">${campaign.avgTicket > 0 ? num(campaign.avgTicket) : '—'}</td>
-              </tr>
-            `).join('')}
+              </tr>`;
+            }).join('')}
           </tbody>
         </table>
       </div>
@@ -3407,10 +3348,16 @@ async function loadBroadcasts() {
     const list = data.broadcasts || [];
     if (!list.length) { wrap.innerHTML = '<div class="empty-state">Рассылок пока не было</div>'; return; }
     const audMeta = {
-      all: { label: 'Все пользователи', cls: 'bc-aud-all' },
-      active: { label: 'С подпиской', cls: 'bc-aud-active' },
-      inactive: { label: 'Без подписки', cls: 'bc-aud-inactive' },
-      single: { label: 'Конкретный', cls: 'bc-aud-single' },
+      all:               { label: '📢 Все пользователи',              cls: 'bc-aud-all' },
+      active:            { label: '✅ С активной подпиской',           cls: 'bc-aud-active' },
+      inactive:          { label: '⏸ Без активной подписки',          cls: 'bc-aud-inactive' },
+      expires_6h:        { label: '⏰ Истекают через 6 часов',         cls: 'bc-aud-expire' },
+      expired_unpaid_14d:{ label: '💤 Истекли · не платили 14д',       cls: 'bc-aud-inactive' },
+      utm_no_device:     { label: '🎯 Рекл. трафик · не подключились', cls: 'bc-aud-utm' },
+      utm_never_paid:    { label: '💸 Рекл. трафик · ни разу не платили', cls: 'bc-aud-utm' },
+      utm_expired:       { label: '🔄 Рекл. трафик · подписка истекла', cls: 'bc-aud-utm' },
+      custom_list:       { label: '👤 Список ID',                       cls: 'bc-aud-single' },
+      single:            { label: '👤 Конкретный',                      cls: 'bc-aud-single' },
     };
     let rows = list.map(b => {
       const t = new Date(b.created_at);
@@ -3616,23 +3563,26 @@ async function renderMonitor() {
       </label>
       <button class="btn btn-ghost btn-sm" id="monRefresh">Обновить</button>
     </div>
-    <div id="monCards" class="mon-cards"><div class="empty-state">Загрузка...</div></div>
-    <div class="mon-charts">
-      <div class="mon-chart-box">
-        <div class="mon-chart-title">Задержка узла (мс)</div>
-        <div class="mon-chart-wrap"><canvas id="monChartLatency"></canvas></div>
-      </div>
-      <div class="mon-chart-box">
-        <div class="mon-chart-title">Доступность (up / down)</div>
-        <div class="mon-chart-wrap"><canvas id="monChartUptime"></canvas></div>
-      </div>
-      <div class="mon-chart-box">
-        <div class="mon-chart-title">Клиенты на узле</div>
-        <div class="mon-chart-wrap"><canvas id="monChartClients"></canvas></div>
-      </div>
-      <div class="mon-chart-box">
-        <div class="mon-chart-title">Reality-донор (доступность TLS)</div>
-        <div class="mon-chart-wrap"><canvas id="monChartTarget"></canvas></div>
+    <div id="monCards" class="mon-cards-grid"><div class="empty-state">Загрузка...</div></div>
+    <div class="card" style="margin-top:20px;padding:18px 20px 12px">
+      <div class="card-head" style="margin-bottom:8px"><div class="card-title">📈 Графики за период</div><div class="card-sub">Пунктир — разные серверы</div></div>
+      <div class="mon-charts">
+        <div class="mon-chart-box">
+          <div class="mon-chart-title">Задержка (мс)</div>
+          <div class="mon-chart-wrap"><canvas id="monChartLatency"></canvas></div>
+        </div>
+        <div class="mon-chart-box">
+          <div class="mon-chart-title">Доступность</div>
+          <div class="mon-chart-wrap"><canvas id="monChartUptime"></canvas></div>
+        </div>
+        <div class="mon-chart-box">
+          <div class="mon-chart-title">Клиентов на сервере</div>
+          <div class="mon-chart-wrap"><canvas id="monChartClients"></canvas></div>
+        </div>
+        <div class="mon-chart-box">
+          <div class="mon-chart-title">Reality-донор (TLS)</div>
+          <div class="mon-chart-wrap"><canvas id="monChartTarget"></canvas></div>
+        </div>
       </div>
     </div>
   `;
@@ -3703,7 +3653,8 @@ async function loadMonitorLatest() {
   }
 }
 
-const MON_COLORS = ['#4fc4cf', '#6366f1', '#c084fc', '#4ade80', '#facc15', '#f87171'];
+const MON_COLORS = ['#4fc4cf', '#f97316', '#c084fc', '#4ade80', '#facc15', '#f87171'];
+const MON_DASHES = [[0,0], [8,4], [4,4], [12,4,2,4], [6,3], [2,2]];
 
 async function loadMonitorCharts() {
   try {
@@ -3749,11 +3700,18 @@ function drawMonChart(canvasId, key, byServer, codes, valueFn) {
 
   const datasets = codes.map((code, i) => {
     const color = MON_COLORS[i % MON_COLORS.length];
+    const dash = MON_DASHES[i % MON_DASHES.length];
     const pts = byServer[code].map(r => ({ x: new Date(r.checked_at).getTime(), y: valueFn(r) }));
+    // первый сервер — утолщённая линия, остальные тоньше для разборчивости
+    const bw = i === 0 ? 2.5 : 1.8;
+    const pr = i === 0 ? 3 : 0;
     return {
       label: code, data: pts, borderColor: color,
       backgroundColor: createMonGradient(ctx, canvas, color),
-      borderWidth: 2.2, pointRadius: 0, pointHoverRadius: 4, tension: isStep ? 0 : .4,
+      borderWidth: bw, borderDash: dash,
+      pointRadius: pr, pointHoverRadius: 5,
+      pointBackgroundColor: color, pointBorderColor: 'transparent',
+      tension: isStep ? 0 : .35,
       stepped: isStep ? true : false, fill: true,
     };
   });
@@ -4418,6 +4376,20 @@ const BC_AUDIENCE_TEMPLATES = {
 Твоя подписка TuVPN скоро заканчивается. Самое время продлить, чтобы не остаться без VPN.
 🎁 Промокод PROMO20 — скидка 20% на любую подписку
 Жми → Продлить`,
+  utm_never_paid: `👋 Привет!
+
+Ты пришёл к нам, но ещё не попробовал TuVPN в деле. Предлагаем тебе попробовать — по специальной цене.
+
+🎁 Промокод WELCOME30 — скидка 30% на первую подписку
+
+Хочешь быстрый интернет без блокировок? Жми → Подключиться`,
+  utm_expired: `👋 Привет!
+
+Помним, что ты уже пользовался TuVPN. Хотим вернуть тебя обратно — со скидкой!
+
+🎁 Промокод BACK20 — скидка 20% на продление
+
+Жми → Продлить`,
   custom_list: '',
 };
 
@@ -4438,7 +4410,8 @@ function bcApplyTemplateForAudience(aud) {
 function bcOnAudChange() {
   const aud = bcState.audience;
   const utm = $('#bcExtraUtm'); const custom = $('#bcExtraCustom');
-  if (utm) utm.style.display = (aud === 'utm_no_device') ? '' : 'none';
+  const utmAuds = ['utm_no_device', 'utm_never_paid', 'utm_expired'];
+  if (utm) utm.style.display = utmAuds.includes(aud) ? '' : 'none';
   if (custom) custom.style.display = (aud === 'custom_list') ? '' : 'none';
   // автоподстановка шаблона под когорту
   if (typeof bcApplyTemplateForAudience === 'function') {
@@ -4631,22 +4604,27 @@ function updateReceiptPreview() {
 }
 async function sendReceipt() {
   const url = ($('#receiptUrlInput').value || '').trim();
-  if (!url) { toast('Введите ссылку на чек', 'warning'); return; }
-  if (!url.startsWith('http://') && !url.startsWith('https://')) { toast('Ссылка должна начинаться с http:// или https://', 'warning'); return; }
+  if (url && !url.startsWith('http://') && !url.startsWith('https://')) {
+    toast('Ссылка должна начинаться с http:// или https://', 'warning'); return;
+  }
   const btn = $('#receiptSendBtn');
-  btn.disabled = true; btn.textContent = 'Отправляю...';
+  btn.disabled = true; btn.textContent = 'Сохраняю...';
   try {
-    const sendSms = document.getElementById('receiptSendSms')?.checked ?? false;
-    const r = await proxy(`/admin-api/payments/${_receiptCurrentPayId}/register_receipt`, { method: 'POST', body: JSON.stringify({ receipt_url: url, send_sms: sendSms }) });
+    const sendNotif = document.getElementById('receiptSendSms')?.checked ?? false;
+    const body = { send_sms: sendNotif };
+    if (url) body.receipt_url = url;
+    const r = await proxy(`/admin-api/payments/${_receiptCurrentPayId}/register_receipt`, { method: 'POST', body: JSON.stringify(body) });
     if (r.success) {
-      if (r.delivered) toast('✅ Чек зарегистрирован, юзеру отправлено', 'success');
-      else toast('⚠️ Чек зарегистрирован, но юзеру не доставлено: ' + (r.message || '?'), 'warning');
+      if (sendNotif && r.delivered) toast('✅ Чек помечен, уведомление отправлено', 'success');
+      else if (sendNotif && !r.delivered) toast('⚠️ Чек помечен, но уведомление не дошло', 'warning');
+      else toast('✅ Чек помечен как оформленный', 'success');
       closeModal('receiptRegisterModal');
-      try { const fresh = await sbGet('payments', 'select=*&order=created_at.desc'); if (Array.isArray(fresh)) state.payments = fresh; } catch (e) {}
+      const p = state.payments.find(x => Number(x.id) === Number(_receiptCurrentPayId));
+      if (p) { p.receipt_status = 'registered'; if (url) p.receipt_url = url; }
       if (state.currentPage === 'payments') renderPaymentsTable();
     } else toast('Ошибка: ' + (r.error || '?'), 'error');
   } catch (e) { toast('Ошибка сети', 'error'); }
-  finally { btn.disabled = false; btn.textContent = 'Отправить и пометить'; }
+  finally { btn.disabled = false; btn.textContent = 'Пометить чек'; }
 }
 
 
@@ -5214,9 +5192,13 @@ async function renderFinancePage() {
             const total = totalExp || 1;
             const pct = Math.round(amt/total*100);
             return `<div class="fin-bar-row">
-              <div class="fin-bar-label">${meta.label}</div>
+              <div class="fin-bar-label-wrap">
+                <span class="fin-bar-ico">${meta.label.split(' ')[0]}</span>
+                <span class="fin-bar-name">${meta.label.split(' ').slice(1).join(' ')}</span>
+                <span class="fin-bar-pct">${pct}%</span>
+              </div>
               <div class="fin-bar-track"><div class="fin-bar-fill" style="width:${pct}%;background:${meta.color}"></div></div>
-              <div class="fin-bar-amount">${money(amt)}</div>
+              <div class="fin-bar-amount"><b>${money(amt)}</b></div>
             </div>`;
           }).join('')}
         </div>
@@ -5482,20 +5464,27 @@ function renderFinExpensesTable(catFilter) {
     return;
   }
   tbody.innerHTML = list.map(e => {
-    const cat = EXPENSE_CATEGORIES[e.category] || { label: e.category };
+    const cat = EXPENSE_CATEGORIES[e.category] || { label: e.category, color: '#888' };
     const funding = e.funding || [];
     const fundStr = funding.length
-      ? funding.map(f => `<span class="tag tag-blue" style="margin-right:3px">${esc(f.source_name)}: ${money(f.amount)}</span>`).join('')
-      : '<span class="muted" style="font-size:11px">не размечено</span>';
+      ? funding.map(f => `<span class="tag tag-blue">${esc(f.source_name)}: ${money(f.amount)}</span>`).join(' ')
+      : '<span class="muted" style="font-size:11px">—</span>';
+    const ico = (cat.label || '').split(' ')[0];
+    const name = (cat.label || e.category || '').split(' ').slice(1).join(' ') || e.category;
     return `<tr>
-      <td><span class="mono">${esc(e.expense_date)}</span></td>
-      <td>${cat.label}</td>
-      <td>${esc(e.description || '')}</td>
+      <td><span class="mono" style="font-size:12px;color:var(--fg-3)">${esc(e.expense_date || '')}</span></td>
+      <td>
+        <span style="display:inline-flex;align-items:center;gap:5px;padding:2px 8px 2px 4px;border-radius:6px;background:${cat.color}18;border:1px solid ${cat.color}30">
+          <span style="font-size:13px">${ico}</span>
+          <span style="font-size:12px;color:${cat.color};font-weight:500">${esc(name)}</span>
+        </span>
+      </td>
+      <td style="max-width:220px;"><span style="font-size:13px">${esc(e.description || '')}</span></td>
       <td>${fundStr}</td>
-      <td class="text-r"><span class="num" style="color:var(--red);font-weight:600">${money(e.amount)}</span></td>
-      ${canEdit ? `<td class="text-r">
-        <button class="btn btn-ghost btn-sm" data-act="ed" data-id="${e.id}">✎</button>
-        <button class="btn btn-ghost btn-sm" data-act="del" data-id="${e.id}">🗑</button>
+      <td class="text-r"><span class="num" style="color:var(--red);font-weight:700">${money(e.amount)}</span></td>
+      ${canEdit ? `<td class="text-r" style="white-space:nowrap">
+        <button class="btn btn-ghost btn-sm" data-act="ed" data-id="${e.id}" title="Редактировать">✎</button>
+        <button class="btn btn-ghost btn-sm" data-act="del" data-id="${e.id}" title="Удалить">🗑</button>
       </td>` : ''}
     </tr>`;
   }).join('');

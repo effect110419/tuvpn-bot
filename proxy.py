@@ -376,14 +376,31 @@ def get_client_expire(client_uuid):
 
 
 def get_existing_client(uid):
-    """Получаем активную подписку пользователя из Supabase"""
+    """Возвращает постоянный UUID пользователя и последнюю запись подписки.
+
+    UUID берётся из users.client_uuid — задаётся один раз при первой выдаче
+    и больше никогда не меняется, даже если подписка истекла и была возобновлена.
+    sub_id — последняя запись в subscriptions (активная или нет) для UPDATE вместо INSERT.
+    """
     try:
-        r = sb.table("subscriptions").select("*").eq("user_id", uid).eq("status", "active").execute()
+        # Постоянный canonical UUID хранится в users — не меняется после первой выдачи
+        u = sb.table("users").select("client_uuid").eq("user_id", uid).limit(1).execute()
+        canonical_uuid = (u.data[0].get("client_uuid") or None) if u.data else None
+
+        # Последняя запись подписки (активная или нет) — чтобы UPDATE вместо INSERT
+        r = (sb.table("subscriptions").select("*")
+               .eq("user_id", uid)
+               .order("created_at", desc=True)
+               .limit(1).execute())
+
         if r.data:
             sub = r.data[0]
-            if "/sub/" in sub.get("sub_url", ""):
-                existing_uuid = sub["sub_url"].split("/sub/")[-1]
-                return sub["id"], existing_uuid, sub["devices"]
+            # Фолбэк: если canonical_uuid ещё не задан — берём из sub_url
+            if not canonical_uuid and "/sub/" in sub.get("sub_url", ""):
+                canonical_uuid = sub["sub_url"].split("/sub/")[-1]
+            return sub["id"], canonical_uuid, sub.get("devices", 1)
+
+        return None, canonical_uuid, 1
     except Exception:
         pass
     return None, None, None
@@ -700,9 +717,35 @@ def subscription(client_uuid):
             if track_result["reason"] == "limit_exceeded":
                 app.logger.info(f"Subscription blocked (limit): {client_uuid} from {client_ip}")
                 return Response("Device limit exceeded for this subscription", status=403)
-            # Если subscription_not_found — отдаём 404
             if track_result["reason"] == "subscription_not_found":
-                return Response("Subscription not found", status=404)
+                # UUID от старой (истёкшей) подписки — ищем активную у того же пользователя
+                old_sub_q = (sb.table("subscriptions").select("user_id")
+                               .like("sub_url", f"%{client_uuid}").limit(1).execute())
+                redirected = False
+                if old_sub_q.data:
+                    uid_owner = old_sub_q.data[0]["user_id"]
+                    active_q = (sb.table("subscriptions").select("sub_url")
+                                  .eq("user_id", uid_owner).eq("status", "active").limit(1).execute())
+                    if active_q.data:
+                        new_url = active_q.data[0].get("sub_url", "")
+                        if "/sub/" in new_url:
+                            new_uuid = new_url.split("/sub/")[-1]
+                            app.logger.info(
+                                f"sub redirect: old {client_uuid[:8]} → active {new_uuid[:8]} "
+                                f"user={uid_owner}"
+                            )
+                            client_uuid = new_uuid
+                            # повторно трекаем с новым UUID
+                            track_result = track_device(client_uuid, client_ip, user_agent,
+                                                        hwid=hwid, device_model=device_model,
+                                                        device_os=device_os, os_version=os_version)
+                            if not track_result["allowed"]:
+                                if track_result["reason"] == "limit_exceeded":
+                                    return Response("Device limit exceeded for this subscription", status=403)
+                                return Response("Subscription not found", status=404)
+                            redirected = True
+                if not redirected:
+                    return Response("Subscription not found", status=404)
 
     # Получаем активные серверы
     try:
@@ -864,9 +907,9 @@ def admin_sync_all_servers():
 
 def issue_subscription(uid: int, devices: int, days: int) -> dict:
     """Выдать/продлить подписку на всех активных серверах.
-    - Если есть активная подписка — продлевает с тем же UUID
-    - Если нет — создаёт новую с новым UUID
-    - Применяет накопленные bonus_days
+    UUID пользователя неизменен с первой выдачи — хранится в users.client_uuid.
+    При истечении/отзыве и повторной выдаче UUID тот же, sub_url не меняется.
+    Применяет накопленные bonus_days.
     """
     try:
         # Учитываем bonus_days
@@ -878,24 +921,35 @@ def issue_subscription(uid: int, devices: int, days: int) -> dict:
             pass
         total_days = days + bonus_days
 
-        # Проверяем существующую подписку
+        # Получаем постоянный UUID и последнюю запись подписки (активную или нет)
         sub_id, existing_uuid, _ = get_existing_client(uid)
         now = datetime.utcnow()
 
-        if existing_uuid and sub_id:
-            # ПРОДЛЕНИЕ существующей
+        if existing_uuid:
+            # Всегда реиспользуем UUID — UUID пользователя не меняется никогда
+            client_uuid = existing_uuid
+            # База для расчёта: текущая expires_at если активна, иначе now
             try:
-                cur_row = sb.table("subscriptions").select("expires_at").eq("id", sub_id).limit(1).execute()
-                cur_exp_raw = cur_row.data[0]["expires_at"] if cur_row.data else None
-                cur_exp = datetime.fromisoformat(cur_exp_raw.replace("Z", "+00:00")).replace(tzinfo=None) if cur_exp_raw else now
-                base = cur_exp if cur_exp > now else now
+                if sub_id:
+                    cur_row = (sb.table("subscriptions")
+                                 .select("expires_at,status").eq("id", sub_id).limit(1).execute())
+                    if cur_row.data:
+                        cur_exp_raw = cur_row.data[0]["expires_at"]
+                        is_active = cur_row.data[0]["status"] == "active"
+                        cur_exp = (datetime.fromisoformat(cur_exp_raw.replace("Z", "+00:00")).replace(tzinfo=None)
+                                   if cur_exp_raw else now)
+                        # Продлеваем от текущей даты истечения только если подписка ещё активна
+                        base = cur_exp if (is_active and cur_exp > now) else now
+                    else:
+                        base = now
+                else:
+                    base = now
             except Exception:
                 base = now
             new_expires = base + timedelta(days=total_days)
-            client_uuid = existing_uuid
             action = "extended"
         else:
-            # СОЗДАНИЕ новой
+            # Первая выдача — генерируем UUID один раз
             client_uuid = str(uuid.uuid4())
             new_expires = now + timedelta(days=total_days)
             action = "created"
@@ -909,7 +963,8 @@ def issue_subscription(uid: int, devices: int, days: int) -> dict:
 
         success_count = 0
         for server in servers:
-            if action == "extended":
+            # При наличии existing_uuid обновляем (xui_update умеет add-if-missing)
+            if existing_uuid:
                 ok = xui_update_client_on_server(server, client_uuid, uid, devices, expire_ms)
             else:
                 ok = xui_add_client_on_server(server, client_uuid, uid, devices, expire_ms)
@@ -932,10 +987,15 @@ def issue_subscription(uid: int, devices: int, days: int) -> dict:
             "notified_expired": False,
         }
         if sub_id:
+            # Обновляем существующую запись (даже если была inactive) — не создаём дубли
             sb.table("subscriptions").update(sub_data).eq("id", sub_id).execute()
         else:
+            # Первая выдача — создаём запись
             sub_data["started_at"] = now.isoformat()
             sb.table("subscriptions").insert(sub_data).execute()
+
+        # users.client_uuid устанавливается ОДИН раз при первой выдаче, больше не меняется
+        if not existing_uuid:
             sb.table("users").update({"client_uuid": client_uuid}).eq("user_id", uid).execute()
 
         # Списываем bonus_days если применили
@@ -946,7 +1006,7 @@ def issue_subscription(uid: int, devices: int, days: int) -> dict:
             except Exception:
                 pass
 
-        print(f"✅ {action} user_id={uid} on {success_count}/{len(servers)} servers, expires {new_expires}")
+        print(f"✅ {action} user_id={uid} uuid={client_uuid[:8]} on {success_count}/{len(servers)} servers, expires {new_expires}")
         return {
             "success": True,
             "uuid": client_uuid,
@@ -2206,6 +2266,45 @@ def admin_user_item(uid):
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+@app.route('/admin-api/payments/<int:pay_id>/register_receipt', methods=['POST', 'OPTIONS'])
+def register_receipt(pay_id):
+    """Пометить чек оформленным + опционально уведомить пользователя."""
+    if request.method == 'OPTIONS':
+        return make_response('', 204)
+    try:
+        body = request.get_json(silent=True) or {}
+        receipt_url = (body.get('receipt_url') or '').strip() or None
+        send_notif = bool(body.get('send_sms') or body.get('send_notification'))
+
+        pay_r = sb.table("payments").select("*").eq("id", pay_id).limit(1).execute()
+        if not pay_r.data:
+            return jsonify({"success": False, "error": "payment not found"}), 404
+        p = pay_r.data[0]
+
+        upd = {
+            "receipt_status": "registered",
+            "receipt_registered_at": datetime.utcnow().isoformat(),
+        }
+        if receipt_url:
+            upd["receipt_url"] = receipt_url
+
+        sb.table("payments").update(upd).eq("id", pay_id).execute()
+
+        delivered = False
+        if send_notif and p.get("user_id"):
+            paid_date = (p.get("paid_at") or p.get("created_at") or "")[:10]
+            amount = p.get("amount", "")
+            msg = f"✅ Чек за подписку TuVPN оформлен!\n\nСумма: {amount}₽, дата: {paid_date}."
+            if receipt_url:
+                msg += f"\n\n📄 Ссылка на чек: {receipt_url}"
+            msg += "\n\nСпасибо, что с нами! ❤️"
+            delivered = notify_user(int(p["user_id"]), msg)
+
+        return jsonify({"success": True, "delivered": delivered})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.route('/admin-api/export/csv', methods=['GET', 'OPTIONS'])
 def export_csv():
     """Экспорт данных в CSV: ?type=payments|users|subscriptions"""
@@ -2949,6 +3048,23 @@ def _get_recipient_ids(audience, campaign_filter=None, target_user_id=None, targ
         dev_set = {d["user_id"] for d in (dev_r.data or [])}
         camp_users = [u["user_id"] for u in all_users if u.get("campaign_code")]
         return [uid for uid in camp_users if uid not in dev_set]
+    elif audience == "utm_never_paid":
+        # UTM-пользователи, у которых нет ни одного успешного платежа
+        camp_users = [u["user_id"] for u in all_users if u.get("campaign_code")]
+        if not camp_users:
+            return []
+        pay_r = sb.table("payments").select("user_id").eq("status", "succeeded").execute()
+        paid_set = {p["user_id"] for p in (pay_r.data or [])}
+        return [uid for uid in camp_users if uid not in paid_set]
+    elif audience == "utm_expired":
+        # UTM-пользователи, у которых подписка была но сейчас неактивна
+        camp_users = [u["user_id"] for u in all_users if u.get("campaign_code")]
+        if not camp_users:
+            return []
+        subs_r = sb.table("subscriptions").select("user_id,status").execute()
+        active_set = {s["user_id"] for s in (subs_r.data or []) if s.get("status") == "active"}
+        had_sub_set = {s["user_id"] for s in (subs_r.data or [])}
+        return [uid for uid in camp_users if uid in had_sub_set and uid not in active_set]
     else:  # all
         return all_ids
 

@@ -132,7 +132,6 @@
       <div class="nav-item active" data-page="dashboard">
         <span class="nav-ico"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="7" height="9" x="3" y="3" rx="1"/><rect width="7" height="5" x="14" y="3" rx="1"/><rect width="7" height="9" x="14" y="12" rx="1"/><rect width="7" height="5" x="3" y="16" rx="1"/></svg></span>
         <span>Дашборд</span>
-        <span class="nav-kbd">G D</span>
       </div>
       <div class="nav-item" data-page="users">
         <span class="nav-ico"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></span>
@@ -159,7 +158,6 @@
       <div class="nav-item" data-page="marketing">
         <span class="nav-ico"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="m19 10-7 7-7-7"/></svg></span>
         <span>Маркетинг</span>
-        <span class="nav-kbd">G M</span>
       </div>
       <div class="nav-item" data-page="referrals">
         <span class="nav-ico"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 7H7a5 5 0 0 0-5 5 5 5 0 0 0 5 5h10a5 5 0 0 0 5-5 5 5 0 0 0-5-5z"/><path d="M8 12h.01"/><path d="M16 12h.01"/></svg></span>
@@ -201,11 +199,6 @@
         <span class="nav-ico">💰</span>
         <span>Финансы</span>
       </div>
-      <div class="nav-item superadmin-only" data-page="roles" style="display:none">
-        <span class="nav-ico">🔑</span>
-        <span>Роли и доступы</span>
-      </div>
-
       <div class="nav-section superadmin-only" style="display:none">Инструменты</div>
       <div class="nav-item superadmin-only" data-page="audit" style="display:none">
         <span class="nav-ico"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.35-4.35"/></svg></span>
@@ -818,6 +811,14 @@
             <input type="radio" name="bcAud" value="expires_6h">
             <div class="aud-card-body"><div class="aud-card-ico">⏰</div><div class="aud-card-title">Истекают через 6 часов</div><div class="aud-card-sub">Срочно напомнить продлить</div></div>
           </label>
+          <label class="aud-card" data-aud="utm_never_paid">
+            <input type="radio" name="bcAud" value="utm_never_paid">
+            <div class="aud-card-body"><div class="aud-card-ico">💸</div><div class="aud-card-title">UTM · не покупали</div><div class="aud-card-sub">Пришли по UTM, ни разу не платили</div></div>
+          </label>
+          <label class="aud-card" data-aud="utm_expired">
+            <input type="radio" name="bcAud" value="utm_expired">
+            <div class="aud-card-body"><div class="aud-card-ico">🔄</div><div class="aud-card-title">UTM · подписка истекла</div><div class="aud-card-sub">Пришли по UTM, была подписка — истекла</div></div>
+          </label>
           <label class="aud-card" data-aud="custom_list">
             <input type="radio" name="bcAud" value="custom_list">
             <div class="aud-card-body"><div class="aud-card-ico">👤</div><div class="aud-card-title">Конкретные пользователи</div><div class="aud-card-sub">Выбрать из списка вручную</div></div>
@@ -825,7 +826,7 @@
         </div>
       </div>
       <div class="aud-extra" id="bcExtraUtm" style="display:none">
-        <div class="field"><label class="label">Кампания</label><select id="bcCampaignFilter" class="select"><option value="all">Любая кампания</option></select></div>
+        <div class="field"><label class="label">Кампания</label><select id="bcCampaignFilter" class="select"><option value="all">Все кампании</option></select></div>
       </div>
       <div class="aud-extra" id="bcExtraCustom" style="display:none">
         <div class="field"><label class="label">Поиск пользователей</label><input id="bcUserSearch" class="input" placeholder="имя, @username или id"><div class="bc-user-list" id="bcUserList"></div></div>
@@ -934,21 +935,20 @@
     <div class="modal-body">
       <div id="receiptInfoBlock" class="receipt-info"></div>
       <div class="field">
-        <label class="label">Ссылка на чек из «Мой налог»</label>
+        <label class="label">Ссылка на чек из «Мой налог» <span style="color:var(--fg-4);font-weight:400">(необязательно)</span></label>
         <input id="receiptUrlInput" class="input mono" placeholder="https://lknpd.nalog.ru/api/v1/receipt/...">
-        <div class="help">Скопируй ссылку чека из приложения «Мой налог» после регистрации продажи.</div>
-      </div>
-      <div class="field">
-        <label class="label">Превью сообщения юзеру</label>
-        <div class="receipt-preview" id="receiptPreviewBox">—</div>
-        <div class="help">Сообщение которое получит пользователь (если включено уведомление)</div>
+        <div class="help">Вставьте ссылку если хотите отправить пользователю. Можно пометить чек без ссылки.</div>
       </div>
       <div class="field">
         <label style="display:flex;gap:8px;align-items:center;cursor:pointer">
           <input type="checkbox" id="receiptSendSms">
-          <span>Отправить уведомление пользователю</span>
+          <span>Отправить уведомление пользователю в Telegram</span>
         </label>
-        <div class="help" style="margin-top:4px;margin-left:24px;font-size:12px">Если выключено — чек отмечается в системе, SMS не отправляется</div>
+        <div class="help" style="margin-top:4px;margin-left:24px;font-size:12px">Если включено — пользователь получит сообщение со ссылкой на чек</div>
+      </div>
+      <div class="field" id="receiptPreviewWrap">
+        <label class="label">Превью уведомления</label>
+        <div class="receipt-preview" id="receiptPreviewBox">—</div>
       </div>
     </div>
     <div class="modal-foot">
