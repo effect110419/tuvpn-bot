@@ -267,7 +267,12 @@ async def give_referral_bonus(user_id, days, reason):
                 "",
                 f"Причина: {reason}",
             ]
-            await bot.send_message(user_id, "\n".join(text_lines), parse_mode="HTML")
+            await bot.send_message(
+                user_id, "\n".join(text_lines), parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="◀️ В главное меню", callback_data="back")],
+                ]),
+            )
         except Exception:
             pass
     except Exception as e:
@@ -285,9 +290,14 @@ async def give_new_user_bonus(user_id, days=7):
                 text_lines = [
                     f"🎁 Вам начислено <b>{days} дней</b> бесплатного доступа!",
                     "",
-                    "Откройте <b>«🔌 Подключиться»</b> в меню — там ссылка и инструкция.",
+                    "Нажмите кнопку ниже, чтобы получить ссылку для подключения.",
                 ]
-                await bot.send_message(user_id, "\n".join(text_lines), parse_mode="HTML")
+                await bot.send_message(
+                    user_id, "\n".join(text_lines), parse_mode="HTML",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="🔌 Подключиться", callback_data="connect")],
+                    ]),
+                )
             except Exception:
                 pass
         else:
@@ -1087,8 +1097,11 @@ async def process_successful_payment(message: types.Message):
             f"✅ <b>Оплата получена!</b>\n\n"
             f"📦 {months_label}, {devices} устр.\n"
             f"💫 Списано: <b>{stars_amount}⭐</b>\n\n"
-            f"Подписка активирована. Открой раздел <b>«🔌 Подключиться»</b> в меню — там ссылка и инструкция.",
+            f"Подписка активирована. Нажмите кнопку ниже, чтобы подключиться.",
             parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔌 Подключиться", callback_data="connect")],
+            ]),
         )
     except Exception:
         pass

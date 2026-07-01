@@ -347,7 +347,7 @@ function renderAuditReport(r, host) {
       const uid = btn.dataset.uid;
       const devId = btn.dataset.devid;
       const devName = btn.dataset.devname;
-      if (!confirm(`Удалить устройство «${devName}» из подписки пользователя?\nПользователь сможет добавить его снова при следующем подключении.`)) return;
+      if (!await showConfirm({ title: 'Удалить устройство', message: `Удалить устройство «${devName}» из подписки пользователя?\nПользователь сможет добавить его снова при следующем подключении.`, okText: 'Удалить', danger: true })) return;
       btn.disabled = true; btn.textContent = '⏳';
       try {
         const resp = await proxy(`/admin-api/user_devices/${uid}/${devId}`, { method: 'DELETE' });
@@ -550,7 +550,7 @@ async function wlAddUser() {
 }
 
 async function wlRemoveUser(uid) {
-  if(!confirm(`Удалить пользователя ${uid} из watchlist?`))return;
+  if(!await showConfirm({ title: 'Удалить из watchlist', message: `Удалить пользователя ${uid} из watchlist?`, okText: 'Удалить', danger: true }))return;
   try{
     const resp=await proxy(`/admin-api/watchlist/${uid}`,{method:'DELETE'});
     if(resp.success){toast('Удалён','success');_wl.list=_wl.list.filter(x=>x.user_id!==uid);_wl.results=_wl.results.filter(x=>x.user_id!==uid);renderWatchlistContent();}

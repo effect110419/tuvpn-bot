@@ -448,18 +448,13 @@ async function proxy(path, opts = {}) {
   return r.json();
 }
 
-/* ===================== AUTH (Telegram) ===================== */
-// === TG ADMIN AUTH ===
-let _tgLoginToken = null;
-let _tgPollTimer = null;
-let _tgCountdownTimer = null;
-let _tgExpiresAt = null;
+/* ===================== AUTH (OTP) ===================== */
+let _otpTgId = null;  // tg_id введённый на шаге 1
+let _otpCooldownTimer = null;
 
 async function checkAuth() {
   try {
-    const r = await fetch(PROXY_URL + '/admin-api/auth/me', {
-      credentials: 'include',
-    });
+    const r = await fetch(PROXY_URL + '/admin-api/auth/me', { credentials: 'include' });
     if (r.status === 200) {
       const data = await r.json();
       if (data.success) return data;
@@ -468,112 +463,106 @@ async function checkAuth() {
   return null;
 }
 
-async function startTgLogin() {
+async function requestOTPCode() {
+  const inp = $('#loginTgIdInput');
+  const tgId = (inp && inp.value.trim()) || '';
+  if (!tgId || !/^\d+$/.test(tgId)) {
+    showLoginError('Введите числовой Telegram ID');
+    return;
+  }
   hideLoginError();
+  const btn = $('#loginRequestBtn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Отправляем...'; }
   try {
-    const r = await fetch(PROXY_URL + '/admin-api/auth/start', {
-      method: 'POST',
-      credentials: 'include',
+    const r = await fetch(PROXY_URL + '/admin-api/auth/request_code', {
+      method: 'POST', credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tg_id: parseInt(tgId, 10) }),
     });
-    const data = await r.json();
-    if (!data.success) {
-      showLoginError(data.error || 'Не удалось начать вход');
+    const d = await r.json();
+    if (r.status === 429) {
+      const wait = d.wait_seconds || 60;
+      showLoginError(`Подождите ${wait} сек. перед повторным запросом`);
+      startCooldown(wait);
       return;
     }
-    _tgLoginToken = data.login_token;
-    _tgExpiresAt = Date.now() + (data.expires_in_minutes || 10) * 60 * 1000;
-
-    // Переключаем UI
-    $('#loginIdle').style.display = 'none';
-    $('#loginPending').style.display = 'block';
-    const dl = $('#loginDeeplink');
-    dl.href = data.deeplink;
-    // Открываем deeplink сразу
-    window.open(data.deeplink, '_blank');
-
-    // Стартуем polling
-    startPollLoop();
-    startCountdown();
+    if (!d.success) {
+      showLoginError('Пользователь не найден');
+      return;
+    }
+    _otpTgId = parseInt(tgId, 10);
+    $('#loginStep1').style.display = 'none';
+    $('#loginStep2').style.display = 'block';
+    const ci = $('#loginCodeInput');
+    if (ci) { ci.value = ''; ci.focus(); }
   } catch (e) {
     showLoginError('Ошибка сети: ' + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Получить код'; }
   }
 }
 
-function startPollLoop() {
-  stopPollLoop();
-  _tgPollTimer = setInterval(pollOnce, 2000);
-}
-
-function stopPollLoop() {
-  if (_tgPollTimer) {
-    clearInterval(_tgPollTimer);
-    _tgPollTimer = null;
+async function verifyOTPCode() {
+  const code = ($('#loginCodeInput') && $('#loginCodeInput').value.trim()) || '';
+  if (code.length !== 6) {
+    showLoginError('Код должен состоять из 6 цифр');
+    return;
   }
-}
-
-async function pollOnce() {
-  if (!_tgLoginToken) return;
+  if (!_otpTgId) { goLoginStep1(); return; }
+  hideLoginError();
+  const btn = $('#loginVerifyBtn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Проверяем...'; }
   try {
-    const r = await fetch(PROXY_URL + '/admin-api/auth/poll?token=' + encodeURIComponent(_tgLoginToken), {
-      credentials: 'include',
+    const r = await fetch(PROXY_URL + '/admin-api/auth/verify_code', {
+      method: 'POST', credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tg_id: _otpTgId, code }),
     });
     const data = await r.json();
-    if (data.status === 'confirmed') {
-      stopPollLoop();
-      stopCountdown();
+    if (data.success) {
       showApp();
-      return;
+    } else {
+      const msgs = {
+        expired: 'Код истёк. Запросите новый.',
+        too_many_attempts: 'Слишком много попыток. Запросите новый код.',
+        invalid_code: data.remaining != null ? `Неверный код. Осталось попыток: ${data.remaining}` : 'Неверный код.',
+        db_error: 'Ошибка сервера. Попробуйте снова.',
+      };
+      showLoginError(msgs[data.error] || 'Ошибка входа');
+      if (data.error === 'expired' || data.error === 'too_many_attempts') goLoginStep1();
     }
-    if (data.status === 'rejected') {
-      stopPollLoop();
-      stopCountdown();
-      cancelTgLogin();
-      showLoginError('Вход отклонён');
-      return;
-    }
-    if (data.status === 'expired' || data.status === 'not_found') {
-      stopPollLoop();
-      stopCountdown();
-      cancelTgLogin();
-      showLoginError('Срок ссылки истёк. Попробуйте снова.');
-      return;
-    }
-    // pending — продолжаем
   } catch (e) {
-    // молча — следующий поллинг попробует ещё раз
+    showLoginError('Ошибка сети: ' + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Войти'; }
   }
 }
 
-function startCountdown() {
-  stopCountdown();
-  _tgCountdownTimer = setInterval(() => {
-    const ms = _tgExpiresAt - Date.now();
-    if (ms <= 0) {
-      stopCountdown();
-      $('#loginCountdown').textContent = '0:00';
-      return;
+function goLoginStep1() {
+  _otpTgId = null;
+  hideLoginError();
+  if (_otpCooldownTimer) { clearInterval(_otpCooldownTimer); _otpCooldownTimer = null; }
+  $('#loginStep1').style.display = 'block';
+  $('#loginStep2').style.display = 'none';
+  const btn = $('#loginRequestBtn');
+  if (btn) { btn.disabled = false; btn.textContent = 'Получить код'; }
+}
+
+function startCooldown(seconds) {
+  if (_otpCooldownTimer) clearInterval(_otpCooldownTimer);
+  const btn = $('#loginRequestBtn');
+  let left = seconds;
+  if (btn) { btn.disabled = true; btn.textContent = `Повторить через ${left} сек`; }
+  _otpCooldownTimer = setInterval(() => {
+    left--;
+    if (left <= 0) {
+      clearInterval(_otpCooldownTimer);
+      _otpCooldownTimer = null;
+      if (btn) { btn.disabled = false; btn.textContent = 'Получить код'; }
+    } else {
+      if (btn) btn.textContent = `Повторить через ${left} сек`;
     }
-    const sec = Math.floor(ms / 1000);
-    const mm = Math.floor(sec / 60);
-    const ss = sec % 60;
-    $('#loginCountdown').textContent = `${mm}:${String(ss).padStart(2, '0')}`;
-  }, 500);
-}
-
-function stopCountdown() {
-  if (_tgCountdownTimer) {
-    clearInterval(_tgCountdownTimer);
-    _tgCountdownTimer = null;
-  }
-}
-
-function cancelTgLogin() {
-  stopPollLoop();
-  stopCountdown();
-  _tgLoginToken = null;
-  $('#loginIdle').style.display = 'block';
-  $('#loginPending').style.display = 'none';
+  }, 1000);
 }
 
 function showLoginError(msg) {
@@ -588,7 +577,7 @@ function hideLoginError() {
 }
 
 async function doLogout() {
-  if (!confirm('Выйти из админки?')) return;
+  if (!await showConfirm({ title: 'Выход', message: 'Выйти из админки?', okText: 'Выйти', danger: true })) return;
   try {
     await fetch(PROXY_URL + '/admin-api/auth/logout', {
       method: 'POST',
@@ -889,6 +878,44 @@ function openModal(id) {
   }, 50);
 }
 function closeModal(id) { $('#' + id).classList.remove('open'); }
+
+function showConfirm({ title = 'Подтвердить', message = '', okText = 'Подтвердить', cancelText = 'Отмена', danger = false } = {}) {
+  return new Promise(resolve => {
+    const modal = document.getElementById('confirmModal');
+    document.getElementById('confirmTitle').textContent = title;
+    document.getElementById('confirmMessage').textContent = message;
+    const okBtn = document.getElementById('confirmOk');
+    const cancelBtn = document.getElementById('confirmCancel');
+    okBtn.textContent = okText;
+    okBtn.className = 'btn ' + (danger ? 'btn-danger' : 'btn-primary');
+    cancelBtn.textContent = cancelText;
+
+    let _mdTarget = null;
+    function cleanup(result) {
+      modal.classList.remove('open');
+      okBtn.removeEventListener('click', onOk);
+      cancelBtn.removeEventListener('click', onCancel);
+      modal.removeEventListener('mousedown', onMd);
+      modal.removeEventListener('click', onBd);
+      document.removeEventListener('keydown', onKey);
+      resolve(result);
+    }
+    function onOk() { cleanup(true); }
+    function onCancel() { cleanup(false); }
+    function onMd(e) { _mdTarget = e.target; }
+    function onBd(e) { if (e.target === modal && _mdTarget === modal) cleanup(false); _mdTarget = null; }
+    function onKey(e) { if (e.key === 'Escape') cleanup(false); }
+
+    okBtn.addEventListener('click', onOk);
+    cancelBtn.addEventListener('click', onCancel);
+    modal.addEventListener('mousedown', onMd);
+    modal.addEventListener('click', onBd);
+    document.addEventListener('keydown', onKey);
+    modal.classList.add('open');
+    setTimeout(() => cancelBtn.focus(), 50);
+  });
+}
+
 function closeAnyModal() {
   $$('.modal-bg.open').forEach(m => m.classList.remove('open'));
   $('#cmdPalette').classList.remove('open');
@@ -1103,9 +1130,23 @@ function sparkline(svg, values, color = '#5b8def') {
 
 /* ===================== BOOT ===================== */
 document.addEventListener('DOMContentLoaded', () => {
-  // Login
-  const ltb = $('#loginTgBtn'); if (ltb) ltb.addEventListener('click', startTgLogin);
-  const lcb = $('#loginCancelBtn'); if (lcb) lcb.addEventListener('click', cancelTgLogin);
+  // Login OTP
+  const _lrb = $('#loginRequestBtn'); if (_lrb) _lrb.addEventListener('click', requestOTPCode);
+  const _lvb = $('#loginVerifyBtn'); if (_lvb) _lvb.addEventListener('click', verifyOTPCode);
+  const _lbb = $('#loginBackBtn'); if (_lbb) _lbb.addEventListener('click', goLoginStep1);
+  // Enter → submit на обоих шагах
+  const _lid = $('#loginTgIdInput');
+  if (_lid) _lid.addEventListener('keydown', e => { if (e.key === 'Enter') requestOTPCode(); });
+  const _lci = $('#loginCodeInput');
+  if (_lci) {
+    _lci.addEventListener('keydown', e => { if (e.key === 'Enter') verifyOTPCode(); });
+    // Автосабмит при вводе 6 цифр
+    _lci.addEventListener('input', e => {
+      const v = e.target.value.replace(/\D/g, '').slice(0, 6);
+      e.target.value = v;
+      if (v.length === 6) verifyOTPCode();
+    });
+  }
 
   // Sidebar nav
   $$('.nav-item').forEach(n => n.addEventListener('click', () => goPage(n.dataset.page)));
@@ -2172,7 +2213,7 @@ async function togglePromo(id, val) {
 }
 
 async function deletePromo(id, code) {
-  if (!confirm(`Удалить промокод ${code}? Это действие необратимо.`)) return;
+  if (!await showConfirm({ title: 'Удалить промокод', message: `Удалить промокод ${code}? Это действие необратимо.`, okText: 'Удалить', danger: true })) return;
   try {
     await sbDelete('promocodes', 'id=eq.' + id);
     state.promos = state.promos.filter(x => x.id !== id);
@@ -2630,7 +2671,7 @@ async function deleteServerFromModal() {
   if (!sid) return;
   const s = state.servers.find(x => String(x.id) === String(sid));
   if (!s) return;
-  if (!confirm(`Удалить сервер ${s.country_flag} ${s.country_name}?\n\nЭто действие необратимо. Существующие клиенты на этом сервере останутся, но в новые подписки он попадать не будет.`)) return;
+  if (!await showConfirm({ title: 'Удалить сервер', message: `Удалить сервер ${s.country_flag} ${s.country_name}?\n\nЭто действие необратимо. Существующие клиенты на этом сервере останутся, но в новые подписки он попадать не будет.`, okText: 'Удалить', danger: true })) return;
 
   try {
     const r = await proxy(`/admin-api/servers/${sid}`, { method: 'DELETE' });
@@ -2664,7 +2705,7 @@ async function toggleServerActive(sid, val) {
 async function syncServer(sid) {
   const s = state.servers.find(x => String(x.id) === String(sid));
   if (!s) return;
-  if (!confirm(`Синхронизировать ${s.country_flag || ''} ${s.country_name}?\n\nНа этот сервер будут добавлены все активные подписки, которых там ещё нет. Существующие — обновлены (срок действия).`)) return;
+  if (!await showConfirm({ title: 'Синхронизация сервера', message: `Синхронизировать ${s.country_flag || ''} ${s.country_name}?\n\nНа этот сервер будут добавлены все активные подписки, которых там ещё нет. Существующие — обновлены (срок действия).`, okText: 'Синхронизировать' })) return;
 
   toast('Синхронизация запущена...');
   try {
@@ -2683,7 +2724,7 @@ async function syncServer(sid) {
 }
 
 async function syncAllServers() {
-  if (!confirm('Синхронизировать все активные серверы?\n\nНа каждый сервер будут раскатаны все активные подписки. Это может занять минуту.')) return;
+  if (!await showConfirm({ title: 'Синхронизировать все серверы', message: 'Синхронизировать все активные серверы?\n\nНа каждый сервер будут раскатаны все активные подписки. Это может занять минуту.', okText: 'Синхронизировать' })) return;
   toast('Синхронизация всех серверов...');
   try {
     const r = await proxy('/admin-api/servers/sync_all', { method: 'POST' });
@@ -2850,7 +2891,7 @@ async function grantSubscription() {
 }
 
 async function revokeSub(id) {
-  if (!confirm('Отозвать подписку? Пользователь потеряет доступ ко всем серверам.')) return;
+  if (!await showConfirm({ title: 'Отозвать подписку', message: 'Отозвать подписку? Пользователь потеряет доступ ко всем серверам.', okText: 'Отозвать', danger: true })) return;
   try {
     const data = await proxy('/admin-api/revoke/' + id, { method: 'POST' });
     if (!data.success) { toast('Ошибка отзыва: ' + (data.error || 'неизвестно'), 'error'); return; }
@@ -3378,8 +3419,7 @@ async function updateCampaign(code) {
 async function deleteCampaign(code) {
   const c = (state.campaigns || []).find(x => x.code === code);
   if (!c) { toast('Кампания не найдена', 'error'); return; }
-  const ok = confirm(`Удалить кампанию «${c.name || code}»?\n\nЭто действие нельзя отменить. Уже зарегистрированные по ней пользователи останутся, но статистика кампании пропадёт.`);
-  if (!ok) return;
+  if (!await showConfirm({ title: 'Удалить кампанию', message: `Удалить кампанию «${c.name || code}»?\n\nЭто действие нельзя отменить. Уже зарегистрированные по ней пользователи останутся, но статистика кампании пропадёт.`, okText: 'Удалить', danger: true })) return;
   try {
     await sbDelete('campaigns', `code=eq.${encodeURIComponent(code)}`);
     state.campaigns = (state.campaigns || []).filter(x => x.code !== code);
@@ -4266,7 +4306,7 @@ async function applyReality(sid) {
   const srv = (state.servers || []).find(s => String(s.id) === String(sid));
   const name = srv ? (srv.country_name || srv.code) : ('#' + sid);
   const sni = srv ? srv.sni : '?';
-  if (!confirm(`Применить настройки Reality на сервер "${name}"?\n\nНа сервер будет записан SNI = "${sni}" (из админки), затем Xray перезапустится.\n\nВ момент рестарта подключения на короткое время прервутся.`)) return;
+  if (!await showConfirm({ title: 'Применить Reality', message: `Применить настройки Reality на сервер "${name}"?\n\nНа сервер будет записан SNI = "${sni}" (из админки), затем Xray перезапустится.\n\nВ момент рестарта подключения на короткое время прервутся.`, okText: 'Применить' })) return;
 
   const card = document.querySelector(`.srv[data-sid="${sid}"]`);
   const btn = card && card.querySelector('[data-act="apply"]');
@@ -4288,7 +4328,7 @@ async function applyReality(sid) {
 async function restartXray(sid) {
   const srv = (state.servers || []).find(s => String(s.id) === String(sid));
   const name = srv ? (srv.country_name || srv.code) : ('#' + sid);
-  if (!confirm(`Перезапустить Xray на сервере "${name}"?\n\nПодключения на короткое время прервутся.`)) return;
+  if (!await showConfirm({ title: 'Перезапустить Xray', message: `Перезапустить Xray на сервере "${name}"?\n\nПодключения на короткое время прервутся.`, okText: 'Перезапустить' })) return;
   const card = document.querySelector(`.srv[data-sid="${sid}"]`);
   const btn = card && card.querySelector('[data-act="restart"]');
   if (btn) { btn.disabled = true; btn.textContent = '⏳...'; }
@@ -4416,14 +4456,14 @@ async function takeTicket(id, curAdminId, curAdminObj) {
   const me = state.currentAdminId;
   if (curAdminId && Number(curAdminId) !== Number(me)) {
     const aname = (curAdminObj && (curAdminObj.full_name || curAdminObj.username)) || ('id:' + curAdminId);
-    if (!confirm(`Тикет сейчас в работе у ${aname}.\n\nПерехватить себе?`)) return;
+    if (!await showConfirm({ title: 'Перехватить тикет', message: `Тикет сейчас в работе у ${aname}.\n\nПерехватить себе?`, okText: 'Перехватить' })) return;
   }
   const r = await proxy(`/admin-api/tickets/${id}/take`, { method: 'POST', body: JSON.stringify({ force: true }) });
   if (r.success) { toast('✋ Взято в работу', 'success'); loadTicketChat(id); if (state.currentPage === 'tickets') renderTicketsTable(); }
   else toast('Ошибка: ' + (r.error || '?'), 'error');
 }
 async function closeTicket(id) {
-  if (!confirm('Закрыть тикет?')) return;
+  if (!await showConfirm({ title: 'Закрыть тикет', message: 'Закрыть тикет?', okText: 'Закрыть' })) return;
   const r = await proxy(`/admin-api/tickets/${id}/close`, { method: 'POST', body: '{}' });
   if (r.success) { toast('✓ Закрыт', 'success'); loadTicketChat(id); if (state.currentPage === 'tickets') renderTicketsTable(); }
   else toast('Ошибка: ' + (r.error || '?'), 'error');
@@ -4473,7 +4513,10 @@ function fmtDateShort(iso) { try { return new Date(iso).toLocaleDateString('ru-R
 if (typeof window.bcState === 'undefined' || !('customIds' in window.bcState)) {
   window.bcState = { audience: 'all', campaign: 'all', customIds: [], targetUserId: null };
 }
-function bcReset() { bcState.audience = 'all'; bcState.campaign = 'all'; bcState.customIds = []; bcState.targetUserId = null; }
+function bcReset() {
+  bcState.audience = 'all'; bcState.campaign = 'all'; bcState.customIds = []; bcState.targetUserId = null;
+  const bb = $('#bcButton'); if (bb) bb.value = '';
+}
 
 const BC_AUDIENCE_TEMPLATES = {
   all: `📢 Привет!
@@ -4530,7 +4573,7 @@ const BC_AUDIENCE_TEMPLATES = {
   custom_list: '',
 };
 
-function bcApplyTemplateForAudience(aud) {
+async function bcApplyTemplateForAudience(aud) {
   const tpl = BC_AUDIENCE_TEMPLATES[aud];
   if (tpl === undefined) return;
   const txt = document.getElementById('bcMessageText');
@@ -4538,13 +4581,13 @@ function bcApplyTemplateForAudience(aud) {
   const current = (txt.value || '').trim();
   // если текст уже не пустой и не совпадает ни с одним шаблоном — спрашиваем подтверждение
   if (current && !Object.values(BC_AUDIENCE_TEMPLATES).map(s => s.trim()).includes(current)) {
-    if (!confirm('У тебя уже введён свой текст. Заменить на шаблон для этой аудитории?')) return;
+    if (!await showConfirm({ title: 'Заменить текст', message: 'У тебя уже введён свой текст. Заменить на шаблон для этой аудитории?', okText: 'Заменить' })) return;
   }
   txt.value = tpl;
 }
 
 
-function bcOnAudChange() {
+async function bcOnAudChange() {
   const aud = bcState.audience;
   const utm = $('#bcExtraUtm'); const custom = $('#bcExtraCustom');
   const utmAuds = ['utm_no_device', 'utm_never_paid', 'utm_expired'];
@@ -4552,7 +4595,7 @@ function bcOnAudChange() {
   if (custom) custom.style.display = (aud === 'custom_list') ? '' : 'none';
   // автоподстановка шаблона под когорту
   if (typeof bcApplyTemplateForAudience === 'function') {
-    bcApplyTemplateForAudience(aud);
+    await bcApplyTemplateForAudience(aud);
   }
 }
 function bcBindModal() {
@@ -4638,11 +4681,19 @@ function bcRenderSelectedList() {
     });
   });
 }
+const BC_BUTTON_LABELS = {
+  buy: '💳 Продлить подписку',
+  connect: '🔌 Подключиться',
+  back: '🏠 Главное меню',
+  howto: '📘 Инструкция',
+};
+
 async function bcPreview() {
   const text = ($('#bcMessageText').value || '').trim();
   if (!text) { toast('Введите текст', 'warning'); return; }
   if (bcState.audience === 'custom_list' && !bcState.customIds.length) { toast('Выберите хотя бы одного юзера', 'warning'); return; }
   const bonusDays = parseInt($('#bcBonusDays').value || '0', 10);
+  const buttonAction = ($('#bcButton') && $('#bcButton').value) || '';
   try {
     const r = await proxy('/admin-api/broadcast/preview', {
       method: 'POST',
@@ -4658,17 +4709,28 @@ async function bcPreview() {
     _set('#bcPreviewCount', r.count || 0);
     _set('#bcPreviewText', text);
     _set('#bcPreviewBonus', bonusDays > 0 ? bonusDays + ' дней' : '—');
+    // кнопка в превью
+    const btnWrap = $('#bcPreviewBtnWrap');
+    const btnLabel = $('#bcPreviewBtnLabel');
+    if (btnWrap && btnLabel) {
+      if (buttonAction && BC_BUTTON_LABELS[buttonAction]) {
+        btnLabel.textContent = BC_BUTTON_LABELS[buttonAction];
+        btnWrap.style.display = '';
+      } else {
+        btnWrap.style.display = 'none';
+      }
+    }
     closeModal('broadcastModal');
     openModal('broadcastPreviewModal');
     const sb = $('#bcSendConfirmBtn') || $('#bcSendBtn') || document.querySelector('#broadcastPreviewModal .btn-primary');
     if (sb) {
       const fresh = sb.cloneNode(true);
       sb.parentNode.replaceChild(fresh, sb);
-      fresh.addEventListener('click', () => bcSend(text, bonusDays));
+      fresh.addEventListener('click', () => bcSend(text, bonusDays, buttonAction));
     }
   } catch (e) { toast('Ошибка сети', 'error'); }
 }
-async function bcSend(text, bonusDays) {
+async function bcSend(text, bonusDays, buttonAction) {
   const sb = document.querySelector('#broadcastPreviewModal .btn-primary');
   if (sb) sb.disabled = true;
   try {
@@ -4677,6 +4739,7 @@ async function bcSend(text, bonusDays) {
       body: JSON.stringify({
         audience: bcState.audience, campaign_filter: bcState.campaign,
         message_text: text, bonus_days: bonusDays,
+        button_action: buttonAction || null,
         target_user_id: null, target_user_ids: bcState.audience === 'custom_list' ? bcState.customIds : null,
       })
     });
@@ -4886,7 +4949,7 @@ function openExpenseModal(existing) {
 
 
 async function confirmDeleteExpense(id) {
-  if (!confirm('Удалить расход?')) return;
+  if (!await showConfirm({ title: 'Удалить расход', message: 'Удалить расход?', okText: 'Удалить', danger: true })) return;
   const r = await fetch(`/admin-api/finance/expenses/${id}`, { method: 'DELETE' });
   if (r.ok) { toast('Удалено', 'success'); renderFinancePage(); }
   else toast('Ошибка удаления', 'error');
@@ -4936,7 +4999,7 @@ async function togglePlanned(id, isDone) {
 }
 
 async function confirmDeletePlanned(id) {
-  if (!confirm('Удалить плановую покупку?')) return;
+  if (!await showConfirm({ title: 'Удалить покупку', message: 'Удалить плановую покупку?', okText: 'Удалить', danger: true })) return;
   const r = await fetch(`/admin-api/finance/planned/${id}`, { method: 'DELETE' });
   if (r.ok) { toast('Удалено', 'success'); renderFinancePage(); }
   else toast('Ошибка', 'error');
@@ -5083,7 +5146,7 @@ function renderRolesList() {
   $$('#rolesList [data-act="ed-role"]').forEach(b => b.addEventListener('click', () =>
     openRoleModal(state.roles.find(r => r.id == b.dataset.rid))));
   $$('#rolesList [data-act="del-role"]').forEach(b => b.addEventListener('click', async () => {
-    if (!confirm('Удалить роль?')) return;
+    if (!await showConfirm({ title: 'Удалить роль', message: 'Удалить роль?', okText: 'Удалить', danger: true })) return;
     const r = await fetch(`/admin-api/roles/${b.dataset.rid}`, { method: 'DELETE' });
     if (r.ok) { toast('Удалено', 'success'); renderRolesPage(); }
     else toast('Ошибка', 'error');
@@ -5392,7 +5455,7 @@ async function renderFinancePage() {
   }
     // удаление вложения
   $$('.fin-inv-del').forEach(b => b.addEventListener('click', async () => {
-    if (!confirm('Удалить это вложение?')) return;
+    if (!await showConfirm({ title: 'Удалить вложение', message: 'Удалить это вложение?', okText: 'Удалить', danger: true })) return;
     const r = await fetch('/admin-api/finance/investments/' + b.dataset.iid, {
       method: 'DELETE', credentials: 'include'
     });
@@ -5469,7 +5532,7 @@ async function saveExpense() {
   // проверка суммы
   const sumFunding = funding.reduce((a,b)=>a+b.amount,0);
   if (Math.abs(sumFunding - amount) > 0.005 && funding.length) {
-    if (!confirm(`Суммы по источникам (${money(sumFunding)}) не совпадают с общей суммой расхода (${money(amount)}). Сохранить как есть?`)) return;
+    if (!await showConfirm({ title: 'Несовпадение сумм', message: `Суммы по источникам (${money(sumFunding)}) не совпадают с общей суммой расхода (${money(amount)}). Сохранить как есть?`, okText: 'Сохранить' })) return;
   }
 
   const body = {

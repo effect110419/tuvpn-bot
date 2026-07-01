@@ -1051,18 +1051,21 @@ def apply_referral_bonus(user_id: int, days: int, reason: str):
         print(f"❌ Ошибка apply_referral_bonus: {e}")
         return False
 
-def notify_user(user_id: int, text: str) -> bool:
+def notify_user(user_id: int, text: str, reply_markup: dict = None) -> bool:
     """Отправляет сообщение пользователю в Telegram через HTTP API."""
     try:
         import requests
         from config import BOT_TOKEN
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        r = requests.post(url, json={
+        payload = {
             "chat_id": user_id,
             "text": text,
             "parse_mode": "HTML",
             "disable_web_page_preview": True,
-        }, timeout=10)
+        }
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
+        r = requests.post(url, json=payload, timeout=10)
         return r.status_code == 200
     except Exception as e:
         app.logger.error(f"Не удалось отправить сообщение user_id={user_id}: {e}")
@@ -2742,6 +2745,8 @@ def reality_target_candidates():
 
 # === ADMIN AUTH BLOCK ===
 import secrets as _secrets
+import time as _time
+from threading import Lock as _LockCls
 
 try:
     from config import ADMIN_TG_IDS, ADMIN_SESSION_DAYS, ADMIN_LOGIN_TOKEN_MINUTES
@@ -2749,6 +2754,13 @@ except ImportError:
     ADMIN_TG_IDS = [784871620, 1027228622]
     ADMIN_SESSION_DAYS = 7
     ADMIN_LOGIN_TOKEN_MINUTES = 10
+
+# --- OTP store (in-memory, Flask single-process) ---
+_otp_store: dict = {}   # {tg_id: {code, expires, attempts, next_allowed}}
+_otp_mutex = _LockCls()
+OTP_TTL_SEC = 300        # 5 минут
+OTP_MAX_ATTEMPTS = 5
+OTP_COOLDOWN_SEC = 60    # 1 минута между запросами кода
 
 
 def _now_utc():
@@ -2860,6 +2872,126 @@ def auth_start():
         "deeplink": deeplink,
         "expires_in_minutes": ADMIN_LOGIN_TOKEN_MINUTES,
     })
+
+
+# --- /admin-api/auth/request_code ---
+@app.route("/admin-api/auth/request_code", methods=["POST", "OPTIONS"])
+def auth_request_code():
+    """Запросить OTP-код: генерируем 6 цифр и отправляем в Telegram."""
+    if request.method == "OPTIONS":
+        return make_response("", 204)
+    data = request.get_json() or {}
+    try:
+        tg_id = int(data.get("tg_id") or 0)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "not_found"}), 400
+
+    now = _time.time()
+    with _otp_mutex:
+        existing = _otp_store.get(tg_id, {})
+        next_allowed = existing.get("next_allowed", 0)
+        if now < next_allowed:
+            wait = int(next_allowed - now)
+            return jsonify({"success": False, "error": "too_soon", "wait_seconds": wait}), 429
+        if tg_id not in ADMIN_TG_IDS:
+            return jsonify({"success": False, "error": "not_found"}), 400
+        code = f"{_secrets.randbelow(1000000):06d}"
+        _otp_store[tg_id] = {
+            "code": code,
+            "expires": now + OTP_TTL_SEC,
+            "attempts": 0,
+            "next_allowed": now + OTP_COOLDOWN_SEC,
+        }
+
+    # Отправляем через HTTP API бота
+    try:
+        from config import BOT_TOKEN as _bt
+        import requests as _rq
+        _rq.post(
+            f"https://api.telegram.org/bot{_bt}/sendMessage",
+            json={
+                "chat_id": tg_id,
+                "text": (
+                    "🔐 <b>Код для входа в админку TuVPN</b>\n\n"
+                    f"<code>{code}</code>\n\n"
+                    "Действует 5 минут. Если вы не запрашивали вход — проигнорируйте."
+                ),
+                "parse_mode": "HTML",
+            },
+            timeout=10,
+        )
+    except Exception as e:
+        app.logger.error(f"OTP send error for {tg_id}: {e}")
+
+    return jsonify({"success": True})
+
+
+# --- /admin-api/auth/verify_code ---
+@app.route("/admin-api/auth/verify_code", methods=["POST", "OPTIONS"])
+def auth_verify_code():
+    """Проверить OTP-код и выдать сессию."""
+    if request.method == "OPTIONS":
+        return make_response("", 204)
+    data = request.get_json() or {}
+    try:
+        tg_id = int(data.get("tg_id") or 0)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "invalid_code"}), 400
+    code = str(data.get("code") or "").strip()
+
+    now = _time.time()
+    with _otp_mutex:
+        entry = _otp_store.get(tg_id)
+        if not entry or not entry.get("code"):
+            return jsonify({"success": False, "error": "invalid_code"}), 400
+        if now > entry["expires"]:
+            del _otp_store[tg_id]
+            return jsonify({"success": False, "error": "expired"}), 400
+        entry["attempts"] += 1
+        if entry["attempts"] > OTP_MAX_ATTEMPTS:
+            del _otp_store[tg_id]
+            return jsonify({"success": False, "error": "too_many_attempts"}), 400
+        if code != entry["code"] or tg_id not in ADMIN_TG_IDS:
+            remaining = max(0, OTP_MAX_ATTEMPTS - entry["attempts"])
+            return jsonify({"success": False, "error": "invalid_code", "remaining": remaining}), 400
+        # Код верный — удаляем запись
+        del _otp_store[tg_id]
+
+    # Создаём сессию
+    session_token = _secrets.token_urlsafe(48)
+    session_exp = _now_utc() + timedelta(days=ADMIN_SESSION_DAYS)
+    try:
+        sb.table("admin_sessions").insert({
+            "session_token": session_token,
+            "tg_id": tg_id,
+            "tg_username": "",
+            "expires_at": _iso(session_exp),
+            "ip_address": _get_client_ip(),
+            "user_agent": (request.headers.get("User-Agent") or "")[:500],
+        }).execute()
+        # Аудит-лог попытки
+        sb.table("admin_login_attempts").insert({
+            "login_token": f"otp_{tg_id}_{int(now)}",
+            "status": "confirmed",
+            "tg_id": tg_id,
+            "tg_username": "",
+            "session_token": session_token,
+            "expires_at": _iso(_now_utc() + timedelta(minutes=5)),
+            "ip_address": _get_client_ip(),
+            "user_agent": (request.headers.get("User-Agent") or "")[:500],
+            "confirmed_at": _iso(_now_utc()),
+        }).execute()
+    except Exception as e:
+        app.logger.error(f"OTP session create error: {e}")
+        return jsonify({"success": False, "error": "db_error"}), 500
+
+    resp = make_response(jsonify({"success": True, "tg_id": tg_id}))
+    resp.set_cookie(
+        "admin_session", session_token,
+        max_age=ADMIN_SESSION_DAYS * 86400,
+        httponly=True, secure=True, samesite="Lax", path="/",
+    )
+    return resp
 
 
 # --- /admin-api/auth/poll ---
@@ -3111,16 +3243,28 @@ def broadcast_send():
         target_user_id = data.get("target_user_id")
         target_user_ids = data.get("target_user_ids")
         bonus_days = int(data.get("bonus_days") or 0)
+        button_action = data.get("button_action") or ""
 
         if not message_text:
             return jsonify({"success": False, "error": "message_text required"}), 400
+
+        _bc_buttons = {
+            "buy":     {"text": "💳 Продлить подписку", "callback_data": "buy"},
+            "connect": {"text": "🔌 Подключиться",       "callback_data": "connect"},
+            "back":    {"text": "🏠 Главное меню",        "callback_data": "back"},
+            "howto":   {"text": "📘 Инструкция",          "callback_data": "howto"},
+        }
+        reply_markup = None
+        if button_action and button_action in _bc_buttons:
+            btn = _bc_buttons[button_action]
+            reply_markup = {"inline_keyboard": [[{"text": btn["text"], "callback_data": btn["callback_data"]}]]}
 
         ids = _get_recipient_ids(audience, campaign_filter, target_user_id, target_user_ids)
 
         sent = 0
         blocked = 0
         for uid in ids:
-            if notify_user(uid, message_text):
+            if notify_user(uid, message_text, reply_markup):
                 sent += 1
                 if bonus_days > 0:
                     try:
@@ -3136,6 +3280,7 @@ def broadcast_send():
                 "campaign_filter": campaign_filter if campaign_filter != "all" else None,
                 "target_user_id": target_user_id,
                 "message_text": message_text,
+                "button_action": button_action or None,
                 "recipients_count": len(ids),
                 "sent_count": sent,
                 "blocked_count": blocked,

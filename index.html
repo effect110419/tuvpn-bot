@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="theme-color" content="#060a14">
 <title>TuVPN — Admin</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0%25' y1='0%25' x2='100%25' y2='100%25'%3E%3Cstop offset='0%25' stop-color='%235b8def'/%3E%3Cstop offset='100%25' stop-color='%23c084fc'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='7' fill='url(%23g)'/%3E%3Ctext x='16' y='23' text-anchor='middle' fill='white' font-family='system-ui,sans-serif' font-weight='800' font-size='19'%3ET%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="styles.css">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js" defer></script>
@@ -24,30 +25,27 @@
   <div class="login-box">
     <div class="brand-mark"></div>
     <h2>TuVPN Admin</h2>
-    <p>Авторизация через Telegram</p>
 
-    <div id="loginIdle">
-      <button class="btn btn-primary" id="loginTgBtn" style="width:100%">
-        🤖 Войти через Telegram
-      </button>
-      <p class="help" style="margin-top:14px; text-align:center; font-size:13px; color:var(--fg-3)">
-        Для входа потребуется подтверждение от владельца.
-      </p>
+    <!-- Шаг 1: ввод идентификатора -->
+    <div id="loginStep1">
+      <label style="display:block; font-size:12px; color:var(--fg-3); margin-bottom:6px; letter-spacing:.03em; text-transform:uppercase">Логин</label>
+      <input id="loginTgIdInput" class="input" type="text" inputmode="numeric" pattern="[0-9]*"
+             placeholder="" autocomplete="off"
+             style="width:100%; margin-bottom:10px; text-align:center; letter-spacing:.05em; font-size:16px">
+      <button class="btn btn-primary" id="loginRequestBtn" style="width:100%">Продолжить</button>
     </div>
 
-    <div id="loginPending" style="display:none">
-      <div style="text-align:center; padding:20px 0">
-        <div class="spinner" style="margin:0 auto 16px; width:36px; height:36px; border:3px solid var(--bg-3); border-top-color:var(--accent); border-radius:50%; animation:spin 0.7s linear infinite"></div>
-        <p style="margin:0 0 8px">Откройте бота и подтвердите вход</p>
-        <a id="loginDeeplink" href="#" target="_blank" class="btn btn-ghost btn-sm" style="margin-top:8px">Открыть бота</a>
-        <p class="help" style="margin-top:12px; font-size:12px; color:var(--fg-3)">
-          Ожидаем подтверждения... <span id="loginCountdown">10:00</span>
-        </p>
-      </div>
-      <button class="btn btn-ghost btn-sm" id="loginCancelBtn" style="width:100%">Отмена</button>
+    <!-- Шаг 2: ввод кода -->
+    <div id="loginStep2" style="display:none">
+      <label style="display:block; font-size:12px; color:var(--fg-3); margin-bottom:6px; letter-spacing:.03em; text-transform:uppercase">Код подтверждения</label>
+      <input id="loginCodeInput" class="input" type="text" inputmode="numeric" pattern="[0-9]*"
+             maxlength="6" placeholder="000000" autocomplete="one-time-code"
+             style="width:100%; text-align:center; letter-spacing:.3em; font-size:26px; margin-bottom:10px; font-weight:700">
+      <button class="btn btn-primary" id="loginVerifyBtn" style="width:100%; margin-bottom:8px">Войти</button>
+      <button class="btn btn-ghost btn-sm" id="loginBackBtn" style="width:100%">← Назад</button>
     </div>
 
-    <div id="loginError" style="display:none; margin-top:14px; padding:10px 14px; background:rgba(220,80,80,0.1); border:1px solid rgba(220,80,80,0.3); border-radius:8px; color:#ff8888; font-size:13px"></div>
+    <div id="loginError" style="display:none; margin-top:12px; padding:10px 14px; background:rgba(220,80,80,0.1); border:1px solid rgba(220,80,80,0.3); border-radius:8px; color:#ff8888; font-size:13px; text-align:center"></div>
   </div>
 </div>
 
@@ -833,6 +831,16 @@
         <div class="field"><label class="label">Выбрано (<span id="bcSelectedCount">0</span>)</label><div class="bc-selected" id="bcSelectedList"></div></div>
       </div>
       <div class="field"><label class="label">Текст сообщения</label><textarea id="bcMessageText" class="input textarea" rows="6" placeholder="Привет!"></textarea><div class="help">HTML: &lt;b&gt;, &lt;i&gt;, &lt;a&gt;</div></div>
+      <div class="field">
+        <label class="label">Кнопка в сообщении</label>
+        <select id="bcButton" class="select">
+          <option value="">Без кнопки</option>
+          <option value="buy">💳 Продлить подписку</option>
+          <option value="connect">🔌 Подключиться</option>
+          <option value="back">🏠 Главное меню</option>
+          <option value="howto">📘 Инструкция</option>
+        </select>
+      </div>
       <div class="field-row">
         <div class="field"><label class="label">Бонусные дни</label><input id="bcBonusDays" type="number" min="0" max="365" class="input" placeholder="0"></div>
         <div class="field"><label class="label">Шаблон</label><select id="bcTemplate" class="select"><option value="">—</option><option value="fix">Починка</option><option value="apology">Извинение</option><option value="renew">Продление</option><option value="expire_soon">⏰ Истекает скоро (PROMO20)</option><option value="news">Новость</option><option value="howto">Инструкция</option></select></div>
@@ -856,6 +864,9 @@
       <div class="bc-preview-card">
         <div class="bc-preview-label">Сообщение</div>
         <div class="bc-preview-text" id="bcPreviewText"></div>
+        <div id="bcPreviewBtnWrap" style="display:none; margin-top:10px">
+          <button class="btn btn-ghost btn-sm" id="bcPreviewBtnLabel" style="pointer-events:none; opacity:0.8"></button>
+        </div>
       </div>
       <div class="bc-preview-meta">
         <div class="bc-meta-row"><span>Получателей</span><b id="bcPreviewCount">—</b></div>
@@ -1145,6 +1156,22 @@
     </div>
     <div class="modal-foot">
       <button class="btn btn-ghost" data-close>Закрыть</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== МОДАЛ ПОДТВЕРЖДЕНИЯ (заменяет browser confirm) ===== -->
+<div class="modal-bg" id="confirmModal">
+  <div class="modal" style="max-width:420px">
+    <div class="modal-head">
+      <div class="modal-title" id="confirmTitle">Подтвердить</div>
+    </div>
+    <div class="modal-body">
+      <p id="confirmMessage" style="margin:0; white-space:pre-wrap; line-height:1.6; color:var(--fg-2)"></p>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" id="confirmCancel">Отмена</button>
+      <button class="btn btn-primary" id="confirmOk">Подтвердить</button>
     </div>
   </div>
 </div>
