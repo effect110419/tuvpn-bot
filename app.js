@@ -2724,6 +2724,21 @@ async function toggleServerActive(sid, val) {
 }
 
 
+async function pollSyncJob(jobId, label, onDone) {
+  for (let i = 0; i < 150; i++) {
+    await new Promise(r => setTimeout(r, 2000));
+    try {
+      const r = await proxy(`/admin-api/sync_status/${jobId}`);
+      if (r.status === 'done') { onDone(r); return; }
+      if (r.status === 'error') { toast(`Ошибка синхронизации ${label}: ${r.error || '?'}`, 'error'); return; }
+      if (r.status === 'running' && r.progress != null) {
+        toast(`${label}: обработано ${r.progress}/${r.total_servers || '?'} серверов...`);
+      }
+    } catch (_) {}
+  }
+  toast(`Синхронизация ${label} запущена в фоне (результат — в консоли сервера)`);
+}
+
 async function syncServer(sid) {
   const s = state.servers.find(x => String(x.id) === String(sid));
   if (!s) return;
@@ -2732,34 +2747,32 @@ async function syncServer(sid) {
   toast('Синхронизация запущена...');
   try {
     const r = await proxy(`/admin-api/servers/${sid}/sync`, { method: 'POST' });
-    if (r.success) {
-      toast(`${s.country_flag || ''} ${s.country_name}: ${r.ok}/${r.total} подписок развёрнуто${r.failed ? `, ошибок: ${r.failed}` : ''}`);
-      if (r.failed && r.failures && r.failures.length) {
-        console.warn('Sync failures:', r.failures);
-      }
-    } else {
-      toast('Ошибка: ' + (r.error || 'unknown'), 'error');
-    }
+    if (!r.success) { toast('Ошибка: ' + (r.error || 'unknown'), 'error'); return; }
+    const label = `${s.country_flag || ''} ${s.country_name}`;
+    pollSyncJob(r.job_id, label, (res) => {
+      toast(`${label}: ${res.ok}/${res.total} синхронизировано${res.failed ? `, ошибок: ${res.failed}` : ''}`);
+      if (res.failed && res.failures) console.warn('Sync failures:', res.failures);
+    });
   } catch (e) {
     toast('Ошибка: ' + e.message, 'error');
   }
 }
 
 async function syncAllServers() {
-  if (!await showConfirm({ title: 'Синхронизировать все серверы', message: 'Синхронизировать все активные серверы?\n\nНа каждый сервер будут раскатаны все активные подписки. Это может занять минуту.', okText: 'Синхронизировать' })) return;
-  toast('Синхронизация всех серверов...');
+  if (!await showConfirm({ title: 'Синхронизировать все серверы', message: 'Синхронизировать все активные серверы?\n\nНа каждый сервер будут раскатаны все активные подписки. Это может занять несколько минут.', okText: 'Синхронизировать' })) return;
+  toast('Синхронизация всех серверов запущена...');
   try {
     const r = await proxy('/admin-api/servers/sync_all', { method: 'POST' });
-    if (r.success) {
-      const lines = (r.servers || []).map(x => {
-        if (x.error) return `${x.code}: ошибка (${x.error})`;
-        return `${x.code}: ${x.ok}/${x.total}${x.failed ? `, fail ${x.failed}` : ''}`;
+    if (!r.success) { toast('Ошибка: ' + (r.error || 'unknown'), 'error'); return; }
+    toast(`Фоновая синхронизация ${r.total_servers} серверов запущена...`);
+    pollSyncJob(r.job_id, 'всех серверов', (res) => {
+      const lines = (res.servers || []).map(x => {
+        if (x.error) return `${x.code}: ошибка`;
+        return `${x.code}: ${x.ok}/${x.total}${x.failed ? ` (err ${x.failed})` : ''}`;
       });
-      toast(lines.join(' · '));
-      console.log('Sync all result:', r);
-    } else {
-      toast('Ошибка: ' + (r.error || 'unknown'), 'error');
-    }
+      toast('Синхронизация завершена: ' + (lines.join(' · ') || 'нет данных'));
+      console.log('Sync all result:', res);
+    });
   } catch (e) {
     toast('Ошибка: ' + e.message, 'error');
   }

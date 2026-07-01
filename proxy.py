@@ -63,6 +63,10 @@ def handle_admin_options(path):
 _rl_store: dict = defaultdict(deque)
 _rl_lock = threading.Lock()
 
+# Асинхронные задачи синхронизации серверов: job_id → dict
+_sync_jobs: dict = {}
+_sync_jobs_lock = threading.Lock()
+
 def _check_rate(ip: str, group: str, max_req: int, window: int) -> bool:
     """True — запрос разрешён. False — лимит превышен."""
     key = f"{ip}:{group}"
@@ -295,17 +299,135 @@ def xui_v3_del_client(server, client_uuid):
     return False, "no working del endpoint"
 
 
+def xui_v3_read_inbound(server):
+    """Читает полный объект inbound. Возвращает (session, url, iid, obj) или (None,None,None,None)."""
+    session, url, iid = _v3_session(server)
+    if not session:
+        return None, None, None, None
+    try:
+        r = session.get(f"{url}/panel/api/inbounds/get/{iid}", timeout=15)
+        if r.status_code != 200:
+            return None, None, None, None
+        obj = r.json().get("obj") or {}
+        return session, url, iid, obj
+    except Exception:
+        return None, None, None, None
+
+
+def xui_v3_write_inbound(session, url, iid, obj):
+    """Записывает обновлённый inbound. Возвращает (ok, msg)."""
+    try:
+        r = session.post(f"{url}/panel/api/inbounds/update/{iid}", json=obj, timeout=20)
+        try:
+            jr = r.json()
+            if jr.get("success"):
+                return True, "ok"
+            return False, jr.get("msg", f"http {r.status_code}")
+        except Exception:
+            return False, f"non-json {r.status_code}"
+    except Exception as e:
+        return False, str(e)[:150]
+
+
 def xui_v3_update_client(server, client_uuid, uid, devices, expire_ms):
-    """3.x: обновить клиента — del → add."""
-    existing = xui_v3_list_uuids(server)
-    if existing is None:
+    """3.x: read-modify-write на inbound. Не использует delete."""
+    session, url, iid, obj = xui_v3_read_inbound(server)
+    if obj is None:
+        # Не смогли прочитать inbound — fallback на add (идемпотентно)
         return xui_v3_add_client(server, client_uuid, uid, devices, expire_ms)
-    if client_uuid in existing:
-        del_ok, del_msg = xui_v3_del_client(server, client_uuid)
-        if not del_ok:
-            print(f"[{server.get('country_name','?')}] v3 del failed ({del_msg}), trying add anyway")
+
+    settings_raw = obj.get("settings", "{}")
+    try:
+        settings = json.loads(settings_raw) if isinstance(settings_raw, str) else (settings_raw or {})
+    except Exception:
+        settings = {}
+    clients = settings.get("clients", [])
+
+    found = False
+    for c in clients:
+        if c.get("id") == client_uuid:
+            c["limitIp"] = devices
+            c["expiryTime"] = expire_ms
+            c["enable"] = True
+            c["flow"] = "xtls-rprx-vision"
+            found = True
+            break
+
+    if not found:
         return xui_v3_add_client(server, client_uuid, uid, devices, expire_ms, skip_check=True)
-    return xui_v3_add_client(server, client_uuid, uid, devices, expire_ms, skip_check=True)
+
+    settings["clients"] = clients
+    obj["settings"] = json.dumps(settings)
+    return xui_v3_write_inbound(session, url, iid, obj)
+
+
+def xui_v3_bulk_sync(server, subs_list):
+    """
+    Массовая синхронизация v3: читает inbound ОДИН раз, обновляет всех,
+    пишет обратно ОДИН раз, потом добавляет отсутствующих.
+    subs_list: list of {"uuid": str, "uid": int, "devices": int, "expire_ms": int}
+    Возвращает {"ok": int, "failed": int, "failures": list}
+    """
+    session, url, iid, obj = xui_v3_read_inbound(server)
+    if obj is None:
+        # Fallback: поштучно через add
+        ok = 0
+        failed = 0
+        failures = []
+        for item in subs_list:
+            res_ok, msg = xui_v3_add_client(server, item["uuid"], item["uid"], item["devices"], item["expire_ms"])
+            if res_ok:
+                ok += 1
+            else:
+                failed += 1
+                failures.append({"user_id": item["uid"], "uuid": item["uuid"][:8], "error": msg})
+        return {"ok": ok, "failed": failed, "failures": failures}
+
+    settings_raw = obj.get("settings", "{}")
+    try:
+        settings = json.loads(settings_raw) if isinstance(settings_raw, str) else (settings_raw or {})
+    except Exception:
+        settings = {}
+    clients = settings.get("clients", [])
+    existing_map = {c.get("id"): c for c in clients if c.get("id")}
+
+    updated_uuids = set()
+    missing_items = []
+
+    for item in subs_list:
+        cuuid = item["uuid"]
+        if cuuid in existing_map:
+            existing_map[cuuid]["limitIp"] = item["devices"]
+            existing_map[cuuid]["expiryTime"] = item["expire_ms"]
+            existing_map[cuuid]["enable"] = True
+            existing_map[cuuid]["flow"] = "xtls-rprx-vision"
+            updated_uuids.add(cuuid)
+        else:
+            missing_items.append(item)
+
+    ok = 0
+    failed = 0
+    failures = []
+
+    if updated_uuids:
+        settings["clients"] = list(existing_map.values())
+        obj["settings"] = json.dumps(settings)
+        write_ok, write_msg = xui_v3_write_inbound(session, url, iid, obj)
+        if write_ok:
+            ok += len(updated_uuids)
+        else:
+            failed += len(updated_uuids)
+            failures.append({"error": f"inbound update failed: {write_msg}", "count": len(updated_uuids)})
+
+    for item in missing_items:
+        res_ok, msg = xui_v3_add_client(server, item["uuid"], item["uid"], item["devices"], item["expire_ms"], skip_check=True)
+        if res_ok:
+            ok += 1
+        else:
+            failed += 1
+            failures.append({"user_id": item["uid"], "uuid": item["uuid"][:8], "error": msg})
+
+    return {"ok": ok, "failed": failed, "failures": failures}
 
 
 def xui_add_client_on_server(server, client_uuid, uid, devices, expire_ms):
@@ -608,7 +730,7 @@ def track_device(client_uuid: str, client_ip: str, user_agent: str,
             return {"allowed": False, "reason": "subscription_not_found", "device_id": None}
         sub = sub_q.data[0]
         user_id = sub["user_id"]
-        device_limit = sub.get("devices", 1)
+        device_limit = int(sub.get("devices") or 1)
 
         normalized_ua = _normalize_ua(user_agent)
         now_iso = datetime.utcnow().isoformat()
@@ -866,66 +988,105 @@ def get_server_by_id(server_id: int):
 def backfill_server_clients(server: dict) -> dict:
     """
     Раскатать все активные подписки на указанный сервер.
-    Использует xui_update_client_on_server (он же делает fallback на add).
+    v3: один GET inbound + один POST inbound + отдельные add для новых — O(1) вместо O(n).
+    v2: поштучно через updateClient/addClient.
     Возвращает {"total": N, "ok": K, "failed": F, "failures": [...]}.
     """
     code = server.get("code") or server.get("country_name") or f"id={server.get('id')}"
     print(f"[sync] Backfill начат для {code}")
 
-    # Все активные подписки
     try:
         subs_r = sb.table("subscriptions").select("user_id,devices,sub_url,expires_at").eq("status", "active").execute()
         subs = subs_r.data or []
     except Exception as e:
         return {"total": 0, "ok": 0, "failed": 0, "failures": [], "error": f"db: {e}"}
 
-    total = len(subs)
-    ok = 0
-    failed = 0
-    failures = []
     now = datetime.utcnow()
+    total = len(subs)
+    failures = []
 
+    # Разбираем подписки — отделяем валидные от сломанных/просроченных
+    valid_items = []
     for sub in subs:
+        url_s = sub.get("sub_url") or ""
+        if "/sub/" not in url_s:
+            failures.append({"user_id": sub.get("user_id"), "error": "no uuid in sub_url"})
+            continue
+        client_uuid = url_s.split("/sub/")[-1].strip()
+        uid = int(sub["user_id"])
+        devices = int(sub.get("devices") or 1)
+        exp_raw = sub.get("expires_at")
         try:
-            url = sub.get("sub_url") or ""
-            if "/sub/" not in url:
-                failed += 1
-                failures.append({"user_id": sub.get("user_id"), "error": "no uuid in sub_url"})
-                continue
-            client_uuid = url.split("/sub/")[-1].strip()
-            uid = int(sub["user_id"])
-            devices = int(sub.get("devices") or 1)
+            exp_dt = datetime.fromisoformat(exp_raw.replace("Z", "+00:00")).replace(tzinfo=None) if exp_raw else (now + timedelta(days=30))
+        except Exception:
+            exp_dt = now + timedelta(days=30)
+        if exp_dt <= now:
+            failures.append({"user_id": uid, "error": "subscription expired"})
+            continue
+        expire_ms = int(exp_dt.timestamp() * 1000)
+        valid_items.append({"uuid": client_uuid, "uid": uid, "devices": devices, "expire_ms": expire_ms})
 
-            # expires_at → ms
-            exp_raw = sub.get("expires_at")
-            try:
-                exp_dt = datetime.fromisoformat(exp_raw.replace("Z", "+00:00")).replace(tzinfo=None) if exp_raw else (now + timedelta(days=30))
-            except Exception:
-                exp_dt = now + timedelta(days=30)
-            if exp_dt <= now:
-                # уже истекла — пропустим, не имеет смысла раскатывать
-                failed += 1
-                failures.append({"user_id": uid, "error": "subscription expired"})
-                continue
-            expire_ms = int(exp_dt.timestamp() * 1000)
+    if not valid_items:
+        print(f"[sync] Backfill {code}: нет активных подписок")
+        return {"total": total, "ok": 0, "failed": len(failures), "failures": failures[:20]}
 
-            success = xui_update_client_on_server(server, client_uuid, uid, devices, expire_ms)
+    # v3: bulk-операция (один GET + один POST inbound)
+    is_v3 = bool((server.get("api_token") or "").strip())
+    if is_v3:
+        result = xui_v3_bulk_sync(server, valid_items)
+        ok = result["ok"]
+        failed_count = result["failed"]
+        failures.extend(result.get("failures", []))
+    else:
+        # v2: поштучно
+        ok = 0
+        failed_count = 0
+        for item in valid_items:
+            success = xui_update_client_on_server(server, item["uuid"], item["uid"], item["devices"], item["expire_ms"])
             if success:
                 ok += 1
             else:
-                failed += 1
-                failures.append({"user_id": uid, "uuid": client_uuid[:8], "error": "xui rejected"})
-        except Exception as e:
-            failed += 1
-            failures.append({"user_id": sub.get("user_id"), "error": str(e)})
+                failed_count += 1
+                failures.append({"user_id": item["uid"], "uuid": item["uuid"][:8], "error": "xui rejected"})
 
-    print(f"[sync] Backfill {code}: {ok}/{total} OK, {failed} failed")
-    return {"total": total, "ok": ok, "failed": failed, "failures": failures[:20]}
+    total_failed = len(failures)
+    print(f"[sync] Backfill {code}: {ok}/{total} OK, {total_failed} failed")
+    return {"total": total, "ok": ok, "failed": total_failed, "failures": failures[:20]}
+
+
+def _sync_job_run(job_id: str, fn, *args):
+    """Запускает синк-задачу в фоне, сохраняет результат в _sync_jobs."""
+    try:
+        result = fn(*args)
+        with _sync_jobs_lock:
+            _sync_jobs[job_id]["status"] = "done"
+            _sync_jobs[job_id].update(result)
+    except Exception as e:
+        with _sync_jobs_lock:
+            _sync_jobs[job_id]["status"] = "error"
+            _sync_jobs[job_id]["error"] = str(e)
+
+
+def _sync_all_job(job_id: str, servers: list):
+    """Синкает все серверы последовательно, накапливает per_server."""
+    per_server = []
+    for s in servers:
+        try:
+            res = backfill_server_clients(s)
+            per_server.append({"server_id": s["id"], "code": s.get("code"),
+                                "country_name": s.get("country_name"), **res})
+        except Exception as e:
+            per_server.append({"server_id": s["id"], "code": s.get("code"), "error": str(e)})
+        with _sync_jobs_lock:
+            _sync_jobs[job_id]["progress"] = len(per_server)
+    with _sync_jobs_lock:
+        _sync_jobs[job_id]["status"] = "done"
+        _sync_jobs[job_id]["servers"] = per_server
 
 
 @app.route('/admin-api/servers/<int:server_id>/sync', methods=['POST', 'OPTIONS'])
 def admin_sync_server(server_id):
-    """Синхронизировать один сервер (раскатать все активные подписки на нём)."""
+    """Запустить синхронизацию одного сервера асинхронно. Возвращает job_id для polling."""
     if request.method == 'OPTIONS':
         return make_response('', 204)
     server = get_server_by_id(server_id)
@@ -933,38 +1094,38 @@ def admin_sync_server(server_id):
         return jsonify({"success": False, "error": "server not found"}), 404
     if not server.get("is_active"):
         return jsonify({"success": False, "error": "server is not active"}), 400
-    try:
-        result = backfill_server_clients(server)
-        return jsonify({"success": True, "server_id": server_id, "code": server.get("code"), **result})
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+    job_id = str(uuid.uuid4())[:12]
+    with _sync_jobs_lock:
+        _sync_jobs[job_id] = {"status": "running", "server_id": server_id, "code": server.get("code")}
+    threading.Thread(
+        target=_sync_job_run, args=(job_id, backfill_server_clients, server), daemon=True
+    ).start()
+    return jsonify({"success": True, "job_id": job_id, "status": "running"})
 
 
 @app.route('/admin-api/servers/sync_all', methods=['POST', 'OPTIONS'])
 def admin_sync_all_servers():
-    """Синхронизировать все активные серверы."""
+    """Запустить синхронизацию всех серверов асинхронно. Возвращает job_id для polling."""
     if request.method == 'OPTIONS':
         return make_response('', 204)
     servers = get_active_servers()
     if not servers:
         return jsonify({"success": False, "error": "no active servers"}), 400
-    per_server = []
-    for s in servers:
-        try:
-            res = backfill_server_clients(s)
-            per_server.append({
-                "server_id": s["id"],
-                "code": s.get("code"),
-                "country_name": s.get("country_name"),
-                **res,
-            })
-        except Exception as e:
-            per_server.append({
-                "server_id": s["id"],
-                "code": s.get("code"),
-                "error": str(e),
-            })
-    return jsonify({"success": True, "servers": per_server})
+    job_id = str(uuid.uuid4())[:12]
+    with _sync_jobs_lock:
+        _sync_jobs[job_id] = {"status": "running", "total_servers": len(servers), "progress": 0}
+    threading.Thread(target=_sync_all_job, args=(job_id, servers), daemon=True).start()
+    return jsonify({"success": True, "job_id": job_id, "status": "running", "total_servers": len(servers)})
+
+
+@app.route('/admin-api/sync_status/<job_id>', methods=['GET'])
+def sync_status(job_id):
+    """Статус асинхронной синхронизации."""
+    with _sync_jobs_lock:
+        job = dict(_sync_jobs.get(job_id) or {})
+    if not job:
+        return jsonify({"status": "not_found"}), 404
+    return jsonify(job)
 
 
 # === END SERVER SYNC ===
