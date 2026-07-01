@@ -270,6 +270,9 @@ def xui_v3_add_client(server, client_uuid, uid, devices, expire_ms, skip_check=F
         msg = (jr.get("msg") or "").lower()
         if "already" in msg or "exists" in msg or "duplicate" in msg:
             return True, "already exists (by msg)"
+        # Email занят другим UUID — нужна миграция через update_client
+        if "email" in msg and ("in use" in msg or "already" in msg):
+            return False, f"email_conflict: {jr.get('msg','?')}"
         return False, jr.get("msg", f"http {r.status_code}")
     except Exception as e:
         return False, str(e)[:150]
@@ -329,11 +332,20 @@ def xui_v3_write_inbound(session, url, iid, obj):
         return False, str(e)[:150]
 
 
+def _v3_patch_client(c, client_uuid, devices, expire_ms):
+    """Обновляет поля клиента в inbound-объекте."""
+    c["id"] = client_uuid
+    c["limitIp"] = devices
+    c["expiryTime"] = expire_ms
+    c["enable"] = True
+    c["flow"] = "xtls-rprx-vision"
+
+
 def xui_v3_update_client(server, client_uuid, uid, devices, expire_ms):
-    """3.x: read-modify-write на inbound. Не использует delete."""
+    """3.x: read-modify-write на inbound. Не использует delete.
+    Fallback: если UUID не найден — ищет по email user_<uid> (миграция старого UUID)."""
     session, url, iid, obj = xui_v3_read_inbound(server)
     if obj is None:
-        # Не смогли прочитать inbound — fallback на add (идемпотентно)
         return xui_v3_add_client(server, client_uuid, uid, devices, expire_ms)
 
     settings_raw = obj.get("settings", "{}")
@@ -344,14 +356,23 @@ def xui_v3_update_client(server, client_uuid, uid, devices, expire_ms):
     clients = settings.get("clients", [])
 
     found = False
+    # Сначала ищем по UUID (точное совпадение)
     for c in clients:
         if c.get("id") == client_uuid:
-            c["limitIp"] = devices
-            c["expiryTime"] = expire_ms
-            c["enable"] = True
-            c["flow"] = "xtls-rprx-vision"
+            _v3_patch_client(c, client_uuid, devices, expire_ms)
             found = True
             break
+
+    if not found:
+        # Ищем по email: user_<uid> — старый UUID с совпадающим email (миграция)
+        expected_email = f"user_{uid}"
+        for c in clients:
+            if c.get("email") == expected_email:
+                old_uuid = c.get("id", "?")[:8]
+                _v3_patch_client(c, client_uuid, devices, expire_ms)
+                print(f"[{server.get('country_name','?')}] v3 email-migrate {expected_email}: {old_uuid}→{client_uuid[:8]}")
+                found = True
+                break
 
     if not found:
         return xui_v3_add_client(server, client_uuid, uid, devices, expire_ms, skip_check=True)
@@ -389,19 +410,33 @@ def xui_v3_bulk_sync(server, subs_list):
     except Exception:
         settings = {}
     clients = settings.get("clients", [])
-    existing_map = {c.get("id"): c for c in clients if c.get("id")}
+    existing_by_uuid = {c.get("id"): c for c in clients if c.get("id")}
+    # Email-индекс для миграции старых UUID (v3 требует unique email)
+    existing_by_email = {c.get("email"): c for c in clients if c.get("email")}
 
     updated_uuids = set()
     missing_items = []
+    # Миграции UUID: {new_uuid: old_uuid} для отката при UNIQUE constraint
+    migrations = {}
 
     for item in subs_list:
         cuuid = item["uuid"]
-        if cuuid in existing_map:
-            existing_map[cuuid]["limitIp"] = item["devices"]
-            existing_map[cuuid]["expiryTime"] = item["expire_ms"]
-            existing_map[cuuid]["enable"] = True
-            existing_map[cuuid]["flow"] = "xtls-rprx-vision"
+        expected_email = f"user_{item['uid']}"
+
+        if cuuid in existing_by_uuid:
+            _v3_patch_client(existing_by_uuid[cuuid], cuuid, item["devices"], item["expire_ms"])
             updated_uuids.add(cuuid)
+        elif expected_email in existing_by_email:
+            # UUID нет, email совпадает — мигрируем старый UUID на актуальный
+            old_c = existing_by_email[expected_email]
+            old_uuid_full = old_c.get("id") or ""
+            _v3_patch_client(old_c, cuuid, item["devices"], item["expire_ms"])
+            existing_by_uuid.pop(old_uuid_full, None)
+            existing_by_uuid[cuuid] = old_c
+            existing_by_email[expected_email] = old_c
+            updated_uuids.add(cuuid)
+            migrations[cuuid] = {"old_uuid": old_uuid_full, **item}
+            print(f"[{server.get('country_name','?')}] v3 bulk email-migrate {expected_email}: {old_uuid_full[:8]}→{cuuid[:8]}")
         else:
             missing_items.append(item)
 
@@ -410,10 +445,41 @@ def xui_v3_bulk_sync(server, subs_list):
     failures = []
 
     if updated_uuids:
-        settings["clients"] = list(existing_map.values())
+        settings["clients"] = list(existing_by_uuid.values())
         obj["settings"] = json.dumps(settings)
         write_ok, write_msg = xui_v3_write_inbound(session, url, iid, obj)
-        if write_ok:
+
+        if not write_ok and "unique" in write_msg.lower() and migrations:
+            # UNIQUE constraint — ghost UUID от предыдущей частичной записи мешает миграции.
+            # Откатываем изменения UUID, пишем без миграций (чтобы остальные обновились).
+            print(f"[{server.get('country_name','?')}] UNIQUE constraint — откат миграций UUID, retry без них")
+            for new_uuid, mig in migrations.items():
+                old_uuid_full = mig["old_uuid"]
+                if new_uuid in existing_by_uuid:
+                    c = existing_by_uuid.pop(new_uuid)
+                    c["id"] = old_uuid_full
+                    existing_by_uuid[old_uuid_full] = c
+            settings["clients"] = list(existing_by_uuid.values())
+            obj["settings"] = json.dumps(settings)
+            write_ok2, write_msg2 = xui_v3_write_inbound(session, url, iid, obj)
+            if write_ok2:
+                ok += len(updated_uuids) - len(migrations)
+            else:
+                failed += len(updated_uuids)
+                failures.append({"error": f"inbound update failed (after revert): {write_msg2}", "count": len(updated_uuids)})
+            # Мигрированные — пробуем починить: удалить ghost → update снова
+            for new_uuid, mig in migrations.items():
+                # Пробуем удалить ghost UUID (может быть в DB без settings)
+                xui_v3_del_client(server, new_uuid)
+                # Retry update — теперь без ghost constraint должно работать
+                res_ok_m, msg_m = xui_v3_update_client(server, new_uuid, mig["uid"], mig["devices"], mig["expire_ms"])
+                if res_ok_m:
+                    ok += 1
+                    print(f"[{server.get('country_name','?')}] ghost-fix OK: {new_uuid[:8]}")
+                else:
+                    failed += 1
+                    failures.append({"user_id": mig["uid"], "uuid": new_uuid[:8], "error": f"ghost-fix: {msg_m}"})
+        elif write_ok:
             ok += len(updated_uuids)
         else:
             failed += len(updated_uuids)
