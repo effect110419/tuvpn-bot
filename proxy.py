@@ -2629,8 +2629,20 @@ def yookassa_webhook():
                     else:  # days
                         applied_value = bonus_days_from_promo
 
-                    # Идемпотентность: не дублируем запись если пользователь уже использовал этот промокод (П.5)
-                    already_used = sb.table("promocode_uses").select("id").eq("promocode_id", promo_id_int).eq("user_id", uid).limit(1).execute()
+                    # Проверяем allow_multiple_uses для правила идемпотентности
+                    promo_flags = sb.table("promocodes").select("allow_multiple_uses").eq("id", promo_id_int).limit(1).execute()
+                    allow_multiple = (promo_flags.data[0].get("allow_multiple_uses") if promo_flags.data else False) or False
+
+                    # Идемпотентность: не дублируем запись в рамках одного платежа (П.5)
+                    # Если allow_multiple_uses=True — проверяем только по payment_id (дублирование webhook)
+                    # Если allow_multiple_uses=False — проверяем по user_id (одна запись на пользователя)
+                    pay_row_check = sb.table("payments").select("id").eq("provider_payment_id", payment_id).limit(1).execute()
+                    internal_pay_id_check = pay_row_check.data[0]["id"] if pay_row_check.data else None
+                    if allow_multiple:
+                        already_used = sb.table("promocode_uses").select("id").eq("promocode_id", promo_id_int).eq("payment_id", internal_pay_id_check).limit(1).execute() if internal_pay_id_check else type('', (), {'data': []})()
+                    else:
+                        already_used = sb.table("promocode_uses").select("id").eq("promocode_id", promo_id_int).eq("user_id", uid).limit(1).execute()
+
                     if already_used.data:
                         app.logger.info(f"Промокод {promo_code} уже был записан для user_id={uid} — пропускаем")
                     else:

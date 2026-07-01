@@ -1672,17 +1672,18 @@ async def process_promo(message: types.Message, state: FSMContext):
         )
         return
 
-    # Проверка: использовал ли уже этот пользователь
-    used = sb.table("promocode_uses").select("id").eq("promocode_id", promo["id"]).eq("user_id", user_id).execute()
-    if used.data:
-        await message.answer(
-            "❌ Вы уже использовали этот промокод ранее.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🔁 Другой промокод", callback_data="have_promo")],
-                [InlineKeyboardButton(text="➡️ Без промокода", callback_data="no_promo")],
-            ])
-        )
-        return
+    # Проверка: использовал ли уже этот пользователь (только если не разрешено повторное использование)
+    if not promo.get("allow_multiple_uses"):
+        used = sb.table("promocode_uses").select("id").eq("promocode_id", promo["id"]).eq("user_id", user_id).execute()
+        if used.data:
+            await message.answer(
+                "❌ Вы уже использовали этот промокод ранее.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="🔁 Другой промокод", callback_data="have_promo")],
+                    [InlineKeyboardButton(text="➡️ Без промокода", callback_data="no_promo")],
+                ])
+            )
+            return
 
     # Применяем промокод
     data = await state.get_data()

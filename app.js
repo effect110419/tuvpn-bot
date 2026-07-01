@@ -2158,7 +2158,7 @@ function renderPromos() {
         <table class="tbl">
           <thead><tr>
             <th>Код</th><th>Тип</th><th>Значение</th><th>Использовано</th>
-            <th>Действует до</th><th>Статус</th><th class="text-r"></th>
+            <th>Действует до</th><th>Повтор</th><th>Статус</th><th class="text-r"></th>
           </tr></thead>
           <tbody id="promosTbody"></tbody>
         </table>
@@ -2195,6 +2195,7 @@ function renderPromosTable() {
       <td><span class="num" style="font-weight:700">${valDisplay}</span></td>
       <td><span class="num">${p.uses_count || 0}</span> / <span class="num muted">${max}</span>${p.max_uses != null ? `<div class="progress mt-2"><i style="width:${usedPct}%"></i></div>` : ''}</td>
       <td><span class="mono">${p.expires_at ? fmtDate(p.expires_at) : '∞'}</span></td>
+      <td>${p.allow_multiple_uses ? '<span class="tag tag-blue" title="Один пользователь может использовать несколько раз">∞ раз</span>' : '<span class="tag tag-gray" title="Один пользователь — одно использование">1 раз</span>'}</td>
       <td><span class="tag tag-${st.cls} dot">${st.label}</span></td>
       <td><div class="row-acts">
         <button class="btn btn-ghost btn-sm btn-icon" data-act="copy" title="Копировать">${ICONS.copy}</button>
@@ -2252,21 +2253,26 @@ function resetPromoModal() {
   $('#promoMax').value = '';
   $('#promoExpiry').value = '';
   $('#promoDesc').value = '';
+  $('#promoAllowMulti').checked = false;
   updatePromoHelp();
 }
 
 function updatePromoHelp() {
   const t = $('#promoType').value;
+  const multi = $('#promoAllowMulti') && $('#promoAllowMulti').checked;
+  const multiNote = multi ? 'Один пользователь может использовать несколько раз.' : 'Один пользователь — одно использование.';
   if (t === 'percent') {
     $('#promoValueLabel').textContent = 'Размер скидки, %';
     $('#promoValue').placeholder = '20';
-    $('#promoHelp').textContent = 'Скидка снижает итоговую сумму платежа. Один пользователь — одно использование.';
+    $('#promoHelp').textContent = `Скидка снижает итоговую сумму платежа. ${multiNote}`;
   } else {
     $('#promoValueLabel').textContent = 'Бонусных дней';
     $('#promoValue').placeholder = '7';
-    $('#promoHelp').textContent = 'Дни добавляются к подписке (купил 30 — получил 37). Один пользователь — одно использование.';
+    $('#promoHelp').textContent = `Дни добавляются к подписке (купил 30 — получил 37). ${multiNote}`;
   }
 }
+// Обновлять подсказку при переключении чекбокса
+document.addEventListener('change', e => { if (e.target.id === 'promoAllowMulti') updatePromoHelp(); });
 
 async function savePromo() {
   const code = $('#promoCode').value.trim().toUpperCase();
@@ -2275,6 +2281,7 @@ async function savePromo() {
   const max = parseInt($('#promoMax').value) || null;
   const expiry = $('#promoExpiry').value || null;
   const desc = $('#promoDesc').value.trim() || null;
+  const allowMulti = ($('#promoAllowMulti') || {}).checked || false;
   if (!code || code.length < 3) { toast('Введите код (минимум 3 символа)', 'error'); return; }
   if (!/^[A-Z0-9_-]+$/.test(code)) { toast('Только латиница, цифры, _ и -', 'error'); return; }
   if (!value || value < 1) { toast('Введите значение', 'error'); return; }
@@ -2285,7 +2292,7 @@ async function savePromo() {
     const created = await sbInsert('promocodes', {
       code, type, value, description: desc, max_uses: max,
       expires_at: expiry ? new Date(expiry + 'T23:59:59').toISOString() : null,
-      is_active: true, uses_count: 0,
+      is_active: true, uses_count: 0, allow_multiple_uses: allowMulti,
     });
     state.promos.unshift(created[0]);
     closeModal('promoModal');
