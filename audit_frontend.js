@@ -300,6 +300,43 @@ function renderAuditReport(r, host) {
           </div>`).join('')}
       </div>
     </div>` : ''}
+
+    <!-- История событий (П.22) -->
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-head"><div class="card-title">📜 Хронология событий</div></div>
+      <div class="card-body" style="padding:12px 16px">
+        ${(() => {
+          // Собираем события из доступных данных
+          const events = [];
+          const u = r.user || {};
+          if (u.created_at) events.push({ ts: u.created_at, icon: '👤', text: 'Зарегистрировался в боте', color: 'var(--fg-2)' });
+          for (const p of (r.payments || [])) {
+            if (p.status === 'succeeded') {
+              events.push({ ts: p.paid_at || p.created_at, icon: '💳', text: `Оплата ${money(p.amount)} — ${p.months||'?'} мес / ${p.devices||'?'} уст`, color: 'var(--green,#50c878)' });
+            } else if (p.status === 'canceled' || p.status === 'failed') {
+              events.push({ ts: p.created_at, icon: '❌', text: `Платёж не прошёл (${p.status})`, color: 'var(--red)' });
+            }
+          }
+          for (const s of (r.subscriptions || [])) {
+            if (s.started_at) events.push({ ts: s.started_at, icon: '🔑', text: `Подписка выдана — ${s.devices} уст`, color: 'var(--accent)' });
+          }
+          const devs = (r.devices || []).slice(0, 5);
+          for (const d of devs) {
+            if (d.connected_at) events.push({ ts: d.connected_at, icon: d.device_type==='ios'?'🍏':d.device_type==='android'?'🤖':'💻', text: `Устройство добавлено: ${esc(d.device_name || d.device_type || '?')}`, color: 'var(--fg-2)' });
+          }
+          events.sort((a, b) => new Date(b.ts) - new Date(a.ts));
+          if (!events.length) return '<div class="muted" style="text-align:center;padding:8px">Нет событий</div>';
+          return events.slice(0, 20).map(ev => `
+            <div style="display:flex;align-items:flex-start;gap:10px;padding:5px 0;border-bottom:1px solid var(--bg-3)">
+              <span style="font-size:14px;min-width:18px">${ev.icon}</span>
+              <div style="flex:1;min-width:0">
+                <div style="font-size:12px;color:${ev.color}">${ev.text}</div>
+                <div style="font-size:11px;color:var(--fg-3)">${fmtDateTime(ev.ts)}</div>
+              </div>
+            </div>`).join('');
+        })()}
+      </div>
+    </div>
   `;
 
   // Кнопки статус-бара

@@ -267,6 +267,13 @@ async def give_referral_bonus(user_id, days, reason):
                 "",
                 f"Причина: {reason}",
             ]
+            if not sub:
+                # Бонус заморожен — нет активной подписки
+                text_lines += [
+                    "",
+                    "⏳ <b>Бонус заморожен</b> — активной подписки нет.",
+                    "Дни будут автоматически добавлены при следующей покупке или продлении подписки.",
+                ]
             await bot.send_message(
                 user_id, "\n".join(text_lines), parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -308,14 +315,23 @@ async def give_new_user_bonus(user_id, days=7):
 # ══════════════════════════════
 # ПРОВЕРКА ИСТЁКШИХ ПОДПИСОК
 # ══════════════════════════════
+_check_expired_running = False  # защита от параллельного запуска (П.11)
+
 async def check_expired():
     """
     Каждый час проверяет подписки и шлёт уведомления:
     - За 3 дня до истечения (один раз, флаг notified_3d)
     - За 1 день до истечения (один раз, флаг notified_1d)
     - При истечении — деактивирует + шлёт сообщение (флаг notified_expired)
+    - Серия напоминаний: через 1д/3д/7д после истечения без оплаты (П.25)
     """
+    global _check_expired_running
     while True:
+        if _check_expired_running:
+            logging.warning("check_expired: предыдущий цикл ещё выполняется — пропускаем")
+            await asyncio.sleep(3600)
+            continue
+        _check_expired_running = True
         try:
             r = sb.table("subscriptions").select("*").eq("status", "active").execute()
             now = datetime.now()
@@ -405,8 +421,75 @@ async def check_expired():
                         sb.table("subscriptions").update({"notified_3d": True}).eq("id", sub_id).execute()
                     except Exception:
                         pass
+            # === СЕРИЯ НАПОМИНАНИЙ ПОСЛЕ ИСТЕЧЕНИЯ (П.25) ===
+            # Для inactive-подписок отправляем напоминания через 1д/3д/7д если нет новой оплаты
+            try:
+                exp_r = sb.table("subscriptions").select("*").eq("status", "inactive").eq("notified_expired", True).execute()
+                for sub in (exp_r.data or []):
+                    user_id = sub["user_id"]
+                    sub_id = sub["id"]
+                    try:
+                        expires = datetime.fromisoformat(sub["expires_at"].replace("Z", "+00:00")).replace(tzinfo=None)
+                    except Exception:
+                        continue
+                    hours_since = (now - expires).total_seconds() / 3600
+                    if hours_since < 20:
+                        continue  # ещё не прошло суток
+
+                    # Проверяем нет ли активной подписки (пользователь мог уже купить)
+                    active_chk = sb.table("subscriptions").select("id").eq("user_id", user_id).eq("status", "active").limit(1).execute()
+                    if active_chk.data:
+                        continue
+
+                    # Читаем уже отправленные напоминания из system_logs
+                    try:
+                        logs_r = sb.table("system_logs").select("event").eq("user_id", user_id).like("event", "reminder_expired_%").gte("created_at", expires.isoformat()).execute()
+                        sent = {r["event"] for r in (logs_r.data or [])}
+                    except Exception:
+                        sent = None  # Не можем проверить — пропускаем (не рискуем спамить)
+                    if sent is None:
+                        continue
+
+                    async def _send_reminder(uid, event_key, text, kb):
+                        try:
+                            await bot.send_message(uid, text, parse_mode="HTML", reply_markup=kb)
+                            sb.table("system_logs").insert({"event": event_key, "user_id": uid, "category": "reminder", "details": {"sub_id": sub_id}}).execute()
+                        except Exception as e:
+                            logging.warning(f"reminder send failed uid={uid}: {e}")
+
+                    if hours_since >= 168 and "reminder_expired_7d" not in sent:
+                        await _send_reminder(user_id, "reminder_expired_7d",
+                            "⏰ <b>Прошло 7 дней с отключения TuVPN</b>\n\n"
+                            "Мы скучаем! Возвращайтесь — ваши настройки сохранены, ничего перенастраивать не нужно.\n\n"
+                            "🎁 Напишите в поддержку — мы предложим персональные условия.",
+                            InlineKeyboardMarkup(inline_keyboard=[
+                                [InlineKeyboardButton(text="🛒 Возобновить", callback_data="buy")],
+                                [InlineKeyboardButton(text="💬 Поддержка", url="https://t.me/TuVPNSupport_bot")],
+                            ]))
+                    elif hours_since >= 72 and "reminder_expired_3d" not in sent:
+                        await _send_reminder(user_id, "reminder_expired_3d",
+                            "💔 <b>3 дня без TuVPN</b>\n\n"
+                            "Без VPN заблокированные сайты недоступны. Вернитесь — подписку можно продлить в пару кликов.",
+                            InlineKeyboardMarkup(inline_keyboard=[
+                                [InlineKeyboardButton(text="🛒 Продлить подписку", callback_data="buy")],
+                                [InlineKeyboardButton(text="🤝 Позвать друга за бонус", callback_data="referral")],
+                            ]))
+                    elif hours_since >= 24 and "reminder_expired_1d" not in sent:
+                        await _send_reminder(user_id, "reminder_expired_1d",
+                            "⚡ <b>TuVPN ждёт вас!</b>\n\n"
+                            "Прошли сутки с отключения. Продлите прямо сейчас — все настройки сохранены.",
+                            InlineKeyboardMarkup(inline_keyboard=[
+                                [InlineKeyboardButton(text="🛒 Продлить", callback_data="buy")],
+                                [InlineKeyboardButton(text="◀️ В меню", callback_data="back")],
+                            ]))
+            except Exception as e:
+                logging.error(f"check_expired reminder sequence error: {e}")
+            # === END СЕРИЯ НАПОМИНАНИЙ ===
+
         except Exception as e:
             logging.error(f"check_expired loop error: {e}")
+        finally:
+            _check_expired_running = False
         await asyncio.sleep(3600)
 
 # ══════════════════════════════

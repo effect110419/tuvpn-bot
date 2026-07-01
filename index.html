@@ -105,6 +105,25 @@
      ========================================================= -->
 <div class="app" id="app" style="display:none">
 
+  <!-- Скелетон первоначальной загрузки (П.17) -->
+  <div id="appLoadingOverlay" style="
+    position:fixed; inset:0; z-index:9999;
+    background:var(--bg-1,#060a14);
+    display:flex; flex-direction:column; align-items:center; justify-content:center; gap:18px;
+  ">
+    <div style="display:flex;align-items:center;gap:12px">
+      <div style="width:32px;height:32px;background:linear-gradient(135deg,#5b8def,#c084fc);border-radius:7px;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800;font-size:18px;font-family:system-ui">T</div>
+      <span style="font-size:20px;font-weight:700;color:var(--fg-1,#e8eaef)">TuVPN Admin</span>
+    </div>
+    <div style="display:flex;gap:6px;align-items:center">
+      <div class="sk-dot" style="width:8px;height:8px;border-radius:50%;background:var(--accent,#5b8def);animation:skPulse 1.2s .0s ease-in-out infinite"></div>
+      <div class="sk-dot" style="width:8px;height:8px;border-radius:50%;background:var(--accent,#5b8def);animation:skPulse 1.2s .2s ease-in-out infinite"></div>
+      <div class="sk-dot" style="width:8px;height:8px;border-radius:50%;background:var(--accent,#5b8def);animation:skPulse 1.2s .4s ease-in-out infinite"></div>
+    </div>
+    <div style="font-size:13px;color:var(--fg-3,#6b7280);margin-top:-6px" id="appLoadingText">Загрузка данных...</div>
+  </div>
+  <style>@keyframes skPulse{0%,100%{opacity:.3;transform:scale(.8)}50%{opacity:1;transform:scale(1)}}</style>
+
   <!-- Backdrop для мобильной шторки сайдбара -->
   <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
 

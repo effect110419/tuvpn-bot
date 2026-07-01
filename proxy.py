@@ -4,7 +4,8 @@ sys.path.insert(0, '/root/tuvpn')
 from server_installer import create_installation, start_installation_thread, REALITY_TARGET_CANDIDATES
 from flask import Flask, request, jsonify, Response
 import requests, json, uuid, base64
-import asyncio
+import asyncio, time, os
+from collections import defaultdict, deque
 from datetime import datetime, timedelta
 from config import PANEL_URL, PANEL_USER, PANEL_PASS, INBOUND_ID, SERVER_IP, SUB_BASE_URL
 from supabase import create_client
@@ -12,6 +13,29 @@ from config import SUPABASE_URL, SUPABASE_KEY
 import urllib3
 import threading
 urllib3.disable_warnings()
+
+# === ШИФРОВАНИЕ ПАРОЛЕЙ ПАНЕЛЕЙ (П.6) ===
+try:
+    from cryptography.fernet import Fernet as _Fernet
+    _PANEL_ENC_KEY = os.environ.get('PANEL_ENCRYPTION_KEY', '').strip()
+    _fernet = _Fernet(_PANEL_ENC_KEY.encode()) if _PANEL_ENC_KEY else None
+except Exception:
+    _fernet = None
+
+def decrypt_panel_password(raw: str) -> str:
+    """Расшифровывает пароль панели если зашифрован (Fernet-формат)."""
+    if _fernet and raw and raw.startswith('gAAAAA'):
+        try:
+            return _fernet.decrypt(raw.encode()).decode()
+        except Exception:
+            pass
+    return raw
+
+def encrypt_panel_password(raw: str) -> str:
+    """Шифрует пароль панели для хранения в БД."""
+    if _fernet and raw and not raw.startswith('gAAAAA'):
+        return _fernet.encrypt(raw.encode()).decode()
+    return raw
 
 app = Flask(__name__)
 # ─── CORS для админки ───
@@ -34,6 +58,46 @@ def add_cors_headers(response):
 @app.route('/admin-api/<path:path>', methods=['OPTIONS'])
 def handle_admin_options(path):
     return make_response('', 204)
+
+# === RATE LIMITING (П.3) ===
+_rl_store: dict = defaultdict(deque)
+_rl_lock = threading.Lock()
+
+def _check_rate(ip: str, group: str, max_req: int, window: int) -> bool:
+    """True — запрос разрешён. False — лимит превышен."""
+    key = f"{ip}:{group}"
+    now = time.monotonic()
+    with _rl_lock:
+        dq = _rl_store[key]
+        while dq and dq[0] < now - window:
+            dq.popleft()
+        if len(dq) >= max_req:
+            return False
+        dq.append(now)
+        return True
+
+@app.before_request
+def rate_limit():
+    path = request.path
+    ip = (request.headers.get('X-Real-IP') or
+          request.headers.get('X-Forwarded-For', '').split(',')[0].strip() or
+          request.remote_addr or 'unknown')
+    # Auth: 10 запросов/минуту
+    if path.startswith('/admin-api/auth/'):
+        if not _check_rate(ip, 'auth', 10, 60):
+            return jsonify({"error": "rate_limited", "retry_after": 60}), 429
+    # Подписка: 60 запросов/минуту с одного IP
+    elif path.startswith('/sub/'):
+        if not _check_rate(ip, 'sub', 60, 60):
+            return jsonify({"error": "rate_limited"}), 429
+    # Webhook ЮКассы: 30/мин
+    elif path == '/yookassa/webhook':
+        if not _check_rate(ip, 'wh', 30, 60):
+            return jsonify({"error": "rate_limited"}), 429
+    # Admin API: 180 запросов/минуту
+    elif path.startswith('/admin-api/'):
+        if not _check_rate(ip, 'adm', 180, 60):
+            return jsonify({"error": "rate_limited", "retry_after": 60}), 429
 # ─────────────────────────
 PUBLIC_KEY = "9q2JxVMnpr1nvhK407R0ymy5k-W_tyE_iEvSLJTXWg8"
 SHORT_ID = "d1a247d5a8"
@@ -76,7 +140,7 @@ def xui_session(server=None):
     session = requests.Session()
     session.verify = False
     url = server["panel_url"].rstrip("/")
-    creds = {"username": server["panel_login"], "password": server["panel_password"]}
+    creds = {"username": server["panel_login"], "password": decrypt_panel_password(server["panel_password"])}
 
     # Получаем CSRF-токен (если новая версия) + cookies
     csrf = None
@@ -962,6 +1026,7 @@ def issue_subscription(uid: int, devices: int, days: int) -> dict:
             return {"success": False, "error": "no active servers in DB"}
 
         success_count = 0
+        failed_servers = []
         for server in servers:
             # При наличии existing_uuid обновляем (xui_update умеет add-if-missing)
             if existing_uuid:
@@ -970,9 +1035,24 @@ def issue_subscription(uid: int, devices: int, days: int) -> dict:
                 ok = xui_add_client_on_server(server, client_uuid, uid, devices, expire_ms)
             if ok:
                 success_count += 1
+            else:
+                failed_servers.append(server.get("code") or server.get("country_name") or "?")
 
         if success_count == 0:
             return {"success": False, "error": "failed on all servers"}
+
+        # Уведомляем суперадмина о частичном сбое (П.4)
+        if failed_servers:
+            try:
+                fail_list = ", ".join(failed_servers)
+                notify_user(SUPERADMIN_ID,
+                    f"⚠️ <b>Подписка выдана частично!</b>\n\n"
+                    f"👤 user_id: <code>{uid}</code>\n"
+                    f"✅ {success_count}/{len(servers)} серверов\n"
+                    f"❌ Сбой на: <b>{fail_list}</b>\n\n"
+                    f"Что делать: откройте диагностику пользователя в панели и нажмите «🔧 Починить» напротив сбойных серверов.")
+            except Exception:
+                pass
 
         # Сохраняем в Supabase
         sub_url = f"{SUB_BASE_URL}/sub/{client_uuid}"
@@ -1095,7 +1175,7 @@ def servers_api():
                 "country_code": data.get('country_code', data['code'].split('-')[0].upper()),
                 "panel_url": data['panel_url'],
                 "panel_login": data['panel_login'],
-                "panel_password": data['panel_password'],
+                "panel_password": encrypt_panel_password(data['panel_password']),
                 "inbound_id": data.get('inbound_id', 1),
                 "server_ip": data['server_ip'],
                 "server_port": data.get('server_port', 443),
@@ -1268,6 +1348,25 @@ def server_test(server_id):
             "response_ms": elapsed_ms,
             "error": error,
         })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/admin-api/servers/encrypt_passwords', methods=['POST'])
+def encrypt_server_passwords():
+    """Зашифровать незашифрованные пароли серверов в БД. Только суперадмин. (П.6)"""
+    try:
+        if not _fernet:
+            return jsonify({"success": False, "error": "PANEL_ENCRYPTION_KEY не задан в .env"}), 400
+        servers_r = sb.table("servers").select("id,panel_password").execute()
+        migrated = 0
+        for s in (servers_r.data or []):
+            pw = s.get("panel_password") or ""
+            if pw and not pw.startswith('gAAAAA'):
+                enc = encrypt_panel_password(pw)
+                sb.table("servers").update({"panel_password": enc}).eq("id", s["id"]).execute()
+                migrated += 1
+        return jsonify({"success": True, "migrated": migrated})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
@@ -2409,12 +2508,13 @@ def yookassa_webhook():
                 d = int(metadata.get("devices") or 0)
                 m = int(metadata.get("months") or 0)
                 expected_price = None
-                # PRICES может быть dict[(devices, months)] = price ИЛИ dict[devices][months] = price
+                # PRICES может быть dict[(devices, months)] = price ИЛИ dict[devices][str(months)] = price
                 if isinstance(PRICES, dict):
                     if (d, m) in PRICES:
                         expected_price = PRICES[(d, m)]
-                    elif d in PRICES and isinstance(PRICES[d], dict) and m in PRICES[d]:
-                        expected_price = PRICES[d][m]
+                    elif d in PRICES and isinstance(PRICES[d], dict):
+                        # Ключи месяцев могут быть строками или int — проверяем оба варианта
+                        expected_price = PRICES[d].get(str(m)) or PRICES[d].get(m)
                 if expected_price is not None:
                     paid = float(parsed.get("amount") or 0)
                     # Разрешаем платёж быть НЕ МЕНЬШЕ ожидаемого минус 50% (если применён промокод-скидка)
@@ -2451,6 +2551,24 @@ def yookassa_webhook():
         sb.table("payments").update(payment_row).eq("provider_payment_id", payment_id).execute()
     else:
         sb.table("payments").insert(payment_row).execute()
+
+    # Обработка отмены платежа (П.13)
+    if event in ("payment.canceled", "payment.failed") or parsed.get("status") == "canceled":
+        uid_str = metadata.get("user_id")
+        if uid_str:
+            try:
+                notify_user(int(uid_str),
+                    "❌ <b>Платёж не прошёл</b>\n\n"
+                    "Оплата была отменена или произошла ошибка. "
+                    "Попробуйте ещё раз или выберите другой способ оплаты.",
+                    reply_markup={"inline_keyboard": [[{"text": "🛒 Попробовать снова", "callback_data": "buy"}]]})
+            except Exception as e:
+                app.logger.error(f"Не удалось уведомить о cancel payment: {e}")
+        return jsonify({"ok": True}), 200
+
+    # Статус waiting_for_capture — просто обновили запись в БД, ничего не делаем
+    if parsed.get("status") == "waiting_for_capture":
+        return jsonify({"ok": True}), 200
 
     if event == "payment.succeeded" and parsed["status"] == "succeeded":
         try:
@@ -2511,19 +2629,32 @@ def yookassa_webhook():
                     else:  # days
                         applied_value = bonus_days_from_promo
 
-                    sb.table("promocode_uses").insert({
-                        "promocode_id": promo_id_int,
-                        "user_id": uid,
-                        "payment_id": internal_pay_id,
-                        "applied_value": applied_value,
-                    }).execute()
-
-                    # Инкрементим счётчик uses_count
-                    cur = sb.table("promocodes").select("uses_count").eq("id", promo_id_int).limit(1).execute()
-                    if cur.data:
-                        new_count = (cur.data[0].get("uses_count") or 0) + 1
-                        sb.table("promocodes").update({"uses_count": new_count}).eq("id", promo_id_int).execute()
-                    app.logger.info(f"Промокод {promo_code} зафиксирован для user_id={uid}")
+                    # Идемпотентность: не дублируем запись если пользователь уже использовал этот промокод (П.5)
+                    already_used = sb.table("promocode_uses").select("id").eq("promocode_id", promo_id_int).eq("user_id", uid).limit(1).execute()
+                    if already_used.data:
+                        app.logger.info(f"Промокод {promo_code} уже был записан для user_id={uid} — пропускаем")
+                    else:
+                        # Атомарная проверка лимита: читаем текущее состояние + условное обновление
+                        promo_cur = sb.table("promocodes").select("uses_count, max_uses").eq("id", promo_id_int).limit(1).execute()
+                        if promo_cur.data:
+                            pc = promo_cur.data[0]
+                            cur_uses = (pc.get("uses_count") or 0)
+                            max_uses = pc.get("max_uses")
+                            if max_uses and cur_uses >= max_uses:
+                                app.logger.warning(f"Промокод {promo_code} уже исчерпан (race condition): {cur_uses}/{max_uses}")
+                            else:
+                                sb.table("promocode_uses").insert({
+                                    "promocode_id": promo_id_int,
+                                    "user_id": uid,
+                                    "payment_id": internal_pay_id,
+                                    "applied_value": applied_value,
+                                }).execute()
+                                # Условное обновление: только если uses_count не изменился (оптимистичная блокировка)
+                                upd = sb.table("promocodes").update({"uses_count": cur_uses + 1}).eq("id", promo_id_int).eq("uses_count", cur_uses).execute()
+                                if not upd.data:
+                                    # Другой webhook успел обновить — просто логируем
+                                    app.logger.warning(f"Промокод {promo_code}: race condition при инкременте, проверьте вручную")
+                                app.logger.info(f"Промокод {promo_code} зафиксирован для user_id={uid}")
                 except Exception as e:
                     app.logger.error(f"Не удалось записать использование промокода: {e}")
 
@@ -3386,12 +3517,22 @@ def analytics_funnel():
     if request.method == 'OPTIONS':
         return make_response('', 204)
     try:
-        period = int(request.args.get("period", 30))
-        campaign = request.args.get("campaign", "all")
         from datetime import timedelta
-        cutoff = (datetime.utcnow() - timedelta(days=period)).isoformat()
+        campaign = request.args.get("campaign", "all")
+        # Поддерживаем как period так и from_date/to_date (П.23)
+        from_date = request.args.get("from_date")
+        to_date = request.args.get("to_date")
+        if from_date and to_date:
+            cutoff = from_date
+            cutoff_end = to_date + "T23:59:59"
+        else:
+            period = int(request.args.get("period", 30))
+            cutoff = (datetime.utcnow() - timedelta(days=period)).isoformat()
+            cutoff_end = None
 
         users_q = sb.table("users").select("user_id,campaign_code").gte("created_at", cutoff)
+        if cutoff_end:
+            users_q = users_q.lte("created_at", cutoff_end)
         if campaign != "all":
             users_q = users_q.eq("campaign_code", campaign)
         users_r = users_q.execute()
@@ -3409,11 +3550,17 @@ def analytics_funnel():
         uid_set = set(user_ids)
 
         # триал = есть запись в subscriptions (status не важен)
-        subs_r = sb.table("subscriptions").select("user_id").gte("created_at", cutoff).execute()
+        subs_q = sb.table("subscriptions").select("user_id").gte("created_at", cutoff)
+        if cutoff_end:
+            subs_q = subs_q.lte("created_at", cutoff_end)
+        subs_r = subs_q.execute()
         trialed = len({s["user_id"] for s in (subs_r.data or []) if s["user_id"] in uid_set})
 
         # оформили = есть успешный платёж
-        pay_r = sb.table("payments").select("user_id").eq("status", "succeeded").gte("paid_at", cutoff).execute()
+        pay_q = sb.table("payments").select("user_id").eq("status", "succeeded").gte("paid_at", cutoff)
+        if cutoff_end:
+            pay_q = pay_q.lte("paid_at", cutoff_end)
+        pay_r = pay_q.execute()
         paid = len({p["user_id"] for p in (pay_r.data or []) if p["user_id"] in uid_set})
 
         # активная подписка сейчас

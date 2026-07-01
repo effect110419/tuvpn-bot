@@ -591,6 +591,9 @@ function showApp() {
   $('#loginScreen').classList.remove('show');
   $('#loginScreen').style.display = 'none';
   $('#app').style.display = 'flex';
+  // Overlay показывается только при первой загрузке (П.17)
+  const ov = $('#appLoadingOverlay');
+  if (ov) ov.style.display = 'flex';
   loadAll();
 }
 
@@ -704,6 +707,10 @@ async function loadAll() {
     document.querySelectorAll('.superadmin-only').forEach(el => el.style.display = '');
   }
 
+  const loadingOv = $('#appLoadingOverlay');
+  const loadingTxt = $('#appLoadingText');
+  if (loadingTxt) loadingTxt.textContent = 'Загрузка данных...';
+
   try {
     const [users, subs, payments, promos, promoUses, refs, tickets, supportAdmins, campaigns, campaignClicks, userDevices] = await Promise.all([
       sbGet('users', 'select=*&order=created_at.desc'),
@@ -729,13 +736,21 @@ async function loadAll() {
       state.servers = [];
     }
 
+    // Скрываем overlay загрузки (П.17)
+    if (loadingOv) { loadingOv.style.opacity = '0'; loadingOv.style.transition = 'opacity .3s'; setTimeout(() => { loadingOv.style.display = 'none'; loadingOv.style.opacity = ''; loadingOv.style.transition = ''; }, 320); }
+
     renderAll();
     updateSidebarProfile();
     fetchAlerts();
     $('#liveDot').textContent = 'обновлено ' + new Date().toLocaleTimeString('ru-RU');
   } catch (e) {
     console.error(e);
-    toast('Ошибка загрузки: ' + e.message, 'error');
+    // П.18: при сбое показываем ошибку в overlay вместо просто toast
+    if (loadingOv && loadingOv.style.display !== 'none') {
+      if (loadingTxt) loadingTxt.innerHTML = `<span style="color:#f87171">⚠ Ошибка загрузки</span><br><span style="font-size:12px">${esc(e.message)}</span><br><button class="btn btn-primary btn-sm" style="margin-top:12px" onclick="loadAll()">Повторить</button>`;
+    } else {
+      toast('Ошибка загрузки данных: ' + e.message, 'error');
+    }
   }
 }
 
@@ -4094,7 +4109,7 @@ function ruPlural(n, one, few, many) {
 
 
 /* ==================== ANALYTICS ==================== */
-const analyticsState = { funnelChart: null, period: 30, campaign: 'all' };
+const analyticsState = { funnelChart: null, period: 30, campaign: 'all', fromDate: null, toDate: null };
 
 async function renderAnalytics() {
   const host = $('#page-analytics');
@@ -4107,13 +4122,20 @@ async function renderAnalytics() {
     <div class="card" style="margin-bottom:18px">
       <div class="card-head">
         <div class="card-title">Воронка конверсии</div>
-        <div class="table-actions">
+        <div class="table-actions" style="flex-wrap:wrap;gap:6px">
           <select class="filter" id="funnelPeriod">
             <option value="7">7 дней</option>
             <option value="30" selected>30 дней</option>
             <option value="90">90 дней</option>
             <option value="365">Год</option>
+            <option value="custom">Свой период...</option>
           </select>
+          <div id="funnelDateRange" style="display:none;gap:4px;align-items:center;display:none">
+            <input type="date" class="input" id="funnelFrom" style="padding:4px 8px;font-size:12px;width:130px">
+            <span style="color:var(--fg-3);font-size:12px">—</span>
+            <input type="date" class="input" id="funnelTo" style="padding:4px 8px;font-size:12px;width:130px">
+            <button class="btn btn-primary btn-sm" id="funnelApply">ОК</button>
+          </div>
           <select class="filter" id="funnelCampaign"><option value="all">Все источники</option></select>
         </div>
       </div>
@@ -4152,7 +4174,27 @@ async function renderAnalytics() {
     campSel.appendChild(o);
   });
 
-  $('#funnelPeriod').addEventListener('change', e => { analyticsState.period = e.target.value; loadFunnel(); });
+  $('#funnelPeriod').addEventListener('change', e => {
+    const dr = $('#funnelDateRange');
+    if (e.target.value === 'custom') {
+      if (dr) { dr.style.display = 'flex'; }
+      // Устанавливаем дефолтные даты (последние 30 дней)
+      const now = new Date(); const from = new Date(now - 30 * 86400000);
+      if (!$('#funnelFrom').value) $('#funnelFrom').value = from.toISOString().slice(0,10);
+      if (!$('#funnelTo').value) $('#funnelTo').value = now.toISOString().slice(0,10);
+    } else {
+      if (dr) { dr.style.display = 'none'; }
+      analyticsState.period = e.target.value;
+      analyticsState.fromDate = null; analyticsState.toDate = null;
+      loadFunnel();
+    }
+  });
+  $('#funnelApply') && $('#funnelApply').addEventListener('click', () => {
+    analyticsState.fromDate = $('#funnelFrom').value;
+    analyticsState.toDate = $('#funnelTo').value;
+    if (analyticsState.fromDate && analyticsState.toDate) loadFunnel();
+    else toast('Укажите обе даты', 'error');
+  });
   $('#funnelCampaign').addEventListener('change', e => { analyticsState.campaign = e.target.value; loadFunnel(); });
 
   loadFunnel();
@@ -4163,7 +4205,9 @@ async function renderAnalytics() {
 async function loadFunnel() {
   const host = $('#funnelBars');
   try {
-    const q = `?period=${analyticsState.period}&campaign=${encodeURIComponent(analyticsState.campaign)}`;
+    const q = analyticsState.fromDate && analyticsState.toDate
+      ? `?from_date=${analyticsState.fromDate}&to_date=${analyticsState.toDate}&campaign=${encodeURIComponent(analyticsState.campaign)}`
+      : `?period=${analyticsState.period}&campaign=${encodeURIComponent(analyticsState.campaign)}`;
     const data = await proxy('/admin-api/analytics/funnel' + q);
     if (!data.success) { host.innerHTML = '<div class="empty"><div class="title">Ошибка</div></div>'; return; }
     const f = data.funnel || [];
