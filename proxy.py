@@ -1296,7 +1296,6 @@ def admin_cleanup_server(server_id):
     """Удалить стейловых клиентов с сервера (не в активных подписках)."""
     if request.method == 'OPTIONS':
         return make_response('', 204)
-    require_perm("manage_servers")
     server = get_server_by_id(server_id)
     if not server:
         return jsonify({"success": False, "error": "server not found"}), 404
@@ -1322,7 +1321,6 @@ def admin_cleanup_all_servers():
     """Удалить стейловых клиентов со всех серверов."""
     if request.method == 'OPTIONS':
         return make_response('', 204)
-    require_perm("manage_servers")
     servers = get_active_servers()
     if not servers:
         return jsonify({"success": False, "error": "no active servers"}), 400
