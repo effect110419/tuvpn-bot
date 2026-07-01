@@ -2171,6 +2171,8 @@ function renderPromos() {
   renderPromosTable();
 }
 
+let _editingPromoId = null;
+
 function renderPromosTable() {
   const f = $('#promosFilter').value;
   const search = ($('#promosSearch').value || '').toLowerCase().trim();
@@ -2199,6 +2201,7 @@ function renderPromosTable() {
       <td><span class="tag tag-${st.cls} dot">${st.label}</span></td>
       <td><div class="row-acts">
         <button class="btn btn-ghost btn-sm btn-icon" data-act="copy" title="Копировать">${ICONS.copy}</button>
+        <button class="btn btn-ghost btn-sm btn-icon" data-act="edit" title="Редактировать">${ICONS.edit}</button>
         <label class="toggle" title="Вкл/выкл"><input type="checkbox" ${p.is_active ? 'checked' : ''} data-act="toggle"><span class="toggle-slider"></span></label>
         <button class="btn btn-danger btn-sm btn-icon" data-act="del">${ICONS.trash}</button>
       </div></td>
@@ -2210,6 +2213,11 @@ function renderPromosTable() {
     navigator.clipboard.writeText(code);
     toast('Скопировано: ' + code);
   }));
+  $$('#promosTbody [data-act="edit"]').forEach(b => b.addEventListener('click', () => {
+    const pid = Number(b.closest('tr').dataset.pid);
+    const p = state.promos.find(x => x.id === pid);
+    if (p) openEditPromoModal(p);
+  }));
   $$('#promosTbody [data-act="toggle"]').forEach(b => b.addEventListener('change', () => {
     togglePromo(Number(b.closest('tr').dataset.pid), b.checked);
   }));
@@ -2217,6 +2225,24 @@ function renderPromosTable() {
     const tr = b.closest('tr');
     deletePromo(Number(tr.dataset.pid), tr.querySelector('.mono').textContent);
   }));
+}
+
+function openEditPromoModal(p) {
+  _editingPromoId = p.id;
+  $('#promoModalTitle').textContent = 'Редактировать промокод';
+  $('#promoSubmit').textContent = 'Сохранить';
+  $('#promoCode').value = p.code;
+  $('#promoCode').readOnly = true;
+  $('#promoCode').style.opacity = '0.6';
+  $('#promoGenBtn').style.display = 'none';
+  $('#promoType').value = p.type || 'percent';
+  $('#promoValue').value = p.value != null ? p.value : '';
+  $('#promoMax').value = p.max_uses != null ? p.max_uses : '';
+  $('#promoExpiry').value = p.expires_at ? p.expires_at.substring(0, 10) : '';
+  $('#promoDesc').value = p.description || '';
+  $('#promoAllowMulti').checked = !!p.allow_multiple_uses;
+  updatePromoHelp();
+  openModal('promoModal');
 }
 
 async function togglePromo(id, val) {
@@ -2246,8 +2272,13 @@ function genPromoCode() {
 }
 
 function resetPromoModal() {
+  _editingPromoId = null;
   $('#promoModalTitle').textContent = 'Создать промокод';
+  $('#promoSubmit').textContent = 'Создать';
   $('#promoCode').value = '';
+  $('#promoCode').readOnly = false;
+  $('#promoCode').style.opacity = '';
+  $('#promoGenBtn').style.display = '';
   $('#promoType').value = 'percent';
   $('#promoValue').value = '';
   $('#promoMax').value = '';
@@ -2281,23 +2312,36 @@ async function savePromo() {
   const max = parseInt($('#promoMax').value) || null;
   const expiry = $('#promoExpiry').value || null;
   const desc = $('#promoDesc').value.trim() || null;
-  const allowMulti = ($('#promoAllowMulti') || {}).checked || false;
-  if (!code || code.length < 3) { toast('Введите код (минимум 3 символа)', 'error'); return; }
-  if (!/^[A-Z0-9_-]+$/.test(code)) { toast('Только латиница, цифры, _ и -', 'error'); return; }
+  const allowMulti = !!$('#promoAllowMulti').checked;
   if (!value || value < 1) { toast('Введите значение', 'error'); return; }
   if (type === 'percent' && value > 99) { toast('Скидка не может быть 100% и больше', 'error'); return; }
-  if (state.promos.some(p => p.code === code)) { toast('Промокод с таким кодом уже есть', 'error'); return; }
+
+  const commonData = {
+    type, value, description: desc, max_uses: max,
+    expires_at: expiry ? new Date(expiry + 'T23:59:59').toISOString() : null,
+    allow_multiple_uses: allowMulti,
+  };
 
   try {
-    const created = await sbInsert('promocodes', {
-      code, type, value, description: desc, max_uses: max,
-      expires_at: expiry ? new Date(expiry + 'T23:59:59').toISOString() : null,
-      is_active: true, uses_count: 0, allow_multiple_uses: allowMulti,
-    });
-    state.promos.unshift(created[0]);
-    closeModal('promoModal');
-    renderPromosTable(); renderNavCounts();
-    toast('Промокод ' + code + ' создан');
+    if (_editingPromoId) {
+      await sbUpdate('promocodes', 'id=eq.' + _editingPromoId, commonData);
+      const idx = state.promos.findIndex(x => x.id === _editingPromoId);
+      if (idx >= 0) Object.assign(state.promos[idx], commonData);
+      closeModal('promoModal');
+      renderPromosTable();
+      toast('Промокод ' + code + ' обновлён');
+    } else {
+      if (!code || code.length < 3) { toast('Введите код (минимум 3 символа)', 'error'); return; }
+      if (!/^[A-Z0-9_-]+$/.test(code)) { toast('Только латиница, цифры, _ и -', 'error'); return; }
+      if (state.promos.some(p => p.code === code)) { toast('Промокод с таким кодом уже есть', 'error'); return; }
+      const created = await sbInsert('promocodes', {
+        code, ...commonData, is_active: true, uses_count: 0,
+      });
+      state.promos.unshift(created[0]);
+      closeModal('promoModal');
+      renderPromosTable(); renderNavCounts();
+      toast('Промокод ' + code + ' создан');
+    }
   } catch (e) { toast('Ошибка: ' + e.message, 'error'); }
 }
 
