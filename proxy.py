@@ -1270,7 +1270,11 @@ def cleanup_stale_clients(server: dict) -> dict:
                         break
                 if full_inbound:
                     sess2, srv2 = xui_session(server)
-                    full_inbound["settings"] = json.dumps({"clients": keep})
+                    # Патчим только clients — остальные поля settings (decryption и др.) сохраняем
+                    st_full = full_inbound.get("settings", "{}")
+                    st_full = json.loads(st_full) if isinstance(st_full, str) else (st_full or {})
+                    st_full["clients"] = keep
+                    full_inbound["settings"] = json.dumps(st_full)
                     r2 = sess2.post(f"{url_s}/panel/api/inbounds/update/{iid_s}", json=full_inbound, timeout=20)
                     result2 = r2.json()
                     if not result2.get("success"):
