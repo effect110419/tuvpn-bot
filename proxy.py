@@ -1194,6 +1194,157 @@ def sync_status(job_id):
     return jsonify(job)
 
 
+def cleanup_stale_clients(server: dict) -> dict:
+    """
+    Удаляет из 3X-UI клиентов которых нет в активных подписках.
+    v3: читает inbound, фильтрует, пишет обратно.
+    v2: поштучно через updateClient с enable=False (disable, не delete).
+    Возвращает {"total_on_server": N, "active_in_db": M, "removed": K, "failures": [...]}.
+    """
+    code = server.get("code") or server.get("country_name") or "?"
+    print(f"[cleanup] Начат для {code}")
+
+    try:
+        subs_r = sb.table("subscriptions").select("sub_url").eq("status", "active").execute()
+        active_uuids = set()
+        for s in (subs_r.data or []):
+            url_s = s.get("sub_url", "")
+            if "/sub/" in url_s:
+                active_uuids.add(url_s.split("/sub/")[-1].strip())
+    except Exception as e:
+        return {"error": f"db: {e}", "removed": 0, "failures": []}
+
+    is_v3 = bool((server.get("api_token") or "").strip())
+    failures = []
+    removed = 0
+
+    if is_v3:
+        session, url, iid, obj = xui_v3_read_inbound(server)
+        if obj is None:
+            return {"error": "cannot read inbound", "removed": 0, "failures": []}
+        settings_raw = obj.get("settings", "{}")
+        try:
+            settings = json.loads(settings_raw) if isinstance(settings_raw, str) else (settings_raw or {})
+        except Exception:
+            settings = {}
+        clients = settings.get("clients", [])
+        total_on_server = len(clients)
+        keep = [c for c in clients if c.get("id") in active_uuids]
+        stale = [c for c in clients if c.get("id") not in active_uuids]
+        removed = len(stale)
+        if removed > 0:
+            settings["clients"] = keep
+            obj["settings"] = json.dumps(settings)
+            ok, msg = xui_v3_write_inbound(session, url, iid, obj)
+            if not ok:
+                return {"error": f"write failed: {msg}", "removed": 0, "failures": [], "total_on_server": total_on_server, "active_in_db": len(active_uuids)}
+        print(f"[cleanup] {code}: удалено {removed} стейловых из {total_on_server}")
+    else:
+        # v2: получаем список, отключаем стейловых через updateClient enable=False
+        try:
+            sess, srv = xui_session(server)
+            url_s = srv["panel_url"].rstrip("/")
+            iid_s = int(srv["inbound_id"])
+            r = sess.get(f"{url_s}/xui/API/inbounds/list", timeout=15)
+            data = r.json()
+            clients = []
+            for ib in data.get("obj", []):
+                if int(ib.get("id", 0)) == iid_s:
+                    st = ib.get("settings", "{}")
+                    st = json.loads(st) if isinstance(st, str) else st
+                    clients = st.get("clients", [])
+                    break
+        except Exception as e:
+            return {"error": f"v2 list failed: {e}", "removed": 0, "failures": []}
+        total_on_server = len(clients)
+        stale = [c for c in clients if c.get("id") not in active_uuids]
+        keep = [c for c in clients if c.get("id") in active_uuids]
+        removed = len(stale)
+        if stale:
+            # v2: находим полный inbound-объект и пишем обратно только с активными
+            try:
+                full_inbound = None
+                for ib in data.get("obj", []):
+                    if int(ib.get("id", 0)) == iid_s:
+                        full_inbound = ib
+                        break
+                if full_inbound:
+                    sess2, srv2 = xui_session(server)
+                    full_inbound["settings"] = json.dumps({"clients": keep})
+                    r2 = sess2.post(f"{url_s}/panel/api/inbounds/update/{iid_s}", json=full_inbound, timeout=20)
+                    result2 = r2.json()
+                    if not result2.get("success"):
+                        failures.append({"error": f"v2 update failed: {result2.get('msg','?')}"})
+                        removed = 0
+                else:
+                    failures.append({"error": "inbound not found in list"})
+                    removed = 0
+            except Exception as e:
+                failures.append({"error": str(e)})
+                removed = 0
+
+    return {
+        "total_on_server": total_on_server if 'total_on_server' in dir() else 0,
+        "active_in_db": len(active_uuids),
+        "removed": removed,
+        "failures": failures[:10],
+    }
+
+
+@app.route('/admin-api/servers/<int:server_id>/cleanup', methods=['POST', 'OPTIONS'])
+def admin_cleanup_server(server_id):
+    """Удалить стейловых клиентов с сервера (не в активных подписках)."""
+    if request.method == 'OPTIONS':
+        return make_response('', 204)
+    require_perm("manage_servers")
+    server = get_server_by_id(server_id)
+    if not server:
+        return jsonify({"success": False, "error": "server not found"}), 404
+    if not server.get("is_active"):
+        return jsonify({"success": False, "error": "server is not active"}), 400
+    job_id = str(uuid.uuid4())[:12]
+    with _sync_jobs_lock:
+        _sync_jobs[job_id] = {"status": "running", "server_id": server_id, "code": server.get("code"), "type": "cleanup"}
+    def _run():
+        try:
+            result = cleanup_stale_clients(server)
+            with _sync_jobs_lock:
+                _sync_jobs[job_id].update({"status": "done", **result})
+        except Exception as e:
+            with _sync_jobs_lock:
+                _sync_jobs[job_id].update({"status": "error", "error": str(e)})
+    threading.Thread(target=_run, daemon=True).start()
+    return jsonify({"success": True, "job_id": job_id, "status": "running"})
+
+
+@app.route('/admin-api/servers/cleanup_all', methods=['POST', 'OPTIONS'])
+def admin_cleanup_all_servers():
+    """Удалить стейловых клиентов со всех серверов."""
+    if request.method == 'OPTIONS':
+        return make_response('', 204)
+    require_perm("manage_servers")
+    servers = get_active_servers()
+    if not servers:
+        return jsonify({"success": False, "error": "no active servers"}), 400
+    job_id = str(uuid.uuid4())[:12]
+    with _sync_jobs_lock:
+        _sync_jobs[job_id] = {"status": "running", "total_servers": len(servers), "progress": 0, "type": "cleanup_all"}
+    def _run_all():
+        per_server = []
+        for s in servers:
+            try:
+                res = cleanup_stale_clients(s)
+                per_server.append({"server_id": s["id"], "code": s.get("code"), **res})
+            except Exception as e:
+                per_server.append({"server_id": s["id"], "code": s.get("code"), "error": str(e)})
+            with _sync_jobs_lock:
+                _sync_jobs[job_id]["progress"] = len(per_server)
+        with _sync_jobs_lock:
+            _sync_jobs[job_id].update({"status": "done", "servers": per_server})
+    threading.Thread(target=_run_all, daemon=True).start()
+    return jsonify({"success": True, "job_id": job_id, "status": "running", "total_servers": len(servers)})
+
+
 # === END SERVER SYNC ===
 
 def issue_subscription(uid: int, devices: int, days: int) -> dict:

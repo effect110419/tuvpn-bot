@@ -2521,6 +2521,7 @@ function renderServers() {
       <span class="counter">Каждая новая подписка автоматически создаётся на всех активных серверах.</span>
       <div class="toolbar-grow"></div>
       <button class="btn btn-ghost btn-sm" id="syncAllBtn">${ICONS.refresh} Синхр. все</button>
+      <button class="btn btn-ghost btn-sm" id="cleanupAllBtn" title="Удалить стейловых клиентов со всех серверов (выровнять счётчики)">🧹 Очистить все</button>
       <button class="btn btn-ghost btn-sm" id="recheckAllBtn">${ICONS.refresh} Проверить все</button>
       <button class="btn btn-primary btn-sm" id="addServerBtn">${ICONS.plus} Добавить сервер</button>
     </div>
@@ -2545,6 +2546,7 @@ function renderServers() {
   $('#addServerBtn').addEventListener('click', () => openServerModal());
   $('#recheckAllBtn').addEventListener('click', recheckAllServers);
   const sab = $('#syncAllBtn'); if (sab) sab.addEventListener('click', syncAllServers);
+  const cab = $('#cleanupAllBtn'); if (cab) cab.addEventListener('click', cleanupAllServers);
 }
 
 function renderServerGrid() {
@@ -2597,6 +2599,7 @@ function renderServerGrid() {
       <div class="srv-foot srv-foot-wrap">
         <button class="btn btn-ghost btn-sm" data-act="check">${ICONS.refresh} Проверить</button>
         <button class="btn btn-ghost btn-sm" data-act="sync">${ICONS.refresh} Синхр.</button>
+        <button class="btn btn-ghost btn-sm" data-act="cleanup" title="Удалить клиентов не в активных подписках (выровнять счётчик)">🧹 Очистить</button>
         <button class="btn btn-ghost btn-sm" data-act="apply" title="Записать SNI/Reality из админки на сам сервер + рестарт">📡 Применить SNI</button>
         <button class="btn btn-ghost btn-sm" data-act="restart" title="Перезапустить Xray на сервере">♻️ Рестарт</button>
         <div class="srv-acts">
@@ -2612,6 +2615,7 @@ function renderServerGrid() {
     card.querySelector('[data-act="toggle"]').addEventListener('change', e => toggleServerActive(sid, e.target.checked));
     card.querySelector('[data-act="check"]').addEventListener('click', () => checkServer(sid));
     const sb = card.querySelector('[data-act="sync"]'); if (sb) sb.addEventListener('click', () => syncServer(sid));
+    const cb = card.querySelector('[data-act="cleanup"]'); if (cb) cb.addEventListener('click', () => cleanupServer(sid));
     const ab = card.querySelector('[data-act="apply"]'); if (ab) ab.addEventListener('click', () => applyReality(sid));
     const rb = card.querySelector('[data-act="restart"]'); if (rb) rb.addEventListener('click', () => restartXray(sid));
     card.querySelector('[data-act="edit"]').addEventListener('click', () => openServerModal(sid));
@@ -2767,6 +2771,47 @@ async function toggleServerActive(sid, val) {
   }
 }
 
+
+async function cleanupServer(sid) {
+  const s = state.servers.find(x => String(x.id) === String(sid));
+  if (!s) return;
+  if (!await showConfirm({
+    title: 'Очистить стейловых клиентов',
+    message: `Удалить с ${s.country_flag || ''} ${s.country_name} всех клиентов которых нет в активных подписках?\n\nЭто выровняет счётчик до числа реально активных пользователей. Обратной операции нет.`,
+    okText: 'Очистить', danger: true
+  })) return;
+  toast('Очистка запущена...');
+  try {
+    const r = await proxy(`/admin-api/servers/${sid}/cleanup`, { method: 'POST' });
+    if (!r.success) { toast('Ошибка: ' + (r.error || 'unknown'), 'error'); return; }
+    const label = `${s.country_flag || ''} ${s.country_name}`;
+    pollSyncJob(r.job_id, label, (res) => {
+      if (res.removed != null) {
+        toast(`${label}: удалено ${res.removed} стейловых, осталось ${res.active_in_db} активных`);
+      } else {
+        toast(`${label}: ${res.error || 'ошибка'}`, 'error');
+      }
+    });
+  } catch (e) { toast('Ошибка: ' + e.message, 'error'); }
+}
+
+async function cleanupAllServers() {
+  if (!await showConfirm({
+    title: 'Очистить стейловых со всех серверов',
+    message: 'Удалить со всех серверов клиентов которых нет в активных подписках?\n\nПосле этого счётчики на всех серверах будут равны числу активных пользователей.',
+    okText: 'Очистить все', danger: true
+  })) return;
+  toast('Очистка всех серверов запущена...');
+  try {
+    const r = await proxy('/admin-api/servers/cleanup_all', { method: 'POST' });
+    if (!r.success) { toast('Ошибка: ' + (r.error || 'unknown'), 'error'); return; }
+    pollSyncJob(r.job_id, 'очистка всех серверов', (res) => {
+      const lines = (res.servers || []).map(x => `${x.code}: удалено ${x.removed ?? '?'}`);
+      toast('Очистка завершена: ' + (lines.join(' · ') || 'нет данных'));
+      console.log('Cleanup all result:', res);
+    });
+  } catch (e) { toast('Ошибка: ' + e.message, 'error'); }
+}
 
 async function pollSyncJob(jobId, label, onDone) {
   for (let i = 0; i < 150; i++) {
