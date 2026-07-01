@@ -114,7 +114,7 @@ body::before {
 ::-webkit-scrollbar-thumb:hover { background: var(--bg-4); }
 
 /* Selection */
-::selection { background: var(--accent-dim); color: var(--fg); }
+::selection { background: #5b8def55; color: #ffffff; }
 
 /* ===== LAYOUT ===== */
 .app { display: flex; min-height: 100vh; position: relative; z-index: 1; }
@@ -1163,8 +1163,9 @@ table.tbl { width: 100%; border-collapse: collapse; }
 /* ===== SPECIFIC: SERVERS PAGE ===== */
 .srv-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(min(360px, 100%), 1fr));
+  gap: 14px;
+  width: 100%;
 }
 .srv {
   background: var(--bg-1);
@@ -1209,10 +1210,10 @@ table.tbl { width: 100%; border-collapse: collapse; }
 .srv-foot {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 6px;
 }
-.srv-acts { display: flex; gap: 4px; }
+.srv-acts { display: flex; gap: 4px; margin-left: auto; }
 .srv.is-down { border-color: #f8717135; }
 .srv.is-down::after {
   content: '';
@@ -1220,6 +1221,23 @@ table.tbl { width: 100%; border-collapse: collapse; }
   border-radius: var(--r-lg);
   background: radial-gradient(circle at top left, #f8717108, transparent 60%);
   pointer-events: none;
+}
+
+/* ===== PAGINATION ===== */
+.tbl-pagination { border-top: 1px solid var(--border); }
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 12px 16px;
+}
+.pagination-info {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg-3);
+  min-width: 110px;
+  text-align: center;
 }
 
 /* ===== AUX ===== */
@@ -2044,8 +2062,10 @@ table.tbl { width: 100%; border-collapse: collapse; }
 /* ==================== SERVER EXTERNAL LINKS ==================== */
 .srv-ext-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 10px; padding: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(min(180px, 100%), 1fr));
+  gap: 10px;
+  padding: 16px;
+  width: 100%;
 }
 .srv-ext-link {
   display: flex; align-items: center; gap: 8px;

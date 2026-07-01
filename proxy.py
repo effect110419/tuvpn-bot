@@ -3377,7 +3377,7 @@ def analytics_calendar():
         if subs:
             uid_list = list({s["user_id"] for s in subs})
             # Supabase ограничивает in() — разобьём если нужно
-            users_r = sb.table("users").select("user_id,first_name,username").in_("user_id", uid_list[:500]).execute()
+            users_r = sb.table("users").select("user_id,first_name,last_name,username").in_("user_id", uid_list[:500]).execute()
             user_map = {u["user_id"]: u for u in (users_r.data or [])}
         else:
             user_map = {}
@@ -3387,12 +3387,13 @@ def analytics_calendar():
         for s in subs:
             exp = s["expires_at"]
             day = exp[:10]
-            days_left = (datetime.fromisoformat(exp.replace("Z", "+00:00")).replace(tzinfo=None) - now).days
+            days_left = (datetime.fromisoformat(exp[:19]) - now).days
             u = user_map.get(s["user_id"], {})
-            name = u.get("first_name") or (("@" + u["username"]) if u.get("username") else f"id:{s['user_id']}")
             days_map[day].append({
                 "user_id": s["user_id"],
-                "name": name,
+                "username": u.get("username"),
+                "first_name": u.get("first_name"),
+                "last_name": u.get("last_name"),
                 "devices": s["devices"],
                 "days_left": max(0, days_left),
             })

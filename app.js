@@ -5,6 +5,7 @@
 
 /* ===================== CONFIG ===================== */
 const PROXY_URL = 'https://admin.tuvpn.ru';
+const PAGE_SIZE = 50;
 /* ===================== STATE ===================== */
 const state = {
   myPermissions: [],
@@ -20,6 +21,8 @@ const state = {
   currentChart: 'revenue',
   chartInstance: null,
   currentPage: 'dashboard',
+  usersPage: 0,
+  subsPage: 0,
   cmdActiveIdx: 0,
   cmdItems: [],
   loaded: false,
@@ -115,6 +118,27 @@ function loadMore(type) {
 }
 
 window.loadMore = loadMore;
+
+function renderPaginationControls(page, totalPages, total, type) {
+  if (totalPages <= 1) return '';
+  const start = page * PAGE_SIZE + 1;
+  const end = Math.min((page + 1) * PAGE_SIZE, total);
+  return `
+    <div class="pagination">
+      <button class="btn btn-ghost btn-sm" data-pg-prev data-pg-type="${type}" ${page === 0 ? 'disabled' : ''}>← Пред.</button>
+      <span class="pagination-info">${start}–${end} из ${total}</span>
+      <button class="btn btn-ghost btn-sm" data-pg-next data-pg-type="${type}" ${page >= totalPages - 1 ? 'disabled' : ''}>След. →</button>
+    </div>`;
+}
+
+function bindPaginationClicks(containerId, type, renderFn) {
+  const el = $(`#${containerId}`);
+  if (!el) return;
+  const prev = el.querySelector('[data-pg-prev]');
+  const next = el.querySelector('[data-pg-next]');
+  if (prev) prev.addEventListener('click', () => { state[`${type}Page`]--; renderFn(); });
+  if (next) next.addEventListener('click', () => { state[`${type}Page`]++; renderFn(); });
+}
 
 /* ============================================================ */
 /* === RBAC v2 — единая логика прав ========================== */
@@ -1037,7 +1061,13 @@ function bindShortcuts() {
 /* ===================== MODAL BACKDROP CLICKS & CLOSE BUTTONS ===================== */
 function bindModalClicks() {
   $$('.modal-bg').forEach(bg => {
-    bg.addEventListener('click', (e) => { if (e.target === bg) bg.classList.remove('open'); });
+    let _mdTarget = null;
+    bg.addEventListener('mousedown', (e) => { _mdTarget = e.target; });
+    bg.addEventListener('click', (e) => {
+      // закрываем только если mousedown тоже был на фоне (не drag из модалки)
+      if (e.target === bg && _mdTarget === bg) bg.classList.remove('open');
+      _mdTarget = null;
+    });
   });
   document.addEventListener('click', (e) => {
     const closeBtn = e.target.closest('[data-close]');
@@ -1513,10 +1543,11 @@ function renderUsers() {
           <tbody id="usersTbody"><tr><td colspan="8"><div class="empty"><div class="title">Загрузка...</div></div></td></tr></tbody>
         </table>
       </div>
+      <div class="tbl-pagination" id="usersPagination"></div>
     </div>
   `;
-  $('#usersSearch').addEventListener('input', renderUsersTable);
-  $('#usersFilter').addEventListener('change', renderUsersTable);
+  $('#usersSearch').addEventListener('input', () => { state.usersPage = 0; renderUsersTable(); });
+  $('#usersFilter').addEventListener('change', () => { state.usersPage = 0; renderUsersTable(); });
   renderUsersTable();
 }
 
@@ -1539,13 +1570,20 @@ function renderUsersTable() {
     });
   }
 
-  $('#usersCounter').textContent = users.length + ' из ' + state.users.length;
+  const total = users.length;
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  if (state.usersPage >= totalPages) state.usersPage = totalPages - 1;
+  const page = state.usersPage;
+  const pageUsers = users.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+
+  $('#usersCounter').textContent = total + ' из ' + state.users.length;
   const tbody = $('#usersTbody');
   if (!users.length) {
     tbody.innerHTML = '<tr><td colspan="8"><div class="empty"><span class="emoji">🔍</span><div class="title">Ничего не найдено</div></div></td></tr>';
+    const pg = $('#usersPagination'); if (pg) pg.innerHTML = '';
     return;
   }
-  tbody.innerHTML = users.map(u => {
+  tbody.innerHTML = pageUsers.map(u => {
     const sub = activeSubFor(u.user_id);
     const dl = sub ? daysLeft(sub.expires_at) : null;
     const subStatus = sub
@@ -1581,6 +1619,11 @@ function renderUsersTable() {
     if (b.dataset.act === 'grant') quickGrant(uid);
     if (b.dataset.act === 'bonus') openBonusModal(uid);
   }));
+
+  // pagination controls
+  const pg = $('#usersPagination');
+  if (pg) pg.innerHTML = renderPaginationControls(page, totalPages, total, 'users');
+  bindPaginationClicks('usersPagination', 'users', renderUsersTable);
 }
 
 /* =====================================================================
@@ -1690,6 +1733,10 @@ function renderSubs() {
     <div class="page-sub">Активные и истёкшие подписки</div>
 
     <div class="toolbar">
+      <div class="search">
+        <svg class="ico" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.35-4.35"/></svg>
+        <input id="subsSearch" placeholder="Поиск по имени, username, ID..." />
+      </div>
       <select class="filter" id="subsFilter">
         <option value="active">Активные</option>
         <option value="expiring">Истекают за 3 дня</option>
@@ -1716,31 +1763,49 @@ function renderSubs() {
           <tbody id="subsTbody"></tbody>
         </table>
       </div>
+      <div class="tbl-pagination" id="subsPagination"></div>
     </div>
   `;
-  $('#subsFilter').addEventListener('change', renderSubsTable);
-  $('#subsDevFilter').addEventListener('change', renderSubsTable);
+  $('#subsSearch').addEventListener('input', () => { state.subsPage = 0; renderSubsTable(); });
+  $('#subsFilter').addEventListener('change', () => { state.subsPage = 0; renderSubsTable(); });
+  $('#subsDevFilter').addEventListener('change', () => { state.subsPage = 0; renderSubsTable(); });
   renderSubsTable();
 }
 
 function renderSubsTable() {
   const f = $('#subsFilter').value;
   const dev = $('#subsDevFilter').value;
+  const searchEl = $('#subsSearch');
+  const search = (searchEl ? searchEl.value || '' : '').toLowerCase().trim();
   let subs = state.subs.slice();
   const now = new Date();
   if (f === 'active') subs = subs.filter(s => s.status === 'active' && new Date(s.expires_at) > now);
   else if (f === 'expiring') subs = subs.filter(s => s.status === 'active' && daysLeft(s.expires_at) >= 0 && daysLeft(s.expires_at) <= 3);
   else if (f === 'expired') subs = subs.filter(s => s.status !== 'active' || new Date(s.expires_at) <= now);
   if (dev !== 'all') subs = subs.filter(s => Number(s.devices) === Number(dev));
+  if (search) {
+    subs = subs.filter(s => {
+      const u = userById(s.user_id);
+      const hay = [u && u.username, u && u.first_name, u && u.last_name, s.user_id].filter(Boolean).join(' ').toLowerCase();
+      return hay.includes(search);
+    });
+  }
   subs.sort((a, b) => new Date(a.expires_at) - new Date(b.expires_at));
 
-  $('#subsCounter').textContent = subs.length + ' шт';
+  const total = subs.length;
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  if (state.subsPage >= totalPages) state.subsPage = totalPages - 1;
+  const page = state.subsPage;
+  const pageSubs = subs.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+
+  $('#subsCounter').textContent = total + ' шт';
   const tbody = $('#subsTbody');
   if (!subs.length) {
     tbody.innerHTML = '<tr><td colspan="7"><div class="empty"><span class="emoji">📭</span><div class="title">Подписок нет</div></div></td></tr>';
+    const pg = $('#subsPagination'); if (pg) pg.innerHTML = '';
     return;
   }
-  tbody.innerHTML = subs.map(s => {
+  tbody.innerHTML = pageSubs.map(s => {
     const u = userById(s.user_id);
     const dl = daysLeft(s.expires_at);
     const isActive = s.status === 'active' && dl > 0;
@@ -1767,6 +1832,11 @@ function renderSubsTable() {
   });
   $$('#subsTbody [data-act="grant"]').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); quickGrant(b.closest('tr').dataset.uid); }));
   $$('#subsTbody [data-act="revoke"]').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); revokeSub(Number(b.dataset.sid)); }));
+
+  // pagination controls
+  const pg = $('#subsPagination');
+  if (pg) pg.innerHTML = renderPaginationControls(page, totalPages, total, 'subs');
+  bindPaginationClicks('subsPagination', 'subs', renderSubsTable);
 }
 
 
