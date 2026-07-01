@@ -1513,6 +1513,9 @@ function renderMainChart(kind) {
    ====================== PAGE: USERS ============================
    ===================================================================== */
 function renderUsers() {
+  const campOptions = (state.campaigns || []).map(c =>
+    `<option value="${esc(c.code)}">${esc(c.name || c.code)}</option>`).join('');
+
   $('#page-users').innerHTML = `
     <div class="page-title">Пользователи</div>
     <div class="page-sub">Все, кто запустил бот</div>
@@ -1524,10 +1527,20 @@ function renderUsers() {
       </div>
       <select class="filter" id="usersFilter">
         <option value="all">Все</option>
-        <option value="active">С активной подпиской</option>
+        <option value="active">Активная подписка</option>
         <option value="none">Без подписки</option>
+        <option value="paid">Платящие</option>
+        <option value="trial_only">Только триал</option>
+        <option value="no_device">Без устройств</option>
+        <option value="new_7d">Новые (7 дней)</option>
+        <option value="is_referrer">Привлекли рефералов</option>
         <option value="referred">Пришли по реф.ссылке</option>
         <option value="bonus">С бонусными днями</option>
+      </select>
+      <select class="filter" id="usersCampaignFilter">
+        <option value="all">Все источники</option>
+        <option value="direct">Прямые (без UTM)</option>
+        ${campOptions}
       </select>
       <div class="toolbar-grow"></div>
       <span class="counter" id="usersCounter">—</span>
@@ -1548,21 +1561,50 @@ function renderUsers() {
   `;
   $('#usersSearch').addEventListener('input', () => { state.usersPage = 0; renderUsersTable(); });
   $('#usersFilter').addEventListener('change', () => { state.usersPage = 0; renderUsersTable(); });
+  $('#usersCampaignFilter').addEventListener('change', () => { state.usersPage = 0; renderUsersTable(); });
   renderUsersTable();
 }
 
 function renderUsersTable() {
   const filter = $('#usersFilter').value;
+  const campFilter = ($('#usersCampaignFilter') || {}).value || 'all';
   const search = ($('#usersSearch').value || '').toLowerCase().trim();
   let users = state.users.slice();
 
+  const now = new Date();
+  const ago7d = new Date(now - 7 * 86400000);
+  const paidSet = new Set(
+    (state.payments || []).filter(p => p.status === 'succeeded').map(p => Number(p.user_id))
+  );
+  const deviceSet = new Set(
+    (state.userDevices || []).filter(d => d.is_active).map(d => Number(d.user_id))
+  );
+  const referrerSet = new Set(
+    (state.refs || []).map(r => Number(r.referrer_id))
+  );
+
   users = users.filter(u => {
-    if (filter === 'active') return state.subs.some(s => Number(s.user_id) === Number(u.user_id) && s.status === 'active' && new Date(s.expires_at) > new Date());
-    if (filter === 'none') return !state.subs.some(s => Number(s.user_id) === Number(u.user_id) && s.status === 'active');
+    const uid = Number(u.user_id);
+    if (filter === 'active') return state.subs.some(s => Number(s.user_id) === uid && s.status === 'active' && new Date(s.expires_at) > now);
+    if (filter === 'none') return !state.subs.some(s => Number(s.user_id) === uid && s.status === 'active');
+    if (filter === 'paid') return paidSet.has(uid);
+    if (filter === 'trial_only') return !paidSet.has(uid);
+    if (filter === 'no_device') return !deviceSet.has(uid);
+    if (filter === 'new_7d') return new Date(u.created_at) >= ago7d;
+    if (filter === 'is_referrer') return referrerSet.has(uid);
     if (filter === 'referred') return u.referrer_id != null;
     if (filter === 'bonus') return (u.bonus_days || 0) > 0;
     return true;
   });
+
+  if (campFilter !== 'all') {
+    if (campFilter === 'direct') {
+      users = users.filter(u => !u.campaign_code);
+    } else {
+      users = users.filter(u => u.campaign_code === campFilter);
+    }
+  }
+
   if (search) {
     users = users.filter(u => {
       const hay = [u.username, u.first_name, u.last_name, u.user_id].filter(Boolean).join(' ').toLowerCase();
@@ -1739,6 +1781,7 @@ function renderSubs() {
       </div>
       <select class="filter" id="subsFilter">
         <option value="active">Активные</option>
+        <option value="today">Истекают сегодня</option>
         <option value="expiring">Истекают за 3 дня</option>
         <option value="expired">Истёкшие</option>
         <option value="all">Все</option>
@@ -1748,6 +1791,12 @@ function renderSubs() {
         <option value="1">1 устройство</option>
         <option value="2">2 устройства</option>
         <option value="5">5 устройств</option>
+      </select>
+      <select class="filter" id="subsExtraFilter">
+        <option value="all">Доп. фильтр</option>
+        <option value="no_device">Без устройств</option>
+        <option value="long_term">Долгосрочные (90+ дн)</option>
+        <option value="multi">Продлевались (2+)</option>
       </select>
       <div class="toolbar-grow"></div>
       <span class="counter" id="subsCounter">—</span>
@@ -1769,20 +1818,38 @@ function renderSubs() {
   $('#subsSearch').addEventListener('input', () => { state.subsPage = 0; renderSubsTable(); });
   $('#subsFilter').addEventListener('change', () => { state.subsPage = 0; renderSubsTable(); });
   $('#subsDevFilter').addEventListener('change', () => { state.subsPage = 0; renderSubsTable(); });
+  $('#subsExtraFilter').addEventListener('change', () => { state.subsPage = 0; renderSubsTable(); });
   renderSubsTable();
 }
 
 function renderSubsTable() {
   const f = $('#subsFilter').value;
   const dev = $('#subsDevFilter').value;
+  const extra = ($('#subsExtraFilter') || {}).value || 'all';
   const searchEl = $('#subsSearch');
   const search = (searchEl ? searchEl.value || '' : '').toLowerCase().trim();
   let subs = state.subs.slice();
   const now = new Date();
+  const today = now.toISOString().slice(0, 10);
+
   if (f === 'active') subs = subs.filter(s => s.status === 'active' && new Date(s.expires_at) > now);
+  else if (f === 'today') subs = subs.filter(s => s.status === 'active' && s.expires_at.slice(0, 10) === today);
   else if (f === 'expiring') subs = subs.filter(s => s.status === 'active' && daysLeft(s.expires_at) >= 0 && daysLeft(s.expires_at) <= 3);
   else if (f === 'expired') subs = subs.filter(s => s.status !== 'active' || new Date(s.expires_at) <= now);
   if (dev !== 'all') subs = subs.filter(s => Number(s.devices) === Number(dev));
+
+  if (extra !== 'all') {
+    const deviceSet = new Set(
+      (state.userDevices || []).filter(d => d.is_active).map(d => Number(d.user_id))
+    );
+    // для multi: считаем сколько записей в subs у каждого user_id
+    const subCountMap = {};
+    (state.subs || []).forEach(s => { subCountMap[s.user_id] = (subCountMap[s.user_id] || 0) + 1; });
+
+    if (extra === 'no_device') subs = subs.filter(s => !deviceSet.has(Number(s.user_id)));
+    else if (extra === 'long_term') subs = subs.filter(s => daysLeft(s.expires_at) >= 90);
+    else if (extra === 'multi') subs = subs.filter(s => (subCountMap[s.user_id] || 0) >= 2);
+  }
   if (search) {
     subs = subs.filter(s => {
       const u = userById(s.user_id);
