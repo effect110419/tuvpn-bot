@@ -1940,15 +1940,15 @@ def admin_broadcast():
 
         try:
             sb.table("broadcasts").insert({
-                "text": text,
+                "message_text": text,
                 "audience": audience,
                 "sent_count": sent,
                 "failed_count": failed,
-                "sent_by": getattr(request, 'admin_tg_id', None),
+                "admin_id": getattr(request, 'admin_tg_id', None),
                 "created_at": datetime.utcnow().isoformat(),
             }).execute()
-        except Exception:
-            pass
+        except Exception as e:
+            app.logger.error(f"broadcast history insert failed: {e}")
 
         return jsonify({"success": True, "sent": sent, "failed": failed, "total": len(target_ids)})
     except Exception as e:
@@ -2477,6 +2477,423 @@ def watchlist_batch_audit():
             results.sort(key=lambda r: r["user_id"])
 
         return jsonify({"success": True, "results": results, "ts": datetime.utcnow().isoformat() + "Z"})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# ==================== ЗАБЛОКИРОВАВШИЕ БОТА (тихая проверка + очистка) ====================
+
+# Результаты последней проверки: uid → {"status", "detail", "checked_at"}
+# Живут в памяти до рестарта сервиса; очистка всё равно перепроверяет каждого live.
+_blocked_results: dict = {}
+_blocked_meta: dict = {"checked_at": None, "total_checked": 0, "audience": None}
+_blocked_lock = threading.Lock()
+
+# Статусы, при которых пользователь считается недостижимым
+_UNREACHABLE = ("blocked", "deactivated", "no_chat")
+
+
+def tg_probe_user(uid):
+    """Тихая проверка доступности через sendChatAction — сообщение НЕ отправляется,
+    пользователь ничего не видит и не получает (chat action не доходит до заблокировавших,
+    а для остальных максимум на секунды показывает «печатает», если чат открыт прямо сейчас).
+    Возвращает (status, detail):
+      ok          — бот не заблокирован, пользователь достижим
+      blocked     — пользователь заблокировал бота (403 bot was blocked by the user)
+      deactivated — аккаунт Telegram удалён (403 user is deactivated)
+      no_chat     — чата не существует (400 chat not found)
+      unknown     — сеть/лимиты/прочее; НЕ считается блокировкой
+    """
+    from config import BOT_TOKEN
+    api_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendChatAction"
+    for attempt in range(3):
+        try:
+            r = requests.post(api_url, json={"chat_id": uid, "action": "typing"}, timeout=10)
+            try:
+                jr = r.json()
+            except Exception:
+                jr = {}
+            if jr.get("ok"):
+                return "ok", ""
+            desc = jr.get("description") or ""
+            dl = desc.lower()
+            if r.status_code == 403:
+                if "blocked" in dl:
+                    return "blocked", desc
+                if "deactivated" in dl:
+                    return "deactivated", desc
+                return "unknown", desc
+            if r.status_code == 400 and "chat not found" in dl:
+                return "no_chat", desc
+            if r.status_code == 429:
+                retry = int((jr.get("parameters") or {}).get("retry_after", 3))
+                time.sleep(min(retry, 30) + 1)
+                continue
+            return "unknown", desc or f"http {r.status_code}"
+        except Exception as e:
+            if attempt < 2:
+                time.sleep(2)
+                continue
+            return "unknown", str(e)[:120]
+    return "unknown", "rate limited"
+
+
+def xui_delete_client_on_server(server, client_uuid):
+    """Удалить клиента с сервера — роутинг v2/v3. Отсутствие клиента считается успехом."""
+    try:
+        if (server.get("api_token") or "").strip():
+            ok, msg = xui_v3_del_client(server, client_uuid)
+            if not ok and any(t in (msg or "").lower() for t in ("not found", "no client", "not exist")):
+                return True, "not present"
+            return ok, msg
+        sess, srv = xui_session(server)
+        url_ = srv["panel_url"].rstrip("/")
+        iid_ = int(srv["inbound_id"])
+        r = sess.post(f"{url_}/panel/api/inbounds/{iid_}/delClient/{client_uuid}", timeout=15)
+        try:
+            jr = r.json()
+        except Exception:
+            return False, f"http {r.status_code}"
+        if jr.get("success"):
+            return True, "ok"
+        msg = jr.get("msg") or ""
+        if any(t in msg.lower() for t in ("not found", "no client", "not exist")):
+            return True, "not present"
+        return False, msg or f"http {r.status_code}"
+    except Exception as e:
+        return False, str(e)[:120]
+
+
+def _blocked_protection_sets():
+    """Множества защищённых пользователей: админы, watchlist."""
+    from config import ADMIN_TG_IDS
+    adm = set(ADMIN_TG_IDS or [])
+    adm.add(SUPERADMIN_ID)
+    try:
+        r = sb.table("support_admins").select("user_id").eq("is_active", True).execute()
+        adm |= {int(a["user_id"]) for a in (r.data or [])}
+    except Exception:
+        pass
+    try:
+        r = sb.table("watchlist").select("user_id").execute()
+        wl = {int(w["user_id"]) for w in (r.data or [])}
+    except Exception:
+        wl = set()
+    return adm, wl
+
+
+def _blocked_hard_gates(uid, adm_set, wl_set):
+    """Живая проверка гейтов безопасности по свежим данным из БД.
+    Возвращает список причин, по которым удалять НЕЛЬЗЯ (пустой = можно)."""
+    reasons = []
+    if int(uid) == SUPERADMIN_ID:
+        reasons.append("superadmin")
+    if int(uid) in adm_set:
+        reasons.append("admin")
+    if int(uid) in wl_set:
+        reasons.append("watchlist")
+    now_iso = datetime.utcnow().isoformat()
+    try:
+        sub_r = sb.table("subscriptions").select("id").eq("user_id", uid).eq("status", "active").gte("expires_at", now_iso).limit(1).execute()
+        if sub_r.data:
+            reasons.append("active_sub")
+    except Exception as e:
+        reasons.append(f"db_error: {str(e)[:80]}")
+    try:
+        cutoff = (datetime.utcnow() - timedelta(days=DEVICE_ACTIVITY_WINDOW_DAYS)).isoformat()
+        dev_r = sb.table("user_devices").select("id").eq("user_id", uid).gte("last_seen", cutoff).limit(1).execute()
+        if dev_r.data:
+            reasons.append("recent_device")
+    except Exception as e:
+        reasons.append(f"db_error: {str(e)[:80]}")
+    return reasons
+
+
+@app.route('/admin-api/blocked/check', methods=['POST', 'OPTIONS'])
+def blocked_check():
+    """Запустить тихую проверку доступности пользователей (кто заблокировал бота)."""
+    if request.method == 'OPTIONS':
+        return make_response('', 204)
+    if int(getattr(request, 'admin_tg_id', 0)) != SUPERADMIN_ID:
+        return jsonify({"success": False, "error": "superadmin only"}), 403
+    try:
+        data = request.get_json() or {}
+        audience = data.get("audience", "all")
+        ids = _get_recipient_ids(audience, data.get("campaign_filter") or "all",
+                                 data.get("target_user_id"), data.get("target_user_ids"))
+        ids = [int(x) for x in ids if x]
+        if not ids:
+            return jsonify({"success": False, "error": "аудитория пуста"}), 400
+
+        job_id = str(uuid.uuid4())[:12]
+        with _sync_jobs_lock:
+            _sync_jobs[job_id] = {"status": "running", "type": "blocked_check", "progress": 0, "total": len(ids)}
+
+        def _run():
+            counts = defaultdict(int)
+            try:
+                for i, uid in enumerate(ids):
+                    status, detail = tg_probe_user(uid)
+                    counts[status] += 1
+                    with _blocked_lock:
+                        _blocked_results[uid] = {
+                            "status": status, "detail": detail,
+                            "checked_at": datetime.utcnow().isoformat() + "Z",
+                        }
+                    with _sync_jobs_lock:
+                        _sync_jobs[job_id]["progress"] = i + 1
+                    time.sleep(0.08)  # ~12 запросов/сек — с запасом до лимитов Bot API
+                with _blocked_lock:
+                    _blocked_meta.update({
+                        "checked_at": datetime.utcnow().isoformat() + "Z",
+                        "total_checked": len(ids), "audience": audience,
+                    })
+                with _sync_jobs_lock:
+                    _sync_jobs[job_id].update({"status": "done", "counts": dict(counts)})
+                app.logger.info(f"[blocked_check] audience={audience} total={len(ids)} counts={dict(counts)}")
+            except Exception as e:
+                with _sync_jobs_lock:
+                    _sync_jobs[job_id].update({"status": "error", "error": str(e)})
+
+        threading.Thread(target=_run, daemon=True).start()
+        return jsonify({"success": True, "job_id": job_id, "total": len(ids)})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/admin-api/blocked/results', methods=['GET', 'OPTIONS'])
+def blocked_results():
+    """Результаты последней проверки, обогащённые данными для решения об очистке."""
+    if request.method == 'OPTIONS':
+        return make_response('', 204)
+    if int(getattr(request, 'admin_tg_id', 0)) != SUPERADMIN_ID:
+        return jsonify({"success": False, "error": "superadmin only"}), 403
+    try:
+        with _blocked_lock:
+            res = {int(k): dict(v) for k, v in _blocked_results.items()}
+            meta = dict(_blocked_meta)
+
+        summary = defaultdict(int)
+        for v in res.values():
+            summary[v["status"]] += 1
+
+        unreachable = [uid for uid, v in res.items() if v["status"] in _UNREACHABLE]
+        rows = []
+        if unreachable:
+            adm_set, wl_set = _blocked_protection_sets()
+            now = datetime.utcnow()
+            cutoff_dev = (now - timedelta(days=DEVICE_ACTIVITY_WINDOW_DAYS)).isoformat()
+
+            users_r = sb.table("users").select("user_id,username,first_name,last_name,campaign_code,created_at").in_("user_id", unreachable).execute()
+            users_by_id = {int(u["user_id"]): u for u in (users_r.data or [])}
+            subs_r = sb.table("subscriptions").select("user_id,status,expires_at,devices").in_("user_id", unreachable).execute()
+            subs_by_uid = {}
+            for s in (subs_r.data or []):
+                subs_by_uid.setdefault(int(s["user_id"]), []).append(s)
+            pays_r = sb.table("payments").select("user_id,amount").eq("status", "succeeded").in_("user_id", unreachable).execute()
+            paid_by_uid = defaultdict(float)
+            for p in (pays_r.data or []):
+                paid_by_uid[int(p["user_id"])] += float(p.get("amount") or 0)
+            devs_r = sb.table("user_devices").select("user_id,last_seen").in_("user_id", unreachable).execute()
+            last_seen_by_uid = {}
+            for d in (devs_r.data or []):
+                u_, ls = int(d["user_id"]), d.get("last_seen") or ""
+                if ls > (last_seen_by_uid.get(u_) or ""):
+                    last_seen_by_uid[u_] = ls
+
+            for uid in unreachable:
+                v = res[uid]
+                u = users_by_id.get(uid) or {}
+                subs = subs_by_uid.get(uid) or []
+                has_active = any(
+                    s.get("status") == "active" and (s.get("expires_at") or "") >= now.isoformat()
+                    for s in subs
+                )
+                last_seen = last_seen_by_uid.get(uid)
+                blockers = []
+                if uid == SUPERADMIN_ID:
+                    blockers.append("superadmin")
+                if uid in adm_set:
+                    blockers.append("admin")
+                if uid in wl_set:
+                    blockers.append("watchlist")
+                if has_active:
+                    blockers.append("active_sub")
+                if last_seen and last_seen >= cutoff_dev:
+                    blockers.append("recent_device")
+                rows.append({
+                    "user_id": uid,
+                    "username": u.get("username"),
+                    "name": " ".join(filter(None, [u.get("first_name"), u.get("last_name")])).strip(),
+                    "registered_at": u.get("created_at"),
+                    "campaign_code": u.get("campaign_code"),
+                    "status": v["status"],
+                    "detail": v.get("detail"),
+                    "checked_at": v.get("checked_at"),
+                    "paid_total": round(paid_by_uid.get(uid, 0), 2),
+                    "sub_status": ("active" if has_active else ("expired" if subs else "none")),
+                    "sub_expires": max((s.get("expires_at") or "" for s in subs), default=None),
+                    "last_device_seen": last_seen,
+                    "blockers": blockers,
+                    "deletable": not blockers,
+                })
+            rows.sort(key=lambda r: (bool(r["blockers"]), -(r["paid_total"] or 0), r["user_id"]))
+
+        return jsonify({
+            "success": True,
+            "meta": meta,
+            "summary": dict(summary),
+            "unreachable": rows,
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+def _purge_user_everywhere(uid, delete_payments, servers):
+    """Полное удаление пользователя: клиенты на VPN-серверах + все таблицы БД.
+    Вызывается ТОЛЬКО после прохождения гейтов и повторной live-проверки."""
+    out = {"user_id": uid, "servers": [], "db": {}, "errors": []}
+
+    # Все известные UUID клиента (users.client_uuid + из sub_url подписок)
+    uuids = set()
+    try:
+        u_r = sb.table("users").select("client_uuid").eq("user_id", uid).limit(1).execute()
+        cu = (u_r.data[0].get("client_uuid") if u_r.data else None)
+        if cu:
+            uuids.add(cu)
+    except Exception as e:
+        out["errors"].append(f"read client_uuid: {str(e)[:80]}")
+    try:
+        subs_r = sb.table("subscriptions").select("sub_url").eq("user_id", uid).execute()
+        for s in (subs_r.data or []):
+            su = s.get("sub_url") or ""
+            if "/sub/" in su:
+                uuids.add(su.split("/sub/")[-1].strip())
+    except Exception as e:
+        out["errors"].append(f"read sub_url: {str(e)[:80]}")
+
+    # Снять клиента со всех активных серверов (недоступный сервер не блокирует
+    # очистку БД: подписка исчезнет из активных и cleanup стейлов уберёт клиента позже)
+    for srv in servers:
+        for cu in uuids:
+            ok, msg = xui_delete_client_on_server(srv, cu)
+            out["servers"].append({"code": srv.get("code"), "ok": ok, "msg": msg})
+
+    def _del(label, table, col, val):
+        try:
+            r = sb.table(table).delete().eq(col, val).execute()
+            out["db"][label] = len(r.data or [])
+        except Exception as e:
+            out["errors"].append(f"{label}: {str(e)[:80]}")
+
+    # Сообщения тикетов — по ticket_id
+    try:
+        t_r = sb.table("support_tickets").select("id").eq("user_id", uid).execute()
+        ticket_ids = [t["id"] for t in (t_r.data or [])]
+        if ticket_ids:
+            r = sb.table("support_messages").delete().in_("ticket_id", ticket_ids).execute()
+            out["db"]["support_messages"] = len(r.data or [])
+    except Exception as e:
+        out["errors"].append(f"support_messages: {str(e)[:80]}")
+
+    _del("support_tickets", "support_tickets", "user_id", uid)
+    _del("user_devices", "user_devices", "user_id", uid)
+    _del("subscriptions", "subscriptions", "user_id", uid)
+    _del("promocode_uses", "promocode_uses", "user_id", uid)
+    _del("campaign_clicks", "campaign_clicks", "user_id", uid)
+    _del("referrals_as_referrer", "referrals", "referrer_id", uid)
+    _del("referrals_as_referred", "referrals", "referred_id", uid)
+    _del("admin_login_attempts", "admin_login_attempts", "tg_id", uid)
+    _del("admin_sessions", "admin_sessions", "tg_id", uid)
+    if delete_payments:
+        _del("payments", "payments", "user_id", uid)
+
+    # Убрать ссылки referrer_id у других юзеров, чтобы не осталось висячих ссылок
+    try:
+        r = sb.table("users").update({"referrer_id": None}).eq("referrer_id", uid).execute()
+        out["db"]["referrer_links_cleared"] = len(r.data or [])
+    except Exception as e:
+        out["errors"].append(f"referrer_links: {str(e)[:80]}")
+
+    # Сам пользователь — последним
+    try:
+        r = sb.table("users").delete().eq("user_id", uid).execute()
+        out["db"]["users"] = len(r.data or [])
+        if not r.data:
+            out["errors"].append("users: запись не удалена")
+    except Exception as e:
+        out["errors"].append(f"users: {str(e)[:80]}")
+
+    return out
+
+
+@app.route('/admin-api/blocked/cleanup', methods=['POST', 'OPTIONS'])
+def blocked_cleanup():
+    """Полная очистка выбранных пользователей. Каждый проходит повторную live-проверку
+    блокировки и все гейты безопасности непосредственно перед удалением."""
+    if request.method == 'OPTIONS':
+        return make_response('', 204)
+    if int(getattr(request, 'admin_tg_id', 0)) != SUPERADMIN_ID:
+        return jsonify({"success": False, "error": "superadmin only"}), 403
+    try:
+        data = request.get_json() or {}
+        ids = [int(x) for x in (data.get("user_ids") or []) if x]
+        delete_payments = bool(data.get("delete_payments"))
+        if not ids:
+            return jsonify({"success": False, "error": "user_ids пуст"}), 400
+        if len(ids) > 500:
+            return jsonify({"success": False, "error": "слишком много за раз (макс. 500)"}), 400
+
+        job_id = str(uuid.uuid4())[:12]
+        with _sync_jobs_lock:
+            _sync_jobs[job_id] = {"status": "running", "type": "blocked_cleanup", "progress": 0, "total": len(ids)}
+
+        def _run():
+            deleted, skipped, errors = [], [], []
+            try:
+                servers = get_active_servers()
+                adm_set, wl_set = _blocked_protection_sets()
+                for i, uid in enumerate(ids):
+                    try:
+                        # Гейт 1: защищённые пользователи и живые данные из БД
+                        reasons = _blocked_hard_gates(uid, adm_set, wl_set)
+                        if reasons:
+                            skipped.append({"user_id": uid, "reasons": reasons})
+                            app.logger.warning(f"[blocked_cleanup] skip {uid}: {reasons}")
+                            continue
+                        # Гейт 2: повторная live-проверка прямо перед удалением
+                        status, detail = tg_probe_user(uid)
+                        if status not in _UNREACHABLE:
+                            skipped.append({"user_id": uid, "reasons": [f"recheck: {status}"], "detail": detail})
+                            app.logger.warning(f"[blocked_cleanup] skip {uid}: recheck={status} {detail}")
+                            continue
+                        res = _purge_user_everywhere(uid, delete_payments, servers)
+                        if res["errors"]:
+                            errors.append(res)
+                        else:
+                            deleted.append(res)
+                        with _blocked_lock:
+                            _blocked_results.pop(uid, None)
+                        app.logger.info(f"[blocked_cleanup] purged {uid} status={status} db={res['db']} errors={res['errors']}")
+                    except Exception as e:
+                        errors.append({"user_id": uid, "errors": [str(e)[:150]]})
+                    finally:
+                        with _sync_jobs_lock:
+                            _sync_jobs[job_id]["progress"] = i + 1
+                    time.sleep(0.08)
+                with _sync_jobs_lock:
+                    _sync_jobs[job_id].update({
+                        "status": "done",
+                        "deleted": deleted, "skipped": skipped, "errors": errors,
+                        "deleted_count": len(deleted), "skipped_count": len(skipped), "errors_count": len(errors),
+                    })
+                app.logger.info(f"[blocked_cleanup] done: deleted={len(deleted)} skipped={len(skipped)} errors={len(errors)}")
+            except Exception as e:
+                with _sync_jobs_lock:
+                    _sync_jobs[job_id].update({"status": "error", "error": str(e)})
+
+        threading.Thread(target=_run, daemon=True).start()
+        return jsonify({"success": True, "job_id": job_id, "total": len(ids)})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
@@ -3803,7 +4220,6 @@ def broadcast_send():
                 "campaign_filter": campaign_filter if campaign_filter != "all" else None,
                 "target_user_id": target_user_id,
                 "message_text": message_text,
-                "button_action": button_action or None,
                 "recipients_count": len(ids),
                 "sent_count": sent,
                 "blocked_count": blocked,
@@ -3811,8 +4227,8 @@ def broadcast_send():
                 "status": "completed" if blocked == 0 else ("partial" if sent > 0 else "failed"),
                 "created_at": datetime.utcnow().isoformat(),
             }).execute()
-        except Exception:
-            pass
+        except Exception as e:
+            app.logger.error(f"broadcast history insert failed: {e}")
 
         return jsonify({"success": True, "sent": sent, "total": len(ids)})
     except Exception as e:

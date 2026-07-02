@@ -182,7 +182,7 @@ function canViewSection(pageKey) {
     referrals: 'view_referrals', analytics: 'view_analytics', broadcast: 'view_broadcast',
     monitor: 'view_monitor', tickets: 'view_tickets', servers: 'view_servers',
     settings: 'view_settings', finance: 'view_finance', roles: 'view_roles',
-    audit: 'superadmin', watchlist: 'superadmin',
+    audit: 'superadmin', watchlist: 'superadmin', blocked: 'superadmin',
   };
   const perm = map[pageKey];
   if (!perm) return true;
@@ -774,6 +774,7 @@ const PAGE_META = {
   roles:      { sec: 'Система', title: 'Роли и доступы' },
   audit:      { sec: 'Инструменты', title: 'Диагностика' },
   watchlist:  { sec: 'Инструменты', title: 'VIP-мониторинг' },
+  blocked:    { sec: 'Инструменты', title: 'Блокировки бота' },
 };
 
 function goPage(page) {
