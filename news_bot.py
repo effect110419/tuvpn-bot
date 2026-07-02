@@ -1,9 +1,18 @@
+# -*- coding: utf-8 -*-
 """
-TuVPN News Bot — автоматическая генерация постов для новостного канала.
-Запускается по cron каждые 3 часа, присылает Максиму предложку поста в бота.
+TuVPN News Bot — контент-машина канала @tuvpn_news.
 
-Зависимости: anthropic, feedparser, requests
-Нужны ENV: BOT_TOKEN, ANTHROPIC_API_KEY (опционально)
+Каждый запуск (systemd-таймер, 5 раз в день):
+ 1. Берёт следующую тему из контент-плана (news_topics.py, ротация без повторов)
+    или — если в RSS есть по-настоящему горячая профильная новость — новость.
+ 2. Пишет пост через Claude (маркетинговый промпт, факты о продукте, ≤900 символов).
+ 3. Рендерит футуристичную обложку под заголовок (news_cover.py, без внешних API).
+ 4. Шлёт Максиму предложку: фото + готовый caption + кнопки
+    «✅ В канал» (публикация через copyMessage, хендлер в bot.py) и «❌ Пропустить».
+
+CLI: --topic <id>  — принудительно конкретная тема
+     --plan        — игнорировать горячие новости, только контент-план
+Зависимости: anthropic, feedparser, requests, pillow
 """
 
 import os
@@ -17,6 +26,9 @@ import re
 import requests
 import feedparser
 from datetime import datetime, timedelta, timezone
+
+from news_topics import TOPICS, NEWS_META
+from news_cover import generate_cover
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 log = logging.getLogger("news_bot")
@@ -37,336 +49,353 @@ def _load_env():
 
 _load_env()
 
-BOT_TOKEN        = os.environ.get("BOT_TOKEN", "")
-ANTHROPIC_KEY    = os.environ.get("ANTHROPIC_API_KEY", "")
-ANTHROPIC_URL    = os.environ.get("ANTHROPIC_BASE_URL", "")
-SUPERADMIN_ID    = 784871620
-SENT_CACHE_FILE  = "/tmp/tuvpn_news_sent.json"
+BOT_TOKEN     = os.environ.get("BOT_TOKEN", "")
+ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+ANTHROPIC_URL = os.environ.get("ANTHROPIC_BASE_URL", "")
+SUPERADMIN_ID = 784871620
+STATE_FILE    = os.path.join(os.path.dirname(os.path.abspath(__file__)), "news_state.json")
 
-# ── RSS-источники по теме IT/VPN/интернет-свободы ───────────────────────
+MODEL = "claude-sonnet-5"          # тексты — маркетинг, экономить тут нельзя
+HOT_NEWS_MIN_SCORE = 12            # порог «горячей» новости, перебивающей контент-план
+HOT_NEWS_PROBABILITY = 0.35        # даже горячую берём не всегда — план важнее
+
+# ── ФАКТЫ О ПРОДУКТЕ (единственный источник правды для копирайтера) ──
+PRODUCT_FACTS = """
+Продукт: TuVPN — VPN-сервис, продаётся через Telegram-бота @MaxArtVPN_bot.
+- Протокол: VLESS + Reality (Xray), маскируется под обычный HTTPS — не детектится DPI.
+- Умный роутинг: российские сервисы (банки, Госуслуги, Ozon, Яндекс) идут НАПРЯМУЮ,
+  заблокированные — через VPN. Ничего не нужно включать/выключать.
+- Серверы: Финляндия, Нидерланды, Германия ×2. Близко к РФ — низкий пинг.
+- Цены: от 149₽/мес (1 устройство), 2 устройства от 249₽/мес, 5 устройств от 599₽/мес.
+  Годовая подписка выгоднее (~117₽/мес за 1 устройство).
+- Триал: 7 дней бесплатно каждому новому пользователю, карта не нужна.
+- Рефералка: друг получает +7 дней, ты +3 дня за переход друга и ещё +7 когда он оплатит.
+- Оплата: карта (ЮКасса) или Telegram Stars. Настройка за 2 минуты: бот → ссылка → приложение Happ.
+- Приложения: Happ / V2RayN и совместимые (iOS, Android, Windows, Mac).
+- Поддержка: @TuVPNSupport_bot, живые люди.
+"""
+
+BRAND_VOICE = """
+Голос бренда TuVPN:
+- Уверенный друг-технарь: объясняет просто, не умничает, не пугает, не заискивает.
+- Конкретика вместо воды: цифры, названия сервисов, примеры из жизни.
+- Лёгкая ирония допустима, кликбейт-истерика — нет.
+- Никогда не обещаем «анонимность от спецслужб», не даём юридических советов,
+  не призываем нарушать закон. VPN — инструмент доступа и приватности.
+- Instagram и Meta упоминаем со звёздочкой: Instagram* (*запрещён в РФ).
+"""
+
+# ── RSS для контекста и горячих новостей ─────────────────────────────
 RSS_FEEDS = [
-    ("https://www.cnews.ru/inc/rss/news.xml",                          "CNews"),
-    ("https://habr.com/ru/rss/hub/network_technologies/all/?fl=ru",    "Habr Сети"),
-    ("https://habr.com/ru/rss/hub/information_security/all/?fl=ru",    "Habr Безопасность"),
-    ("https://habr.com/ru/rss/hub/vpn/all/?fl=ru",                     "Habr VPN"),
-    ("https://habr.com/ru/rss/hub/linux/all/?fl=ru",                   "Habr Linux"),
-    ("https://www.securitylab.ru/rss/",                                "SecurityLab"),
-    ("https://feeds.arstechnica.com/arstechnica/technology-lab",       "Ars Technica"),
-    ("https://techcrunch.com/feed/",                                   "TechCrunch"),
-    ("https://www.theverge.com/rss/index.xml",                        "The Verge"),
+    ("https://www.cnews.ru/inc/rss/news.xml",                       "CNews"),
+    ("https://habr.com/ru/rss/hub/network_technologies/all/?fl=ru", "Habr Сети"),
+    ("https://habr.com/ru/rss/hub/information_security/all/?fl=ru", "Habr Безопасность"),
+    ("https://www.securitylab.ru/rss/",                             "SecurityLab"),
 ]
 
-# Ключевые слова — минимум 2 должны совпасть, чтобы статья прошла
-KEYWORDS = [
-    "vpn", "vpn", "впн", "роскомнадзор", "рунет",
-    "блокировк", "разблокировк", "цензур", "обход",
-    "telegram", "телеграм",
-    "cloudflare", "tor", "wireguard", "xray", "v2ray", "shadowsocks",
-    "proxy", "прокси", "тунн",
-    "dns", "dpi", "deep packet", "fсi", "сорм",
-    "privacy", "приватност", "анонимност",
-    "encrypt", "шифрован", "tls", "ssl",
-    "интернет-свобод", "свобод.*интернет",
-    "zero-day", "уязвимост", "хакер", "кибербезопасност", "взлом",
-    "утечк.*данных", "данных.*утечк",
-    "санкц", "ограничен.*сеть", "сеть.*ограничен",
-]
-
-# Если встречается хотя бы одно из этих — точно берём
 STRONG_KEYWORDS = [
-    "vpn", "впн", "роскомнадзор", "рунет", "блокировк",
-    "wireguard", "xray", "shadowsocks", "v2ray",
-    "dpi", "роскомнадзор", "ркн",
+    "vpn", "впн", "роскомнадзор", "ркн", "рунет", "блокировк", "замедлен",
+    "wireguard", "xray", "shadowsocks", "v2ray", "dpi", "тспу", "цензур",
+]
+WEAK_KEYWORDS = [
+    "telegram", "телеграм", "youtube", "ютуб", "прокси", "tor", "dns",
+    "приватност", "анонимност", "шифрован", "утечк", "слежк", "провайдер",
 ]
 
 
 def strip_html(text: str) -> str:
-    """Убирает HTML-теги из текста."""
     return re.sub(r"<[^>]+>", "", text or "").strip()
 
 
-def load_sent_cache() -> set:
+# ── состояние (ротация тем + кэш новостей) ───────────────────────────
+
+def load_state() -> dict:
     try:
-        with open(SENT_CACHE_FILE) as f:
-            data = json.load(f)
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
-        return {k for k, v in data.items() if v > cutoff}
+        with open(STATE_FILE) as f:
+            return json.load(f)
     except Exception:
-        return set()
+        return {}
 
 
-def save_sent_id(uid: str):
+def save_state(state: dict):
     try:
-        old = {}
-        try:
-            with open(SENT_CACHE_FILE) as f:
-                old = json.load(f)
-        except Exception:
-            pass
-        old[uid] = datetime.now(timezone.utc).isoformat()
-        with open(SENT_CACHE_FILE, "w") as f:
-            json.dump(old, f)
+        with open(STATE_FILE, "w") as f:
+            json.dump(state, f, ensure_ascii=False, indent=1)
     except Exception as e:
-        log.warning(f"Не удалось сохранить кэш: {e}")
+        log.warning(f"Не удалось сохранить состояние: {e}")
 
 
-def fetch_news() -> list[dict]:
-    """Парсит RSS-ленты и возвращает список свежих релевантных новостей."""
+def next_topic(state: dict) -> dict:
+    """Следующая тема цикла. Цикл — перемешанный список id, без повторов до конца."""
+    ids = [t["id"] for t in TOPICS]
+    cycle = [i for i in state.get("cycle", []) if i in ids]
+    if not cycle:
+        cycle = ids[:]
+        random.shuffle(cycle)
+        log.info("Контент-план: новый цикл из %d тем", len(cycle))
+    topic_id = cycle.pop(0)
+    state["cycle"] = cycle
+    return next(t for t in TOPICS if t["id"] == topic_id)
+
+
+# ── новости ──────────────────────────────────────────────────────────
+
+def fetch_news(state: dict) -> list:
+    """Свежие релевантные статьи из RSS (для контекста и «горячего» режима)."""
     articles = []
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=72)
-    sent = load_sent_cache()
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=48)
+    sent = state.get("sent_news", {})
+    sent_cutoff = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
+    state["sent_news"] = {k: v for k, v in sent.items() if v > sent_cutoff}
 
     for url, source in RSS_FEEDS:
         try:
             feed = feedparser.parse(url)
             for entry in (feed.entries or [])[:25]:
-                title = strip_html(entry.get("title") or "").strip()
-                summary = strip_html(entry.get("summary") or entry.get("description") or "")[:600]
+                title = strip_html(entry.get("title") or "")
+                summary = strip_html(entry.get("summary") or entry.get("description") or "")[:500]
                 link = (entry.get("link") or "").strip()
-
                 if not title or not link:
                     continue
-
                 uid = hashlib.md5(link.encode()).hexdigest()[:12]
-                if uid in sent:
+                if uid in state["sent_news"]:
                     continue
-
-                # Проверяем дату публикации
                 pub = entry.get("published_parsed") or entry.get("updated_parsed")
-                pub_dt = None
                 if pub:
                     try:
-                        pub_dt = datetime(*pub[:6], tzinfo=timezone.utc)
-                        if pub_dt < cutoff:
+                        if datetime(*pub[:6], tzinfo=timezone.utc) < cutoff:
                             continue
                     except Exception:
                         pass
-
                 text_lower = (title + " " + summary).lower()
-
-                # Считаем совпадения
                 strong = sum(1 for kw in STRONG_KEYWORDS if kw in text_lower)
-                weak   = sum(1 for kw in KEYWORDS if re.search(kw, text_lower))
-                score  = strong * 3 + weak
-
-                # Минимальный порог — хотя бы одно сильное слово ИЛИ три слабых
-                if strong == 0 and weak < 3:
+                weak = sum(1 for kw in WEAK_KEYWORDS if kw in text_lower)
+                score = strong * 4 + weak
+                if strong == 0:
                     continue
-
-                articles.append({
-                    "uid": uid,
-                    "title": title,
-                    "summary": summary,
-                    "link": link,
-                    "source": source,
-                    "score": score,
-                    "pub": pub_dt.isoformat() if pub_dt else "",
-                })
+                articles.append({"uid": uid, "title": title, "summary": summary,
+                                 "link": link, "source": source, "score": score})
         except Exception as e:
-            log.warning(f"Ошибка парсинга {source}: {e}")
+            log.warning(f"RSS {source}: {e}")
 
     articles.sort(key=lambda x: x["score"], reverse=True)
-    log.info(f"Найдено подходящих статей: {len(articles)}")
-    return articles[:10]
+    log.info(f"Релевантных новостей: {len(articles)}")
+    return articles
 
 
-def generate_post(article: dict) -> str:
-    """Генерирует готовый Telegram-пост через Claude API."""
-    if not ANTHROPIC_KEY:
-        return _format_fallback(article)
+# ── генерация текста ─────────────────────────────────────────────────
 
+def _claude(prompt: str) -> str:
     import anthropic
     client = anthropic.Anthropic(
         api_key=ANTHROPIC_KEY,
         **({"base_url": ANTHROPIC_URL} if ANTHROPIC_URL else {}),
     )
-
-    prompt = f"""Ты — SMM-редактор Telegram-канала о VPN и цифровой свободе в России.
-Аудитория: обычные люди, которые используют VPN чтобы заходить в Instagram, смотреть YouTube без тормозов, читать заблокированные сайты.
-Тон: живой, понятный, иногда с лёгкой иронией. Без корпоративного официоза.
-
-Напиши пост на основе этой новости:
-Заголовок: {article['title']}
-Источник: {article['source']}
-Содержание: {article['summary']}
-
-Требования:
-- 150-220 слов
-- Начни с яркого заголовка + эмодзи (не "📰")
-- Объясни суть простым языком — что произошло и почему это важно
-- Добавь конкретный вывод для пользователя VPN ("что мне с этого?")
-- В конце 3-4 хэштега (#VPN #интернет #блокировки #безопасность)
-- Только текст, без ссылок внутри поста
-
-Верни только сам пост."""
-
-    try:
-        msg = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=700,
-            messages=[{"role": "user", "content": prompt}]
-        )
-        return msg.content[0].text.strip()
-    except Exception as e:
-        log.error(f"Claude API error: {e}")
-        return _format_fallback(article)
-
-
-def _format_fallback(article: dict) -> str:
-    """Простое форматирование без AI."""
-    safe_title   = html.escape(article["title"])
-    safe_summary = html.escape(article["summary"][:400])
-    safe_source  = html.escape(article["source"])
-    return (
-        f"📡 <b>{safe_title}</b>\n\n"
-        f"{safe_summary}...\n\n"
-        f"<i>Источник: {safe_source}</i>\n\n"
-        f"#VPN #интернет #новости #безопасность"
+    msg = client.messages.create(
+        model=MODEL,
+        max_tokens=1200,
+        messages=[{"role": "user", "content": prompt}],
     )
+    # ответ может содержать thinking-блоки — берём только текстовые
+    parts = [b.text for b in msg.content if getattr(b, "type", "") == "text"]
+    return "\n".join(parts).strip()
 
 
-def find_image_url(article: dict) -> str | None:
-    """Извлекает og:image из страницы статьи."""
-    link = article.get("link", "")
-    if not link:
+def _parse_json_answer(raw: str) -> dict | None:
+    """Достаёт JSON из ответа модели (терпит ```json обёртки)."""
+    m = re.search(r"\{.*\}", raw, re.DOTALL)
+    if not m:
         return None
     try:
-        r = requests.get(link, timeout=8, headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        })
-        if r.status_code != 200:
-            return None
-        for pat in [
-            r'property="og:image"\s+content="([^"]+)"',
-            r'content="([^"]+)"\s+property="og:image"',
-            r"property='og:image'\s+content='([^']+)'",
-        ]:
-            m = re.search(pat, r.text)
-            if m:
-                img = m.group(1).strip()
-                if img.startswith("http"):
-                    return img
-    except Exception as e:
-        log.warning(f"og:image scrape error: {e}")
+        data = json.loads(m.group(0))
+        if data.get("post") and data.get("cover_title"):
+            return data
+    except Exception:
+        pass
     return None
 
 
-def download_image(url: str) -> bytes | None:
-    """Скачивает картинку, возвращает bytes."""
-    try:
-        r = requests.get(url, timeout=12, headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        })
-        if r.status_code == 200 and len(r.content) > 2000:
-            return r.content
-    except Exception as e:
-        log.warning(f"Ошибка загрузки картинки: {e}")
+def generate_content(topic: dict | None, article: dict | None, news_context: list) -> dict | None:
+    """Пост + заголовок/подзаголовок обложки. None — если сгенерировать не вышло."""
+    if not ANTHROPIC_KEY:
+        log.error("ANTHROPIC_API_KEY не задан — генерация невозможна")
+        return None
+
+    if topic:
+        task = (f"Тема поста из контент-плана: «{topic['title']}»\n"
+                f"Редакторский бриф (угол подачи): {topic['brief']}")
+    else:
+        task = (f"Пост по горячей новости:\n"
+                f"Заголовок: {article['title']}\nИсточник: {article['source']}\n"
+                f"Суть: {article['summary']}\n"
+                f"Свяжи новость с пользой/риском для обычного пользователя интернета в РФ.")
+
+    ctx = ""
+    if news_context:
+        ctx = "\nСвежий новостной фон (используй ТОЛЬКО если органично усиливает пост):\n" + \
+              "\n".join(f"- {a['title']}" for a in news_context[:3])
+
+    prompt = f"""Ты — главный SMM-редактор Telegram-канала @tuvpn_news сервиса TuVPN.
+Твои посты собирают высокий охват, потому что их реально интересно читать: цепляют с первой строки, дают пользу и не душат рекламой.
+
+{BRAND_VOICE}
+{PRODUCT_FACTS}
+{task}
+{ctx}
+
+Напиши пост для Telegram-канала. Жёсткие требования:
+1. Первая строка — хук: <b>жирный заголовок</b> с 1 эмодзи. Не повторяй тему дословно — переформулируй так, чтобы захотелось читать дальше (вопрос, цифра, боль читателя).
+2. Тело: 2–4 коротких абзаца ИЛИ абзац + маркированный список (маркер «—» или эмодзи). Каждое предложение несёт факт или пользу. Пустая строка между абзацами.
+3. Конкретика обязательна: названия сервисов, цифры, примеры. Никаких «в современном мире» и «как известно».
+4. Финал — мягкий CTA одной строкой: попробовать @MaxArtVPN_bot (7 дней бесплатно). CTA должен логично вытекать из поста, а не быть приклеенным.
+5. Последняя строка: 2–3 хэштега (#TuVPN + тематические).
+6. Форматирование: только HTML-теги <b> и <i>. БЕЗ ссылок, БЕЗ markdown.
+7. ДЛИНА ПОСТА: СТРОГО не более 850 символов включая теги и хэштеги (это caption к фото).
+8. Факты о продукте бери ТОЛЬКО из блока выше. Ничего не выдумывай.
+
+Также придумай текст для обложки:
+- cover_title: 3–6 слов, мощная выжимка поста (НЕ обязательно = заголовку поста). Одно ключевое слово оберни в *звёздочки* — оно будет подсвечено неоном.
+- cover_subtitle: до 7 слов, поясняющая строка без точки в конце.
+
+Ответь СТРОГО одним JSON-объектом без пояснений:
+{{"cover_title": "...", "cover_subtitle": "...", "post": "..."}}"""
+
+    for attempt in range(2):
+        try:
+            raw = _claude(prompt)
+            data = _parse_json_answer(raw)
+            if not data:
+                log.warning("Ответ не распарсился, попытка %d", attempt + 1)
+                continue
+            plain = re.sub(r"<[^>]+>", "", data["post"])
+            if len(data["post"]) > 1000:
+                log.warning("Пост длиннее лимита (%d), попытка %d", len(data["post"]), attempt + 1)
+                prompt += f"\n\nВНИМАНИЕ: прошлый вариант был {len(data['post'])} символов — СОКРАТИ до 850."
+                continue
+            log.info("Текст готов: %d символов, обложка: %s", len(plain), data["cover_title"])
+            return data
+        except Exception as e:
+            log.error(f"Claude API error: {e}")
     return None
 
 
-def send_to_admin(text: str, article: dict):
-    """Отправляет предложку поста Максиму в Telegram (с картинкой если нашлась)."""
-    if not BOT_TOKEN:
-        log.error("BOT_TOKEN не задан — отправка невозможна")
-        return
+# ── отправка предложки ───────────────────────────────────────────────
 
+def send_proposal(data: dict, cover_png: bytes, meta_line: str) -> bool:
+    """Фото + чистый caption (готов к публикации) + кнопки. Мета — отдельным сообщением."""
     base = f"https://api.telegram.org/bot{BOT_TOKEN}"
-    safe_source = html.escape(article["source"])
-    safe_link   = article["link"]
-    ts = datetime.now().strftime("%H:%M %d.%m")
 
-    header = (
-        f"🗞 <b>Предложка поста</b> · {ts}\n"
-        f"📡 {safe_source} · "
-        f'<a href="{safe_link}">оригинал</a>\n'
-        f"{'─' * 28}\n\n"
-    )
-    full_text = (header + text)[:4096]
-
-    # Пробуем найти и отправить картинку
-    log.info("Ищем og:image для статьи...")
-    img_url = find_image_url(article)
-    if img_url:
-        log.info(f"Найдена картинка: {img_url[:80]}...")
-        img_bytes = download_image(img_url)
-        if img_bytes:
-            caption = full_text[:1024]  # caption в Telegram ≤1024 символа
-            try:
-                r = requests.post(
-                    f"{base}/sendPhoto",
-                    data={"chat_id": SUPERADMIN_ID, "caption": caption, "parse_mode": "HTML"},
-                    files={"photo": ("image.jpg", img_bytes, "image/jpeg")},
-                    timeout=30,
-                )
-                resp = r.json()
-                if resp.get("ok"):
-                    log.info(f"Фото отправлено, message_id={resp['result']['message_id']}")
-                    # Если текст длиннее 1024 — отправляем остаток отдельным сообщением
-                    if len(full_text) > 1024:
-                        remainder = full_text[1024:]
-                        requests.post(f"{base}/sendMessage", json={
-                            "chat_id": SUPERADMIN_ID,
-                            "text": remainder,
-                            "parse_mode": "HTML",
-                            "disable_web_page_preview": True,
-                        }, timeout=15)
-                    return
-                else:
-                    log.warning(f"sendPhoto failed: {resp.get('description')} — отправляем текстом")
-            except Exception as e:
-                log.warning(f"sendPhoto exception: {e} — отправляем текстом")
-        else:
-            log.warning("Картинку скачать не удалось — отправляем текстом")
-    else:
-        log.info("og:image не найдена — отправляем текстом")
-
-    # Fallback: только текст
-    r = requests.post(f"{base}/sendMessage", json={
-        "chat_id": SUPERADMIN_ID,
-        "text": full_text,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": True,
-    }, timeout=15)
-
-    resp = r.json()
-    if resp.get("ok"):
-        log.info(f"Пост отправлен текстом, message_id={resp['result']['message_id']}")
-    else:
-        log.error(f"Telegram API error: {resp.get('description')} (code {resp.get('error_code')})")
-        plain = re.sub(r"<[^>]+>", "", full_text)
-        r2 = requests.post(f"{base}/sendMessage", json={
+    # мета-сообщение (не попадёт в канал — публикуется только фото ниже)
+    try:
+        requests.post(f"{base}/sendMessage", json={
             "chat_id": SUPERADMIN_ID,
-            "text": plain[:4096],
+            "text": f"🗞 <b>Предложка для @tuvpn_news</b>\n{meta_line}",
+            "parse_mode": "HTML",
             "disable_web_page_preview": True,
         }, timeout=15)
-        if r2.json().get("ok"):
-            log.info("Отправлено как plain text (fallback)")
-        else:
-            log.error(f"Plain text тоже не прошёл: {r2.json().get('description')}")
+    except Exception:
+        pass
 
+    keyboard = {"inline_keyboard": [[
+        {"text": "✅ В канал", "callback_data": "news_pub"},
+        {"text": "❌ Пропустить", "callback_data": "news_skip"},
+    ]]}
+    caption = data["post"][:1024]
+    try:
+        r = requests.post(
+            f"{base}/sendPhoto",
+            data={"chat_id": SUPERADMIN_ID, "caption": caption, "parse_mode": "HTML",
+                  "reply_markup": json.dumps(keyboard)},
+            files={"photo": ("cover.png", cover_png, "image/png")},
+            timeout=60,
+        )
+        resp = r.json()
+        if resp.get("ok"):
+            log.info("Предложка отправлена, message_id=%s", resp["result"]["message_id"])
+            return True
+        log.error("sendPhoto: %s", resp.get("description"))
+        # fallback: HTML мог не пройти — шлём без parse_mode
+        r2 = requests.post(
+            f"{base}/sendPhoto",
+            data={"chat_id": SUPERADMIN_ID, "caption": re.sub(r"<[^>]+>", "", caption),
+                  "reply_markup": json.dumps(keyboard)},
+            files={"photo": ("cover.png", cover_png, "image/png")},
+            timeout=60,
+        )
+        return bool(r2.json().get("ok"))
+    except Exception as e:
+        log.error(f"sendPhoto exception: {e}")
+        return False
+
+
+# ── main ─────────────────────────────────────────────────────────────
 
 def main():
-    log.info("Запускаю сбор новостей...")
-
     if not BOT_TOKEN:
         log.error("BOT_TOKEN не задан")
         sys.exit(1)
 
-    articles = fetch_news()
+    force_topic = None
+    plan_only = "--plan" in sys.argv
+    if "--topic" in sys.argv:
+        try:
+            force_topic = sys.argv[sys.argv.index("--topic") + 1]
+        except IndexError:
+            pass
 
-    if not articles:
-        log.info("Нет новых релевантных новостей — пропускаем")
-        return
+    state = load_state()
+    articles = fetch_news(state)
 
-    # Берём случайную из топ-3 для разнообразия
-    top = articles[:min(3, len(articles))]
-    article = random.choice(top)
-    log.info(f"Выбрана: [{article['source']}] {article['title'][:80]} (score={article['score']})")
+    topic, article = None, None
+    if force_topic:
+        topic = next((t for t in TOPICS if t["id"] == force_topic), None)
+        if not topic:
+            log.error("Тема %s не найдена. Доступные: %s", force_topic, ", ".join(t["id"] for t in TOPICS))
+            sys.exit(1)
+    elif (not plan_only and articles and articles[0]["score"] >= HOT_NEWS_MIN_SCORE
+          and random.random() < HOT_NEWS_PROBABILITY):
+        article = articles[0]
+        log.info("Горячая новость перебила план: [%s] %s (score=%d)",
+                 article["source"], article["title"][:70], article["score"])
+    else:
+        topic = next_topic(state)
+        log.info("Тема из плана: %s", topic["title"])
 
-    post_text = generate_post(article)
-    send_to_admin(post_text, article)
-    save_sent_id(article["uid"])
-    log.info("Готово")
+    # новостной контекст — только темам, которым он полезен
+    ctx = articles[:3] if (topic and topic.get("news_context")) else []
+    data = generate_content(topic, article, ctx)
+    if not data:
+        log.error("Генерация не удалась — выходим без отправки")
+        sys.exit(1)
+
+    meta = topic if topic else NEWS_META
+    cover = generate_cover(
+        title=data.get("cover_title") or (topic["title"] if topic else article["title"]),
+        subtitle=data.get("cover_subtitle") or "",
+        palette=meta["palette"],
+        motif=meta["motif"],
+        seed=random.randint(0, 10 ** 9),
+    )
+    log.info("Обложка готова: %d байт", len(cover))
+
+    if topic:
+        meta_line = f"📋 Тема плана: <i>{html.escape(topic['title'])}</i>"
+    else:
+        meta_line = (f"🔥 Горячая новость: <i>{html.escape(article['title'])}</i>\n"
+                     f'📡 {html.escape(article["source"])} · <a href="{article["link"]}">оригинал</a>')
+
+    if send_proposal(data, cover, meta_line):
+        if article:
+            state.setdefault("sent_news", {})[article["uid"]] = datetime.now(timezone.utc).isoformat()
+        save_state(state)
+        log.info("Готово")
+    else:
+        # тему возвращаем в начало цикла, чтобы не потерять
+        if topic:
+            state["cycle"] = [topic["id"]] + state.get("cycle", [])
+            save_state(state)
+        log.error("Отправка не удалась")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

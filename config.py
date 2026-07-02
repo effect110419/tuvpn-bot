@@ -76,6 +76,9 @@ FALLBACK_ADMIN_IDS = _list_int("FALLBACK_ADMIN_IDS", ADMIN_TG_IDS)
 # Подписки
 SUB_BASE_URL = _opt("SUB_BASE_URL", "https://sub.tuvpn.ru")
 
+# Новостной канал (публикация предложек из news_bot)
+NEWS_CHANNEL_ID = _opt("NEWS_CHANNEL_ID", "@tuvpn_news")
+
 # ────────────────────────────────────────────────────────────────────
 # LEGACY (от первой версии, остаются для совместимости).
 # Сейчас серверы берутся из БД (таблица servers), но эти переменные

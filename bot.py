@@ -2090,5 +2090,56 @@ async def cb_admin_login_cancel(call: types.CallbackQuery):
 # === END ADMIN LOGIN HANDLER ===
 
 
+# ══════════════════════════════
+# ПРЕДЛОЖКА НОВОСТЕЙ (news_bot.py)
+# ══════════════════════════════
+
+@dp.callback_query(lambda c: c.data == "news_pub")
+async def cb_news_publish(call: types.CallbackQuery):
+    """Опубликовать предложку в канал: копируем фото+caption без кнопок."""
+    if call.from_user.id != SUPERADMIN_ID:
+        await call.answer("❌ Доступ запрещён", show_alert=True)
+        return
+    try:
+        await bot.copy_message(
+            chat_id=NEWS_CHANNEL_ID,
+            from_chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+        )
+        # убираем кнопки и помечаем как опубликованное
+        try:
+            await call.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text="✅ Опубликовано", callback_data="news_done")]]
+            ))
+        except Exception:
+            pass
+        await call.answer("Опубликовано в канал!")
+    except Exception as e:
+        logging.error(f"news publish error: {e}")
+        await call.answer(
+            f"Не удалось опубликовать: {str(e)[:120]}\n"
+            f"Проверь, что бот — админ канала {NEWS_CHANNEL_ID} с правом публикации.",
+            show_alert=True,
+        )
+
+
+@dp.callback_query(lambda c: c.data == "news_skip")
+async def cb_news_skip(call: types.CallbackQuery):
+    """Пропустить предложку — просто удаляем сообщение."""
+    if call.from_user.id != SUPERADMIN_ID:
+        await call.answer("❌ Доступ запрещён", show_alert=True)
+        return
+    try:
+        await call.message.delete()
+    except Exception:
+        pass
+    await call.answer("Пропущено")
+
+
+@dp.callback_query(lambda c: c.data == "news_done")
+async def cb_news_done(call: types.CallbackQuery):
+    await call.answer("Уже опубликовано")
+
+
 if __name__ == "__main__":
     asyncio.run(main())
