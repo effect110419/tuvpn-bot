@@ -352,11 +352,10 @@ def _draw_headline(img: Image.Image, title: str, subtitle: str, accent: tuple):
 
 
 def _draw_brand(img: Image.Image, accent: tuple):
-    """Бейдж TuVPN сверху слева + футер снизу. Рисуем на слое, чтобы альфа смешивалась."""
+    """Бейдж TuVPN сверху слева. Рисуем на слое, чтобы альфа смешивалась."""
     layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(layer)
     f_brand = _font("Montserrat-ExtraBold.ttf", 30)
-    f_tag = _font("Montserrat-Medium.ttf", 22)
 
     # пилюля
     bx, by = 64, 48
@@ -374,12 +373,6 @@ def _draw_brand(img: Image.Image, accent: tuple):
     d = ImageDraw.Draw(layer)
     d.ellipse([dot_x - 7, dot_y - 7, dot_x + 7, dot_y + 7], fill=accent + (255,))
     d.text((bx + 52, by + 11), brand_txt, font=f_brand, fill=TEXT_MAIN + (255,))
-    # канал справа от пилюли
-    d.text((bx + pill_w + 18, by + 17), "@tuvpn_news", font=f_tag, fill=TEXT_DIM + (200,))
-
-    # футер
-    f_foot = _font("Montserrat-SemiBold.ttf", 24)
-    d.text((64, H - 66), "@MaxArtVPN_bot  ·  7 дней бесплатно", font=f_foot, fill=TEXT_DIM + (235,))
     img.alpha_composite(layer)
 
 
