@@ -184,6 +184,25 @@ def fetch_news(state: dict) -> list:
 
 # ── генерация текста ─────────────────────────────────────────────────
 
+def _classify_api_error(e: Exception) -> str:
+    """Переводит ошибку API в понятную человеку причину."""
+    s = str(e)
+    low = s.lower()
+    if "401" in s or "authentication" in low or "invalid x-api-key" in low:
+        return "ключ API отклонён (401) — проверь ANTHROPIC_API_KEY в .env"
+    if "402" in s or "insufficient" in low or "balance" in low or "credit" in low or "quota" in low:
+        return "закончились средства/кредиты на API (402) — пополни баланс proxyapi"
+    if "429" in s or "rate limit" in low:
+        return "превышен лимит запросов API (429) — попробуй чуть позже"
+    if "529" in s or "overloaded" in low:
+        return "API перегружен (529) — попробуй чуть позже"
+    if "timed out" in low or "timeout" in low:
+        return "таймаут запроса к API — сеть или API тормозят"
+    if "connection" in low or "connect" in low:
+        return "нет соединения с API"
+    return f"ошибка API: {s[:200]}"
+
+
 def _claude(prompt: str) -> str:
     import anthropic
     client = anthropic.Anthropic(
@@ -223,11 +242,11 @@ def _parse_json_answer(raw: str) -> dict | None:
     return None
 
 
-def generate_content(topic: dict | None, article: dict | None, news_context: list) -> dict | None:
-    """Пост + заголовок/подзаголовок обложки. None — если сгенерировать не вышло."""
+def generate_content(topic: dict | None, article: dict | None, news_context: list) -> tuple:
+    """Пост + заголовок/подзаголовок обложки.
+    Возвращает (data, None) при успехе или (None, причина) при неудаче."""
     if not ANTHROPIC_KEY:
-        log.error("ANTHROPIC_API_KEY не задан — генерация невозможна")
-        return None
+        return None, "ANTHROPIC_API_KEY не задан в .env — генерация невозможна"
 
     if topic:
         task = (f"Тема поста из контент-плана: «{topic['title']}»\n"
@@ -268,23 +287,57 @@ def generate_content(topic: dict | None, article: dict | None, news_context: lis
 Ответь СТРОГО одним JSON-объектом без пояснений:
 {{"cover_title": "...", "cover_subtitle": "...", "post": "..."}}"""
 
+    last_reason = "неизвестная ошибка"
     for attempt in range(2):
         try:
             raw = _claude(prompt)
             data = _parse_json_answer(raw)
             if not data:
+                last_reason = "модель вернула невалидный ответ (JSON не распарсился)"
                 log.warning("Ответ не распарсился, попытка %d", attempt + 1)
                 continue
             plain = re.sub(r"<[^>]+>", "", data["post"])
             if len(data["post"]) > 1000:
+                last_reason = f"пост превысил лимит длины ({len(data['post'])} символов)"
                 log.warning("Пост длиннее лимита (%d), попытка %d", len(data["post"]), attempt + 1)
                 prompt += f"\n\nВНИМАНИЕ: прошлый вариант был {len(data['post'])} символов — СОКРАТИ до 850."
                 continue
             log.info("Текст готов: %d символов, обложка: %s", len(plain), data["cover_title"])
-            return data
+            return data, None
         except Exception as e:
+            last_reason = _classify_api_error(e)
             log.error(f"Claude API error: {e}")
-    return None
+    return None, last_reason
+
+
+# ── уведомление о сбое ───────────────────────────────────────────────
+
+def send_failure_notice(reason: str) -> bool:
+    """Сообщает суперадмину о неудачной генерации, с кнопкой повтора."""
+    try:
+        kb = {"inline_keyboard": [[{"text": "🔁 Попробовать снова", "callback_data": "news_retry"}]]}
+        r = requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+            "chat_id": SUPERADMIN_ID,
+            "text": ("⚠️ <b>Не удалось сгенерировать пост</b>\n\n"
+                     f"Причина: {html.escape(reason)[:800]}"),
+            "parse_mode": "HTML",
+            "reply_markup": kb,
+            "disable_web_page_preview": True,
+        }, timeout=15)
+        ok = bool(r.json().get("ok"))
+        log.info("Уведомление о сбое: %s", "доставлено" if ok else "НЕ доставлено")
+        return ok
+    except Exception as e:
+        log.error(f"Не удалось отправить уведомление о сбое: {e}")
+        return False
+
+
+def _fail(reason: str):
+    """Единая точка выхода при сбое: уведомляем и завершаемся.
+    exit 0 — сбой обработан (уведомление доставлено), OnFailure не сработает.
+    exit 1 — уведомить не удалось, systemd OnFailure отправит запасное уведомление."""
+    log.error("Генерация не удалась: %s", reason)
+    sys.exit(0 if send_failure_notice(reason) else 1)
 
 
 # ── отправка предложки ───────────────────────────────────────────────
@@ -372,19 +425,26 @@ def main():
 
     # новостной контекст — только темам, которым он полезен
     ctx = articles[:3] if (topic and topic.get("news_context")) else []
-    data = generate_content(topic, article, ctx)
+    data, gen_error = generate_content(topic, article, ctx)
     if not data:
-        log.error("Генерация не удалась — выходим без отправки")
-        sys.exit(1)
+        if dry_run:
+            log.error("Генерация не удалась: %s", gen_error)
+            sys.exit(1)
+        _fail(gen_error)
 
     meta = topic if topic else NEWS_META
-    cover = generate_cover(
-        title=data.get("cover_title") or (topic["title"] if topic else article["title"]),
-        subtitle=data.get("cover_subtitle") or "",
-        palette=meta["palette"],
-        motif=meta["motif"],
-        seed=random.randint(0, 10 ** 9),
-    )
+    try:
+        cover = generate_cover(
+            title=data.get("cover_title") or (topic["title"] if topic else article["title"]),
+            subtitle=data.get("cover_subtitle") or "",
+            palette=meta["palette"],
+            motif=meta["motif"],
+            seed=random.randint(0, 10 ** 9),
+        )
+    except Exception as e:
+        if dry_run:
+            raise
+        _fail(f"ошибка генерации обложки: {str(e)[:200]}")
     log.info("Обложка готова: %d байт", len(cover))
 
     if dry_run:
@@ -411,9 +471,15 @@ def main():
         if topic:
             state["cycle"] = [topic["id"]] + state.get("cycle", [])
             save_state(state)
-        log.error("Отправка не удалась")
-        sys.exit(1)
+        _fail("Telegram не принял предложку (sendPhoto) — подробности в journalctl -u tuvpn-news")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except Exception as e:
+        # непредвиденный краш: пытаемся уведомить сами, иначе сработает systemd OnFailure
+        log.exception("Необработанная ошибка")
+        _fail(f"внутренняя ошибка: {type(e).__name__}: {str(e)[:200]}")

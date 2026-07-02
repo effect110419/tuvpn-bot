@@ -1,6 +1,8 @@
 [Unit]
 Description=TuVPN News Bot — генерация постов для канала
 After=network-online.target
+# Если процесс упал и не смог уведомить сам — запасное уведомление
+OnFailure=tuvpn-news-fail.service
 
 [Service]
 Type=oneshot

@@ -1,0 +1,11 @@
+[Unit]
+Description=TuVPN News Bot — уведомление о крахе генерации
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/root/tuvpn
+ExecStart=/usr/bin/python3 /root/tuvpn/news_fail_notify.py
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tuvpn-news-fail

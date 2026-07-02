@@ -2123,6 +2123,15 @@ async def cb_news_publish(call: types.CallbackQuery):
         )
 
 
+async def _spawn_news_generation():
+    """Фоновый запуск генерации предложки; завершения не ждём —
+    результат (или уведомление о сбое) придёт отдельным сообщением."""
+    await asyncio.create_subprocess_exec(
+        "python3", "/root/tuvpn/news_bot.py", "--plan",
+        cwd="/root/tuvpn",
+    )
+
+
 @dp.callback_query(lambda c: c.data == "news_skip")
 async def cb_news_skip(call: types.CallbackQuery):
     """Пропустить предложку: удаляем сообщение и сразу генерируем новый вариант.
@@ -2136,13 +2145,34 @@ async def cb_news_skip(call: types.CallbackQuery):
         pass
     await call.answer("⏳ Генерирую новый вариант…")
     try:
-        # фоновый запуск, завершения не ждём — предложка придёт отдельным сообщением
-        await asyncio.create_subprocess_exec(
-            "python3", "/root/tuvpn/news_bot.py", "--plan",
-            cwd="/root/tuvpn",
-        )
+        await _spawn_news_generation()
     except Exception as e:
         logging.error(f"news regen error: {e}")
+        try:
+            await bot.send_message(SUPERADMIN_ID, f"⚠ Не удалось запустить генерацию: {e}")
+        except Exception:
+            pass
+
+
+@dp.callback_query(lambda c: c.data == "news_retry")
+async def cb_news_retry(call: types.CallbackQuery):
+    """Повторить генерацию после сбоя (кнопка в уведомлении об ошибке)."""
+    if call.from_user.id != SUPERADMIN_ID:
+        await call.answer("❌ Доступ запрещён", show_alert=True)
+        return
+    # помечаем уведомление, чтобы не жать дважды
+    try:
+        await call.message.edit_text(
+            (call.message.html_text or call.message.text or "") + "\n\n🔁 <i>Повторяю генерацию…</i>",
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+    await call.answer("⏳ Пробую снова…")
+    try:
+        await _spawn_news_generation()
+    except Exception as e:
+        logging.error(f"news retry error: {e}")
         try:
             await bot.send_message(SUPERADMIN_ID, f"⚠ Не удалось запустить генерацию: {e}")
         except Exception:
