@@ -354,7 +354,11 @@ body::before {
   background: var(--bg-2);
   border: 1px solid var(--border);
   border-radius: 999px;
+  cursor: pointer;
+  transition: border-color var(--t-1), background var(--t-1);
+  user-select: none;
 }
+.live-dot:hover { border-color: var(--border-hi); background: var(--bg-3); }
 .live-dot::before {
   content: '';
   width: 6px;
@@ -364,10 +368,15 @@ body::before {
   box-shadow: 0 0 8px var(--green);
   animation: livePulse 2s infinite;
 }
+.live-dot-off::before { background: var(--fg-5); box-shadow: none; animation: none; }
 @keyframes livePulse {
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: .6; transform: scale(.85); }
 }
+
+/* Кнопки точечного обновления секций (users/subs/payments/tickets/marketing) */
+.btn.spinning svg { animation: btnSpin .7s linear infinite; }
+@keyframes btnSpin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
 /* ===== BUTTONS ===== */
 .btn {
@@ -2033,6 +2042,8 @@ table.tbl { width: 100%; border-collapse: collapse; }
 .mon-chart-wrap { height: 200px; position: relative; }
 .mon-charts { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 0; }
 @media (max-width: 900px) { .mon-charts { grid-template-columns: 1fr; } }
+.mon-incident-ongoing { background: var(--red-dim); }
+.mon-incident-ongoing:hover { background: var(--red-dim); }
 
 /* ==================== FINANCE BARS (redesign) ==================== */
 .fin-bars { padding: 10px 18px 14px; display: flex; flex-direction: column; gap: 14px; }

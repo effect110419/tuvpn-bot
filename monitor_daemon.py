@@ -3,6 +3,18 @@
 TuVPN Monitor Daemon — проверяет здоровье всех VPN-узлов и пишет в server_health.
 Интервал читается из monitor_settings (можно менять через админку, вплоть до 5 сек).
 Запускается как systemd-сервис (постоянный процесс).
+
+Два независимых сигнала здоровья — это разные системы, и путать их нельзя:
+  - service_up  ("VPN доступен")   — TLS-хендшейк до реального порта, на который
+    подключаются клиенты. Это то, что реально волнует пользователя.
+  - panel_up    ("Панель управления") — логин в 3X-UI. Panel может недоступен/тормозить
+    (перегрузка, рестарт) при полностью рабочем VPN — и наоборот, Xray может упасть
+    при живой панели. Раньше "is_up" (=panel_up) ошибочно показывался как общий статус
+    сервера — отсюда ложные тревоги и пропущенные реальные падения.
+service_up хранится в той же колонке is_up для обратной совместимости со старыми
+данными и графиками; panel_up — отдельная новая колонка panel_up.
+При смене состояния service_up (вверх⇄вниз) — алерт суперадмину в Telegram, с дебаунсом
+(шлём только на переходе, не на каждом цикле).
 """
 import sys, time, json, socket, ssl, os, re
 sys.path.insert(0, '/root/tuvpn')
@@ -16,6 +28,13 @@ H = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}",
 
 DEFAULT_INTERVAL = 300
 MIN_INTERVAL = 5
+SUPERADMIN_ID = 784871620
+
+try:
+    _BOT_TOKEN = None
+    from config import BOT_TOKEN as _BOT_TOKEN
+except Exception:
+    pass
 
 # Пароли панелей могут храниться зашифрованными (Fernet, см. proxy.py П.6) —
 # тот же формат тут, чтобы демон не сломался молча после миграции на шифрование.
@@ -34,6 +53,22 @@ def decrypt_panel_password(raw: str) -> str:
         except Exception:
             pass
     return raw
+
+
+def notify_admin(text: str):
+    """Прямой вызов Telegram Bot API — без импорта proxy.py (демон должен
+    оставаться лёгким и независимым от Flask-приложения)."""
+    if not _BOT_TOKEN:
+        return
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{_BOT_TOKEN}/sendMessage",
+            json={"chat_id": SUPERADMIN_ID, "text": text, "parse_mode": "HTML",
+                  "disable_web_page_preview": True},
+            timeout=10,
+        )
+    except Exception as e:
+        print(f"notify_admin error: {e}", flush=True)
 
 
 def get_interval():
@@ -61,7 +96,8 @@ def get_servers():
 
 
 def check_tcp(ip, port, timeout=5):
-    """TCP-проба порта. Возвращает (доступен, latency_ms)."""
+    """Голый TCP-коннект. Быстрый, но слепой: не отличит живой процесс от
+    зависшего — порт может слушать (accept), а дальше не отвечать."""
     t0 = time.time()
     try:
         s = socket.create_connection((ip, port), timeout=timeout)
@@ -71,17 +107,19 @@ def check_tcp(ip, port, timeout=5):
         return False, None
 
 
-def check_target(sni, timeout=6):
-    """TLS-handshake до SNI-донора (Reality target). (ok, latency_ms)."""
-    if not sni:
-        return None, None
+def check_tls_handshake(host, port, timeout=6):
+    """TLS-хендшейк до host:port. Сильнее голого TCP-коннекта: ловит зависший
+    процесс (порт слушает, но handshake не завершается), а не только 'мёртвый' порт.
+    Это и есть реальный сигнал "VPN доступен пользователю" — Reality отвечает
+    на TLS ClientHello так же, как обычный HTTPS-сайт.
+    Возвращает (ok, latency_ms)."""
     t0 = time.time()
     try:
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
-        with socket.create_connection((sni, 443), timeout=timeout) as sock:
-            with ctx.wrap_socket(sock, server_hostname=sni) as ssock:
+        with socket.create_connection((host, port), timeout=timeout) as sock:
+            with ctx.wrap_socket(sock, server_hostname=host) as ssock:
                 _ = ssock.version()
         return True, int((time.time() - t0) * 1000)
     except Exception:
@@ -90,7 +128,8 @@ def check_target(sni, timeout=6):
 
 def xui_check(server):
     """Логин в 3X-UI (v3 Bearer-токен если задан api_token, иначе v2 cookie-логин)
-    + получить кол-во клиентов. (up, latency_ms, clients, error)."""
+    + получить кол-во клиентов. Это здоровье ПАНЕЛИ УПРАВЛЕНИЯ, не VPN-сервиса.
+    (panel_up, latency_ms, clients, error)."""
     url = (server.get("panel_url") or "").rstrip("/")
     inbound_id = server.get("inbound_id")
     api_token = (server.get("api_token") or "").strip()
@@ -162,6 +201,27 @@ def xui_check(server):
         return False, int((time.time() - t0) * 1000), None, str(e)[:200]
 
 
+# Последнее известное состояние сервиса на сервер — для дебаунса алертов
+# (шлём только на смене состояния, не на каждом цикле). Живёт в памяти процесса:
+# рестарт демона в худшем случае даст один спорный алерт, не страшно.
+_last_service_state = {}
+
+
+def _handle_alert(code, name, service_up, err):
+    prev = _last_service_state.get(code)
+    _last_service_state[code] = service_up
+    if prev is None:
+        return  # первый цикл после старта демона — не с чем сравнивать, не алертим
+    if prev == service_up:
+        return  # состояние не менялось
+    if service_up:
+        notify_admin(f"✅ <b>{name or code} снова доступен</b>\n\nVPN-порт отвечает на TLS-хендшейк.")
+    else:
+        notify_admin(f"🔴 <b>{name or code} недоступен!</b>\n\n"
+                     f"VPN-порт не проходит TLS-хендшейк — пользователи не могут подключиться."
+                     + (f"\nПричина панели: {err}" if err else ""))
+
+
 def check_one(server):
     code = server.get("code")
     name = server.get("country_name")
@@ -169,36 +229,55 @@ def check_one(server):
     port = int(server.get("server_port") or 443)
     sni = server.get("sni")
 
-    up, latency, clients, err = xui_check(server)
-    xray_ok, _ = check_tcp(ip, port)   # слушает ли 443
-    target_ok, target_lat = check_target(sni)
+    panel_up, panel_latency, clients, panel_err = xui_check(server)
+    tcp_ok, _ = check_tcp(ip, port)                            # порт открыт?
+    service_up, service_lat = check_tls_handshake(ip, port)    # реальный сигнал "VPN работает"
+    target_ok, target_lat = check_tls_handshake(sni, 443) if sni else (None, None)
+
+    _handle_alert(code, name, service_up, panel_err)
+
+    # error: приоритет диагностике, которая объясняет ЧТО именно сломано.
+    # tcp открыт, но TLS не прошёл — процесс завис. tcp закрыт — процесс не слушает.
+    # Если сам VPN-сервис жив, но не смогли залогиниться в панель — это отдельная,
+    # менее критичная проблема (не мешает текущим клиентам), помечаем отдельно.
+    if service_up:
+        error = None if panel_up else f"panel: {panel_err}"
+    elif tcp_ok:
+        error = "порт открыт, но TLS-хендшейк не прошёл (процесс завис?)"
+    else:
+        error = "порт не отвечает (сервис не слушает / firewall / сеть)"
 
     row = {
         "server_code": code,
         "server_name": name,
-        "is_up": bool(up),
-        "latency_ms": latency,
-        "xray_listening": bool(xray_ok),
+        # is_up — реальная доступность VPN (TLS-хендшейк на боевой порт). Это главный
+        # статус в админке и то, что участвует в uptime%. Раньше тут ошибочно был
+        # логин в панель управления — панель может тормозить при полностью рабочем VPN.
+        "is_up": bool(service_up),
+        "latency_ms": service_lat if service_lat is not None else panel_latency,
+        "xray_listening": bool(tcp_ok),
         "clients_count": clients,
         "target_ok": target_ok,
         "target_latency_ms": target_lat,
         "sni": sni,
-        "error": err,
+        "error": error,
     }
     try:
         requests.post(f"{SUPABASE_URL}/rest/v1/server_health", headers=H, json=row, timeout=10)
     except Exception as e:
         print(f"write health error {code}: {e}", flush=True)
-    status = "UP" if up else "DOWN"
-    print(f"[{datetime.utcnow().isoformat()}] {code}: {status} lat={latency}ms "
-          f"xray={'Y' if xray_ok else 'N'} clients={clients} target={'Y' if target_ok else 'N'}", flush=True)
+    status = "UP" if service_up else "DOWN"
+    print(f"[{datetime.utcnow().isoformat()}] {code}: service={status} panel={'UP' if panel_up else 'DOWN'} "
+          f"tcp={'Y' if tcp_ok else 'N'} lat={service_lat}ms clients={clients} target={'Y' if target_ok else 'N'}"
+          + (f" err={error}" if error else ""), flush=True)
 
 
 def cleanup_old():
-    """Чистка записей старше 7 дней (раз в цикл, не критично)."""
+    """Чистка записей старше 30 дней (раз в цикл, не критично).
+    30 дней вместо прежних 7 — чтобы хватало на анализ инцидентов месячной давности."""
     try:
         from datetime import timedelta
-        cutoff = (datetime.utcnow() - timedelta(days=7)).isoformat()
+        cutoff = (datetime.utcnow() - timedelta(days=30)).isoformat()
         requests.delete(f"{SUPABASE_URL}/rest/v1/server_health?checked_at=lt.{cutoff}",
                         headers=H, timeout=15)
     except Exception:

@@ -108,14 +108,36 @@ SHORT_ID = "d1a247d5a8"
 sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ====================== MULTI-SERVER HELPERS ======================
+def _sb_retry(fn, attempts=3, delay=0.4):
+    """Ретрай для критичных Supabase-запросов (insert/update) — под конкурентной
+    нагрузкой соединение иногда рвётся транзитно ('Server disconnected'), терять
+    из-за этого уже готовую выдачу подписки нельзя."""
+    last_exc = None
+    for i in range(attempts):
+        try:
+            return fn()
+        except Exception as e:
+            last_exc = e
+            if i < attempts - 1:
+                time.sleep(delay)
+    raise last_exc
+
+
 def get_active_servers():
-    """Получить список активных серверов из Supabase (sort_order ASC)"""
-    try:
-        r = sb.table("servers").select("*").eq("is_active", True).order("sort_order").execute()
-        return r.data or []
-    except Exception as e:
-        print(f"get_active_servers error: {e}")
-        return []
+    """Получить список активных серверов из Supabase (sort_order ASC).
+    Ретрай на транзитный обрыв соединения — под конкурентной нагрузкой (наплыв
+    регистраций) Supabase иногда рвёт keep-alive соединение, без ретрая это
+    роняет issue_subscription целиком с 'no active servers in DB'."""
+    for attempt in range(2):
+        try:
+            r = sb.table("servers").select("*").eq("is_active", True).order("sort_order").execute()
+            return r.data or []
+        except Exception as e:
+            if attempt == 0:
+                time.sleep(0.3)
+                continue
+            print(f"get_active_servers error: {e}")
+            return []
 
 
 def xui_session(server=None):
@@ -202,6 +224,39 @@ def xui_session(server=None):
         raise Exception(f"Login failed on {server.get('country_name', 'server')}: HTTP {resp.status_code}, body={resp.text[:200]}")
     except Exception as e:
         raise Exception(f"Login failed on {server.get('country_name', 'server')}: {e}")
+
+
+# Кэш v2-сессий (cookie-логин) на сервер. Без кэша каждый addClient/updateClient
+# заново логинится в панель — под наплывом регистраций (рекламная кампания) это
+# десятки параллельных логинов в секунду на один и тот же 3X-UI, чего legacy-панели
+# на 1 vCPU не выдерживают (падают в "Server disconnected"/пустой ответ).
+_v2_session_cache = {}
+_v2_session_locks = defaultdict(threading.Lock)
+_V2_SESSION_TTL = 300  # сек
+
+# Ограничитель параллельных запросов к одной v2-панели. Логин теперь кэшируется,
+# но сам addClient/updateClient всё ещё бьёт по легаси-панели (1 vCPU) — под наплывом
+# 40 параллельных выдач это всё ещё кладёт слабый узел. 5 одновременных запросов —
+# эмпирически найденный на нагрузочном тесте баланс (не роняет панель, не душит очередь).
+_v2_server_semaphores = defaultdict(lambda: threading.Semaphore(5))
+
+
+def _get_v2_session(server, force_relogin=False):
+    """Логин в 3X-UI v2 с кэшем сессии на _V2_SESSION_TTL секунд.
+    force_relogin=True — сессия оказалась протухшей, но если её только что (<2с назад)
+    обновил другой параллельный поток — переиспользуем, а не логинимся заново хором."""
+    key = server["panel_url"]
+    fresh_window = 2 if force_relogin else _V2_SESSION_TTL
+    cached = _v2_session_cache.get(key)
+    if cached and (time.time() - cached["ts"] < fresh_window):
+        return cached["session"], server
+    with _v2_session_locks[key]:
+        cached = _v2_session_cache.get(key)
+        if cached and (time.time() - cached["ts"] < fresh_window):
+            return cached["session"], server
+        session, server = xui_session(server)
+        _v2_session_cache[key] = {"session": session, "ts": time.time()}
+        return session, server
 
 
 def _v3_session(server):
@@ -506,31 +561,39 @@ def xui_add_client_on_server(server, client_uuid, uid, devices, expire_ms):
         else:
             print(f"[{server.get('country_name')}] addClient v3 {client_uuid[:8]} FAIL: {msg}")
         return ok
-    # v2 (cookie-сессия)
-    try:
-        session, server = xui_session(server)
-        ts = int(datetime.utcnow().timestamp())
-        payload = {
-            "id": int(server["inbound_id"]),
-            "settings": json.dumps({"clients": [{
-                "id": client_uuid,
-                "email": f"user_{uid}_{ts}",
-                "limitIp": devices,
-                "totalGB": 0,
-                "expiryTime": expire_ms,
-                "enable": True,
-                "flow": "xtls-rprx-vision",
-            }]}),
-        }
-        url = server["panel_url"].rstrip("/")
-        r = session.post(f"{url}/panel/api/inbounds/addClient", json=payload, timeout=15)
-        result = r.json()
-        if result.get("success"):
-            print(f"[{server.get('country_name')}] addClient {client_uuid[:8]} OK")
-            return True
-        print(f"[{server.get('country_name')}] addClient failed: {result}")
-    except Exception as e:
-        print(f"[{server.get('country_name', '?')}] add_client error: {e}")
+    # v2 (cookie-сессия). Ретрай на транзитные сбои (обрыв соединения, пустой ответ
+    # под конкурентной нагрузкой) — legacy-панели (1 vCPU) не держат наплыв параллельных
+    # логинов, без ретрая часть регистраций в пиковый час теряет этот сервер.
+    for attempt in range(2):
+        try:
+            session, server = _get_v2_session(server, force_relogin=(attempt > 0))
+            ts = int(datetime.utcnow().timestamp())
+            payload = {
+                "id": int(server["inbound_id"]),
+                "settings": json.dumps({"clients": [{
+                    "id": client_uuid,
+                    "email": f"user_{uid}_{ts}",
+                    "limitIp": devices,
+                    "totalGB": 0,
+                    "expiryTime": expire_ms,
+                    "enable": True,
+                    "flow": "xtls-rprx-vision",
+                }]}),
+            }
+            url = server["panel_url"].rstrip("/")
+            with _v2_server_semaphores[url]:
+                r = session.post(f"{url}/panel/api/inbounds/addClient", json=payload, timeout=15)
+            result = r.json()
+            if result.get("success"):
+                print(f"[{server.get('country_name')}] addClient {client_uuid[:8]} OK")
+                return True
+            print(f"[{server.get('country_name')}] addClient failed: {result}")
+            return False
+        except Exception as e:
+            if attempt == 0:
+                time.sleep(0.4)
+                continue
+            print(f"[{server.get('country_name', '?')}] add_client error: {e}")
     return False
 
 
@@ -544,32 +607,37 @@ def xui_update_client_on_server(server, client_uuid, uid, devices, expire_ms):
         else:
             print(f"[{server.get('country_name')}] updateClient v3 {client_uuid[:8]} FAIL: {msg}")
         return ok
-    # v2 (cookie-сессия)
-    try:
-        session, server = xui_session(server)
-        ts = int(datetime.utcnow().timestamp())
-        payload = {
-            "id": int(server["inbound_id"]),
-            "settings": json.dumps({"clients": [{
-                "id": client_uuid,
-                "email": f"user_{uid}_{ts}",
-                "limitIp": devices,
-                "totalGB": 0,
-                "expiryTime": expire_ms,
-                "enable": True,
-                "flow": "xtls-rprx-vision",
-            }]}),
-        }
-        url = server["panel_url"].rstrip("/")
-        r = session.post(f"{url}/panel/api/inbounds/updateClient/{client_uuid}", json=payload, timeout=15)
-        result = r.json()
-        if result.get("success"):
-            print(f"[{server.get('country_name')}] updateClient {client_uuid[:8]} OK")
-            return True
-        print(f"[{server.get('country_name')}] updateClient failed ({result.get('msg', '')}) — trying addClient")
-        return xui_add_client_on_server(server, client_uuid, uid, devices, expire_ms)
-    except Exception as e:
-        print(f"[{server.get('country_name', '?')}] update_client error: {e}")
+    # v2 (cookie-сессия). Ретрай на транзитные сбои — см. комментарий в xui_add_client_on_server.
+    for attempt in range(2):
+        try:
+            session, server = _get_v2_session(server, force_relogin=(attempt > 0))
+            ts = int(datetime.utcnow().timestamp())
+            payload = {
+                "id": int(server["inbound_id"]),
+                "settings": json.dumps({"clients": [{
+                    "id": client_uuid,
+                    "email": f"user_{uid}_{ts}",
+                    "limitIp": devices,
+                    "totalGB": 0,
+                    "expiryTime": expire_ms,
+                    "enable": True,
+                    "flow": "xtls-rprx-vision",
+                }]}),
+            }
+            url = server["panel_url"].rstrip("/")
+            with _v2_server_semaphores[url]:
+                r = session.post(f"{url}/panel/api/inbounds/updateClient/{client_uuid}", json=payload, timeout=15)
+            result = r.json()
+            if result.get("success"):
+                print(f"[{server.get('country_name')}] updateClient {client_uuid[:8]} OK")
+                return True
+            print(f"[{server.get('country_name')}] updateClient failed ({result.get('msg', '')}) — trying addClient")
+            return xui_add_client_on_server(server, client_uuid, uid, devices, expire_ms)
+        except Exception as e:
+            if attempt == 0:
+                time.sleep(0.4)
+                continue
+            print(f"[{server.get('country_name', '?')}] update_client error: {e}")
     return False
 
 
@@ -781,8 +849,10 @@ def track_device(client_uuid: str, client_ip: str, user_agent: str,
     4. На любую ошибку — разрешаем (lose mode), чтобы не сломать сервис юзерам.
     """
     try:
-        # Игнорируем preview-запросы (превью ссылки в чате/соцсетях, не реальный клиент)
-        if _is_preview_ua(user_agent):
+        # Игнорируем preview-запросы (превью ссылки в чате/соцсетях, не реальный клиент).
+        # X-Hwid присылают только реальные приложения (Happ/V2RayTun) — такое устройство
+        # трекаем всегда, даже если UA нестандартный (кастомный UA в настройках подписки)
+        if not (hwid or "").strip() and _is_preview_ua(user_agent):
             return {"allowed": True, "reason": "preview_ignored", "device_id": None}
 
         # Находим подписку
@@ -1446,17 +1516,20 @@ def issue_subscription(uid: int, devices: int, days: int) -> dict:
             "notified_1d": False,
             "notified_expired": False,
         }
+        # Критично: клиенты уже созданы на VPN-панелях выше — если тут словим транзитный
+        # обрыв связи с Supabase и не сохраним, юзер останется без sub_url при готовом VPN.
+        # Ретраим, чтобы не терять успешную выдачу из-за случайного "Server disconnected".
         if sub_id:
             # Обновляем существующую запись (даже если была inactive) — не создаём дубли
-            sb.table("subscriptions").update(sub_data).eq("id", sub_id).execute()
+            _sb_retry(lambda: sb.table("subscriptions").update(sub_data).eq("id", sub_id).execute())
         else:
             # Первая выдача — создаём запись
             sub_data["started_at"] = now.isoformat()
-            sb.table("subscriptions").insert(sub_data).execute()
+            _sb_retry(lambda: sb.table("subscriptions").insert(sub_data).execute())
 
         # users.client_uuid устанавливается ОДИН раз при первой выдаче, больше не меняется
         if not existing_uuid:
-            sb.table("users").update({"client_uuid": client_uuid}).eq("user_id", uid).execute()
+            _sb_retry(lambda: sb.table("users").update({"client_uuid": client_uuid}).eq("user_id", uid).execute())
 
         # Списываем bonus_days если применили
         if bonus_days > 0:
@@ -3754,6 +3827,32 @@ def touch_session(session_id: int):
         pass
 
 
+# Кэш проверки admin-сессии в памяти процесса. Раньше КАЖДЫЙ /admin-api/* запрос
+# делал 2 похода в Supabase (SELECT сессии + UPDATE last_used_at) ещё до самого
+# запроса данных — при параллельной загрузке нескольких таблиц (и фоновом
+# автообновлении в панели) это заметно тормозило админку. Короткий TTL держит
+# правильность (логаут/протухание отражаются с задержкой не больше TTL).
+_admin_session_cache = {}
+_admin_session_touch = {}
+_ADMIN_SESSION_CACHE_TTL = 5       # сек — доверяем кэшу валидности сессии
+_ADMIN_SESSION_TOUCH_INTERVAL = 60  # сек — не пишем last_used_at чаще этого
+
+
+def _get_session_cached(token: str):
+    now = time.time()
+    cached = _admin_session_cache.get(token)
+    if cached and (now - cached["ts"] < _ADMIN_SESSION_CACHE_TTL):
+        return cached["session"]
+    s = get_session_by_token(token)
+    _admin_session_cache[token] = {"session": s, "ts": now}
+    return s
+
+
+def _invalidate_session_cache(token: str):
+    _admin_session_cache.pop(token, None)
+    _admin_session_touch.pop(token, None)
+
+
 # --- Middleware: на все /admin-api/* требуем cookie, кроме /auth/* и OPTIONS ---
 @app.before_request
 def _admin_auth_gate():
@@ -3765,16 +3864,23 @@ def _admin_auth_gate():
     # Auth endpoints — без проверки
     if p.startswith("/admin-api/auth/"):
         return None
-    # Дальше проверка cookie
+    # Дальше проверка cookie (с коротким in-memory кэшем — см. _get_session_cached)
     token = request.cookies.get("admin_session")
-    s = get_session_by_token(token)
+    s = _get_session_cached(token) if token else None
     if not s:
+        if token:
+            _invalidate_session_cache(token)
         resp = jsonify({"success": False, "error": "unauthorized", "code": "AUTH_REQUIRED"})
         resp.status_code = 401
         resp.headers["Access-Control-Allow-Origin"] = request.headers.get("Origin", "*")
         resp.headers["Access-Control-Allow-Credentials"] = "true"
         return resp
-    touch_session(s["id"])
+    # last_used_at пишем не чаще раза в минуту — не на каждый запрос
+    last_touch = _admin_session_touch.get(token, 0)
+    now = time.time()
+    if now - last_touch > _ADMIN_SESSION_TOUCH_INTERVAL:
+        touch_session(s["id"])
+        _admin_session_touch[token] = now
     # Прокидываем в request для возможного логирования
     request.admin_tg_id = int(s.get("tg_id"))
     request.admin_username = s.get("tg_username") or ""
@@ -4022,6 +4128,7 @@ def auth_logout():
             sb.table("admin_sessions").update({"is_revoked": True}).eq("session_token", token).execute()
         except Exception:
             pass
+        _invalidate_session_cache(token)
     resp = make_response(jsonify({"success": True}))
     resp.set_cookie("admin_session", "", max_age=0, path="/")
     return resp
@@ -4317,6 +4424,67 @@ def monitor_health():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route('/admin-api/monitor/incidents', methods=['GET', 'OPTIONS'])
+def monitor_incidents():
+    """Журнал инцидентов: непрерывные периоды is_up=False по каждому серверу,
+    склеенные из истории проверок. Не отдельная таблица — считается на лету
+    из server_health, чтобы не заводить лишнюю схему под то, что легко вывести."""
+    if request.method == 'OPTIONS':
+        return make_response('', 204)
+    try:
+        days = int(request.args.get("days", 7))
+        from datetime import timedelta
+        cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
+
+        servers_r = sb.table("servers").select("code,country_name,country_flag").eq("is_active", True).execute()
+        servers = {s["code"]: s for s in (servers_r.data or [])}
+
+        incidents = []
+        for code in servers:
+            rows = (sb.table("server_health").select("is_up,checked_at,error")
+                      .eq("server_code", code).gte("checked_at", cutoff)
+                      .order("checked_at").execute().data or [])
+            cur = None
+            for row in rows:
+                up = bool(row.get("is_up"))
+                ts = row["checked_at"]
+                if not up and cur is None:
+                    cur = {"server_code": code, "started_at": ts, "ended_at": None, "last_error": row.get("error")}
+                elif up and cur is not None:
+                    cur["ended_at"] = ts
+                    incidents.append(cur)
+                    cur = None
+                elif not up and cur is not None:
+                    cur["last_error"] = row.get("error") or cur["last_error"]
+            if cur is not None:
+                incidents.append(cur)  # ещё не закончился на момент запроса
+
+        def _parse_ts(raw):
+            # Postgres отдаёт микросекунды переменной длины (0-6 цифр) — Python 3.10
+            # fromisoformat() требует ровно 6 или ни одной, иначе падает. Дополняем нулями.
+            import re as _re_ts
+            s = raw.replace("Z", "+00:00")
+            s = _re_ts.sub(r"\.(\d+)", lambda m: "." + m.group(1)[:6].ljust(6, "0"), s, count=1)
+            return datetime.fromisoformat(s).replace(tzinfo=None)
+
+        def _dur_min(inc):
+            start = _parse_ts(inc["started_at"])
+            end = _parse_ts(inc["ended_at"]) if inc["ended_at"] else datetime.utcnow()
+            return round((end - start).total_seconds() / 60, 1)
+
+        for inc in incidents:
+            inc["duration_min"] = _dur_min(inc)
+            s = servers.get(inc["server_code"], {})
+            inc["server_name"] = s.get("country_name")
+            inc["flag"] = s.get("country_flag")
+            inc["ongoing"] = inc["ended_at"] is None
+
+        incidents.sort(key=lambda i: i["started_at"], reverse=True)
+        return jsonify({"incidents": incidents[:100]})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 # ==================== ANALYTICS ====================
 
 @app.route('/admin-api/analytics/funnel', methods=['GET', 'OPTIONS'])
@@ -4532,14 +4700,14 @@ def analytics_today():
         open_tix = sb.table("support_tickets").select("id", count="exact").in_("status", ["open", "in_progress"]).execute()
 
         # Последний статус каждого сервера из server_health
-        latest_health = sb.table("server_health").select("server_code,status").order("checked_at", desc=True).limit(100).execute().data
+        latest_health = sb.table("server_health").select("server_code,is_up").order("checked_at", desc=True).limit(100).execute().data
         seen_srv = set()
         offline_count = 0
         for row in latest_health:
             code = row.get("server_code") or row.get("code")
             if code and code not in seen_srv:
                 seen_srv.add(code)
-                if row.get("status") != "online":
+                if not row.get("is_up"):
                     offline_count += 1
 
         return jsonify({
@@ -4745,4 +4913,6 @@ def db_proxy(table):
 
 if __name__ == '__main__':
     threading.Thread(target=healthcheck_loop, daemon=True).start()
-    app.run(host='127.0.0.1', port=5000)
+    # threaded=True — иначе Flask dev-сервер обрабатывает по одному запросу за раз,
+    # что при наплыве (рекламная кампания) сериализует /sub/, /admin-api/, /yookassa/webhook
+    app.run(host='127.0.0.1', port=5000, threaded=True)

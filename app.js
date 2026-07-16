@@ -595,6 +595,7 @@ function showApp() {
   const ov = $('#appLoadingOverlay');
   if (ov) ov.style.display = 'flex';
   loadAll();
+  startAutoRefresh();
 }
 
 function showLogin() {
@@ -753,6 +754,128 @@ async function loadAll() {
     }
   }
 }
+
+/* ===================== LIVE REFRESH =====================
+   Точечное обновление секций (кнопка "Обновить" + фоновый поллинг)
+   без полного loadAll(). Бьёт по тем же /admin-api/db/<table>
+   эндпоинтам, что и обычная загрузка — отдельного бэкенда не требует. */
+
+// Каждая секция знает какие таблицы её кормят, куда их класть в state
+// и какой лёгкий render-хелпер перерисует только таблицу (без пересборки
+// тулбара — фильтры/поиск/скролл не сбрасываются).
+const REFRESH_SECTIONS = {
+  users:     { tables: ['users'],                                                    render: () => ($('#usersTbody')    ? renderUsersTable()    : renderUsers()) },
+  subs:      { tables: ['subscriptions'],                                            render: () => ($('#subsTbody')     ? renderSubsTable()     : renderSubs()) },
+  payments:  { tables: ['payments'],                                                 render: () => ($('#paymentsTbody') ? renderPaymentsTable() : renderPayments()) },
+  tickets:   { tables: ['support_tickets'],                                          render: () => ($('#ticketsTbody')  ? renderTicketsTable()  : renderTickets()) },
+  // Воронка кампаний считается по users/user_devices/payments — без них цифры
+  // ("Зарегались"/"Подключили"/"Оплатили" в карточке кампании) быстро протухают.
+  marketing: { tables: ['campaigns', 'campaign_clicks', 'users', 'user_devices', 'payments'], render: () => renderMarketing() },
+};
+const REFRESH_TABLE_STATE_KEY = { users: 'users', subscriptions: 'subs', payments: 'payments', support_tickets: 'tickets', campaigns: 'campaigns', campaign_clicks: 'campaignClicks', user_devices: 'userDevices' };
+const REFRESH_TABLE_QUERY = {
+  users: 'select=*&order=created_at.desc',
+  subscriptions: 'select=*&order=created_at.desc',
+  payments: 'select=*&order=created_at.desc',
+  support_tickets: 'select=*&order=created_at.desc',
+  campaigns: 'select=*&order=created_at.desc',
+  campaign_clicks: 'select=*&order=created_at.desc',
+  user_devices: 'select=*&is_active=eq.true',
+};
+
+// Пока открыта модалка/карточка юзера — не подменяем данные под рукой у админа
+function isEditingUi() {
+  return !!(document.querySelector('.modal-bg.open') || $('#userSheet')?.classList.contains('open') || $('#cmdPalette')?.classList.contains('open'));
+}
+
+function touchLiveDot() {
+  const d = $('#liveDot');
+  if (d) d.textContent = 'обновлено ' + new Date().toLocaleTimeString('ru-RU');
+}
+
+// Точечное обновление одной секции. opts.silent=true — без тостов об ошибке
+// и с уведомлением только о новых записях (для фонового поллинга).
+async function refreshSection(page, opts = {}) {
+  const cfg = REFRESH_SECTIONS[page];
+  if (!cfg) return;
+  const silent = !!opts.silent;
+  const btn = $(`#refreshBtn-${page}`);
+  if (btn) btn.classList.add('spinning');
+  try {
+    let newsMsg = null;
+    for (const table of cfg.tables) {
+      const key = REFRESH_TABLE_STATE_KEY[table];
+      const prevIds = new Set((state[key] || []).map(r => r.id ?? r.user_id));
+      const fresh = await sbGet(table, REFRESH_TABLE_QUERY[table]);
+      if (silent) {
+        const added = fresh.filter(r => !prevIds.has(r.id ?? r.user_id));
+        if (added.length && table === 'users') {
+          newsMsg = added.length === 1 ? '🆕 Новый пользователь зарегистрировался' : `🆕 Новых пользователей: ${added.length}`;
+        }
+        if (added.length && table === 'payments') {
+          const succ = added.filter(p => p.status === 'succeeded');
+          if (succ.length) newsMsg = succ.length === 1 ? `💰 Новая оплата: ${money(succ[0].amount)}` : `💰 Новых оплат: ${succ.length}`;
+        }
+        if (added.length && table === 'support_tickets') {
+          newsMsg = added.length === 1 ? '📩 Новый тикет в поддержку' : `📩 Новых тикетов: ${added.length}`;
+        }
+      }
+      state[key] = fresh;
+    }
+    if (state.currentPage === page) cfg.render();
+    renderNavCounts();
+    touchLiveDot();
+    if (newsMsg) toast(newsMsg, 'success');
+  } catch (e) {
+    console.error(`refreshSection(${page}) failed:`, e);
+    if (!silent) toast('Не удалось обновить: ' + e.message, 'error');
+  } finally {
+    if (btn) btn.classList.remove('spinning');
+  }
+}
+
+// Фоновый поллинг активной секции. Останавливается на скрытой вкладке
+// и пока открыта модалка — не тратим запросы и не мешаем редактированию.
+let autoRefreshTimer = null;
+let autoRefreshOn = true;
+let autoRefreshInFlight = false;
+const AUTO_REFRESH_MS = 60000; // раз в минуту — обновляет только активную вкладку
+
+async function autoRefreshTick() {
+  if (!autoRefreshOn || document.hidden || isEditingUi() || !state.loaded || autoRefreshInFlight) return;
+  const page = state.currentPage;
+  // Обновляем фоном только на страницах с собственным разделом (users/subs/payments/
+  // tickets/marketing) — на остальных (дашборд и т.д.) ничего лишнего не тянем,
+  // счётчики в сайдбаре обновятся сами при следующем ручном/полном обновлении.
+  if (!REFRESH_SECTIONS[page]) return;
+  autoRefreshInFlight = true;
+  try {
+    await refreshSection(page, { silent: true });
+  } finally {
+    autoRefreshInFlight = false;
+  }
+}
+
+function startAutoRefresh() {
+  if (autoRefreshTimer) return;
+  autoRefreshTimer = setInterval(autoRefreshTick, AUTO_REFRESH_MS);
+}
+function stopAutoRefresh() {
+  if (autoRefreshTimer) { clearInterval(autoRefreshTimer); autoRefreshTimer = null; }
+}
+function toggleAutoRefresh() {
+  autoRefreshOn = !autoRefreshOn;
+  const d = $('#liveDot');
+  if (d) {
+    d.classList.toggle('live-dot-off', !autoRefreshOn);
+    d.title = autoRefreshOn ? 'Автообновление включено (клик — выключить)' : 'Автообновление выключено (клик — включить)';
+  }
+  toast(autoRefreshOn ? '🔄 Автообновление включено' : '⏸ Автообновление выключено', 'success', { duration: 1800 });
+  if (autoRefreshOn) autoRefreshTick();
+}
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) autoRefreshTick();
+});
 
 /* ===================== NAVIGATION ===================== */
 const PAGE_META = {
@@ -1169,6 +1292,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Top actions
   $('#reloadBtn').addEventListener('click', () => { loadAll(); toast('Обновляем...', 'success', { duration: 1500 }); });
+  $('#liveDot').addEventListener('click', toggleAutoRefresh);
+  $('#liveDot').title = 'Автообновление включено (клик — выключить)';
   $('#logoutBtn').addEventListener('click', doLogout);
   $('#quickGrantBtn').addEventListener('click', () => { $('#grantUid').value = ''; $('#grantUserHint').textContent = 'Пользователь должен сначала запустить бот.'; openModal('grantModal'); });
   $('#cmdTrigger').addEventListener('click', openCmd);
@@ -1600,6 +1725,7 @@ function renderUsers() {
         ${campOptions}
       </select>
       <div class="toolbar-grow"></div>
+      <button class="btn btn-ghost btn-sm btn-icon" id="refreshBtn-users" title="Обновить данные" onclick="refreshSection('users')">${ICONS.refresh}</button>
       <span class="counter" id="usersCounter">—</span>
     </div>
 
@@ -1856,6 +1982,7 @@ function renderSubs() {
         <option value="multi">Продлевались (2+)</option>
       </select>
       <div class="toolbar-grow"></div>
+      <button class="btn btn-ghost btn-sm btn-icon" id="refreshBtn-subs" title="Обновить данные" onclick="refreshSection('subs')">${ICONS.refresh}</button>
       <span class="counter" id="subsCounter">—</span>
     </div>
 
@@ -2003,6 +2130,7 @@ function renderPayments() {
         <option value="registered">Чек оформлен</option>
       </select>
       <div class="toolbar-grow"></div>
+      <button class="btn btn-ghost btn-sm btn-icon" id="refreshBtn-payments" title="Обновить данные" onclick="refreshSection('payments')">${ICONS.refresh}</button>
       <span class="counter" id="paymentsCounter">—</span>
       <button class="btn btn-ghost btn-sm" id="exportCsvBtn" title="Скачать CSV">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
@@ -2431,6 +2559,7 @@ function renderTickets() {
         <option value="all">Все</option>
       </select>
       <div class="toolbar-grow"></div>
+      <button class="btn btn-ghost btn-sm btn-icon" id="refreshBtn-tickets" title="Обновить данные" onclick="refreshSection('tickets')">${ICONS.refresh}</button>
       <span class="counter" id="ticketsCounter">—</span>
     </div>
 
@@ -3122,7 +3251,7 @@ function renderMarketing() {
     <div class="page-head">
       <div class="page-title">📣 UTM-кампании</div>
       <div class="flex gap-2">
-        <button class="btn btn-ghost" onclick="loadAll()" title="Обновить (R)">
+        <button class="btn btn-ghost" id="refreshBtn-marketing" onclick="refreshSection('marketing')" title="Обновить данные">
           ${ICONS.refresh} Обновить
         </button>
         <button class="btn btn-primary" data-perm="marketing.manage_campaigns" onclick="openCampaignModal()" title="Создать (N)">
@@ -3385,9 +3514,25 @@ async function saveCampaign() {
 
 /* === CAMPAIGN DETAILS 2026-05 === */
 /* === MARKETING FIXES 2026-05 === */
-function showCampaignDetails(campaignCode) {
+async function showCampaignDetails(campaignCode) {
   const c = (state.campaigns || []).find(x => x.code === campaignCode);
   if (!c) { toast('Кампания не найдена', 'error'); return; }
+
+  // Воронка строится по state.users/userDevices/payments — они могли устареть,
+  // если админка давно не делала полный reload. Подтягиваем свежие данные именно
+  // в момент открытия карточки, чтобы цифры (особенно "Подключили") были верными.
+  try {
+    const [users, userDevices, payments] = await Promise.all([
+      sbGet('users', 'select=*&order=created_at.desc'),
+      sbGet('user_devices', 'select=*&is_active=eq.true'),
+      sbGet('payments', 'select=*&order=created_at.desc'),
+    ]);
+    state.users = users;
+    state.userDevices = userDevices;
+    state.payments = payments;
+  } catch (e) {
+    console.warn('showCampaignDetails: fresh data fetch failed, using cached state:', e);
+  }
 
   // Воронка
   const campUsers = (state.users || []).filter(u => u.campaign_code === campaignCode);
@@ -3847,7 +3992,7 @@ async function renderMonitor() {
   host.innerHTML = `
     <div class="lb-page-head">
       <h2>Мониторинг серверов</h2>
-      <div class="lb-page-sub">Здоровье VPN-узлов в реальном времени. Доступность, задержка, клиенты, Reality-донор.</div>
+      <div class="lb-page-sub">Статус карточки = реальная доступность VPN (TLS-хендшейк боевого порта), а не панели управления — это разные вещи: панель может тормозить при полностью рабочем VPN, и наоборот.</div>
     </div>
     <div class="toolbar">
       <label class="mon-ctl">Проверять каждые
@@ -3887,6 +4032,13 @@ async function renderMonitor() {
         </div>
       </div>
     </div>
+    <div class="card" style="margin-top:20px;padding:18px 20px 12px">
+      <div class="card-head" style="margin-bottom:8px">
+        <div class="card-title">🚨 Инциденты</div>
+        <div class="card-sub">Непрерывные периоды недоступности VPN, склеенные из истории проверок</div>
+      </div>
+      <div id="monIncidents"><div class="empty-state">Загрузка...</div></div>
+    </div>
   `;
   // загрузить текущий интервал
   try {
@@ -3901,10 +4053,11 @@ async function renderMonitor() {
     } catch (er) { toast('Ошибка сохранения интервала'); }
   });
   $('#monWindow').addEventListener('change', e => { monState.hours = parseInt(e.target.value); loadMonitorCharts(); });
-  $('#monRefresh').addEventListener('click', () => { loadMonitorLatest(); loadMonitorCharts(); });
+  $('#monRefresh').addEventListener('click', () => { loadMonitorLatest(); loadMonitorCharts(); loadMonitorIncidents(); });
 
   loadMonitorLatest();
   loadMonitorCharts();
+  loadMonitorIncidents();
 
   // авто-обновление карточек каждые 30 сек пока на странице
   if (monState.timer) clearInterval(monState.timer);
@@ -3943,15 +4096,48 @@ async function loadMonitorLatest() {
           <div class="mon-metric"><span>Задержка</span><b>${lat}</b></div>
           <div class="mon-metric"><span>Uptime 24ч</span><b>${uptime}</b></div>
           <div class="mon-metric"><span>Клиентов</span><b>${clients}</b></div>
-          <div class="mon-metric"><span>Xray :443</span><b>${xray}</b></div>
-          <div class="mon-metric"><span>Reality-донор</span><b>${target}</b></div>
+          <div class="mon-metric"><span title="Голый TCP-коннект на VPN-порт">Порт открыт</span><b>${xray}</b></div>
+          <div class="mon-metric"><span title="TLS-хендшейк до SNI-донора Reality">Reality-донор</span><b>${target}</b></div>
           <div class="mon-metric"><span>SNI</span><b class="mon-sni">${esc(h.sni || s.sni || '—')}</b></div>
         </div>
-        <div class="mon-card-foot">Проверено: ${checkedAt}${h.error ? ` · <span class="log-error">${esc(h.error.slice(0,40))}</span>` : ''}</div>
+        <div class="mon-card-foot">Проверено: ${checkedAt}${h.error ? ` · <span class="log-error">${esc(h.error.slice(0,60))}</span>` : ''}</div>
       </div>`;
     }).join('');
   } catch (e) {
     box.innerHTML = '<div class="empty-state">Ошибка загрузки состояния серверов</div>';
+  }
+}
+
+function _monDurationLabel(min) {
+  if (min < 60) return Math.round(min) + ' мин';
+  const h = Math.floor(min / 60), m = Math.round(min % 60);
+  return m ? `${h} ч ${m} мин` : `${h} ч`;
+}
+
+async function loadMonitorIncidents() {
+  const box = $('#monIncidents');
+  if (!box) return;
+  try {
+    const data = await proxy('/admin-api/monitor/incidents?days=7');
+    const incidents = data.incidents || [];
+    if (!incidents.length) {
+      box.innerHTML = '<div class="empty-state">За последние 7 дней падений не было 🎉</div>';
+      return;
+    }
+    box.innerHTML = `<div class="tbl-wrap"><table class="tbl">
+      <thead><tr><th>Сервер</th><th>Начало</th><th>Конец</th><th>Длительность</th><th>Причина</th></tr></thead>
+      <tbody>${incidents.map(i => `
+        <tr class="${i.ongoing ? 'mon-incident-ongoing' : ''}">
+          <td>${esc(i.flag || '')} ${esc(i.server_name || i.server_code)}</td>
+          <td class="mono">${new Date(i.started_at).toLocaleString('ru-RU')}</td>
+          <td class="mono">${i.ongoing ? '<span class="tag tag-red">ещё не восстановлен</span>' : new Date(i.ended_at).toLocaleString('ru-RU')}</td>
+          <td>${_monDurationLabel(i.duration_min)}</td>
+          <td class="text-muted">${esc(i.last_error || '—')}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table></div>`;
+  } catch (e) {
+    box.innerHTML = '<div class="empty-state">Ошибка загрузки инцидентов</div>';
   }
 }
 
