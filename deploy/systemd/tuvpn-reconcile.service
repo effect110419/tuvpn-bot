@@ -1,0 +1,12 @@
+[Unit]
+Description=TuVPN Reconcile — сверка клиентов на VPN-панелях с активными подписками
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/root/tuvpn
+ExecStart=/usr/bin/python3 /root/tuvpn/reconcile_servers.py
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tuvpn-reconcile

@@ -1,0 +1,11 @@
+[Unit]
+Description=TuVPN Reconcile — раз в сутки, в 02:00 UTC (05:00 МСК, низкий трафик)
+Requires=tuvpn-reconcile.service
+
+[Timer]
+OnCalendar=*-*-* 02:00:00
+RandomizedDelaySec=600
+Persistent=true
+
+[Install]
+WantedBy=timers.target
