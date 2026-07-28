@@ -443,7 +443,7 @@ https://sub.tuvpn.ru/sub/{client_uuid}
 ```
 
 Обрабатывается `GET /sub/<client_uuid>` в `proxy.py`. Возвращает JSON-массив конфигов.
-Заголовки ответа: `profile-title`, `profile-update-interval: 6`, `subscription-userinfo`, `announce`.
+Заголовки ответа: `profile-title`, `profile-update-interval: 1`, `subscription-userinfo`, `announce`.
 
 ## Бот-команды пользователей
 

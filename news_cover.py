@@ -3,8 +3,15 @@
 Генератор футуристичных обложек для постов @tuvpn_news.
 
 Чистый PIL, без внешних API: тёмный фон, неоновые свечения,
-перспективная сетка, крупный заголовок (акцентные слова в *звёздочках*),
-брендинг TuVPN. Палитра и мотив приходят из news_topics.py.
+крупный заголовок (акцентные слова в *звёздочках*), брендинг TuVPN.
+Палитра и мотив приходят из news_topics.py.
+
+Фон каждый раз собирается из разных «сцен» (BG_STYLES) — сетка-пол,
+гекс-решётка, монтажные трассы, созвездие-граф, аврора-волны, солнечные
+лучи, изометрические кубы — плюс случайный тон градиента и раскладка
+световых пятен. Это специально сделано так, чтобы соседние посты не
+выглядели однотипно («одни и те же полосы»), даже если тема и мотив
+повторяются.
 
 generate_cover(title, subtitle, palette, motif, seed) -> bytes (PNG)
 """
@@ -19,10 +26,19 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 W, H = 1280, 720
 FONTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
 
-BG_TOP = (10, 13, 28)
-BG_BOTTOM = (16, 12, 38)
 TEXT_MAIN = (244, 246, 255)
 TEXT_DIM = (150, 158, 190)
+
+# базовые тёмные пары фона — каждый раз выбирается одна и слегка тонируется
+# под акцентный цвет темы, чтобы фон не был всегда одним и тем же индиго-градиентом
+BG_BASES = [
+    ((8, 10, 24), (14, 10, 34)),    # индиго-чёрный
+    ((6, 14, 22), (10, 8, 28)),     # тёмно-бирюзовый
+    ((12, 8, 20), (22, 8, 30)),     # тёмно-фиолетовый
+    ((6, 10, 18), (16, 14, 26)),    # сине-стальной
+    ((11, 8, 14), (24, 10, 20)),    # тёмно-бордовый
+    ((7, 12, 16), (9, 20, 26)),     # тёмно-изумрудный
+]
 
 
 def _hex(c: str) -> tuple:
@@ -36,13 +52,31 @@ def _font(name: str, size: int) -> ImageFont.FreeTypeFont:
 
 # ── базовые слои ─────────────────────────────────────────────────────
 
-def _gradient_bg() -> Image.Image:
-    """Вертикальный градиент фона."""
-    grad = Image.new("RGB", (1, H))
+def _gradient_bg(rng: random.Random, a1: tuple, a2: tuple) -> Image.Image:
+    """Вертикальный градиент с шансом лёгкого горизонтального тонового сдвига
+    (ощущение диагонали). База и тонировка каждый раз разные."""
+    top, bottom = rng.choice(BG_BASES)
+    tint = a1 if rng.random() < 0.5 else a2
+    mix = 0.05
+    top = tuple(int(c * (1 - mix) + t * mix) for c, t in zip(top, tint))
+    bottom = tuple(int(c * (1 - mix) + t * mix) for c, t in zip(bottom, tint))
+
+    vgrad = Image.new("RGB", (1, H))
     for y in range(H):
         t = y / H
-        grad.putpixel((0, y), tuple(int(a + (b - a) * t) for a, b in zip(BG_TOP, BG_BOTTOM)))
-    return grad.resize((W, H))
+        vgrad.putpixel((0, y), tuple(int(a + (b - a) * t) for a, b in zip(top, bottom)))
+    vgrad = vgrad.resize((W, H))
+
+    if rng.random() < 0.45:
+        left = tuple(min(255, int(c * 1.1)) for c in top)
+        right = tuple(int(c * 0.88) for c in bottom)
+        hgrad = Image.new("RGB", (W, 1))
+        for x in range(W):
+            t = x / W
+            hgrad.putpixel((x, 0), tuple(int(a + (b - a) * t) for a, b in zip(left, right)))
+        hgrad = hgrad.resize((W, H))
+        vgrad = Image.blend(vgrad, hgrad, 0.22)
+    return vgrad
 
 
 def _add_glow(img: Image.Image, cx: int, cy: int, r: int, color: tuple, alpha: int, blur: int = 160):
@@ -54,31 +88,18 @@ def _add_glow(img: Image.Image, cx: int, cy: int, r: int, color: tuple, alpha: i
     img.alpha_composite(layer)
 
 
-def _add_grid(img: Image.Image, color: tuple, rng: random.Random):
-    """Перспективная сетка-«пол» в нижней части."""
-    layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    d = ImageDraw.Draw(layer)
-    horizon = H - rng.randint(210, 260)
-    vx = rng.randint(W // 2 - 150, W // 2 + 250)  # точка схода
-
-    for i in range(-14, 15):
-        x_bottom = vx + i * 170
-        d.line([(vx, horizon), (x_bottom, H)], fill=color + (26,), width=2)
-    y = horizon
-    step = 7.0
-    while y < H:
-        a = int(14 + (y - horizon) / (H - horizon) * 26)
-        d.line([(0, int(y)), (W, int(y))], fill=color + (a,), width=1)
-        y += step
-        step *= 1.38
-    # линия горизонта чуть ярче + свечение
-    d.line([(0, horizon), (W, horizon)], fill=color + (60,), width=2)
-    layer = layer.filter(ImageFilter.GaussianBlur(0.6))
-    img.alpha_composite(layer)
-    glow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    gd = ImageDraw.Draw(glow)
-    gd.line([(0, horizon), (W, horizon)], fill=color + (70,), width=6)
-    img.alpha_composite(glow.filter(ImageFilter.GaussianBlur(14)))
+def _add_ambient_glows(img: Image.Image, a1: tuple, a2: tuple, rng: random.Random):
+    """2–4 фоновых световых пятна в случайных местах — база освещения сцены."""
+    spots = [
+        (rng.randint(880, 1120), rng.randint(260, 420), rng.randint(280, 360), a1, rng.randint(48, 66)),
+        (rng.randint(60, 280), H - rng.randint(60, 180), rng.randint(260, 320), a2, rng.randint(42, 58)),
+        (rng.randint(280, 720), rng.randint(-90, 60), rng.randint(220, 280), a2, rng.randint(28, 40)),
+    ]
+    if rng.random() < 0.5:
+        spots.append((rng.randint(200, 1080), rng.randint(150, 600), rng.randint(160, 240),
+                      rng.choice([a1, a2]), rng.randint(20, 34)))
+    for cx, cy, r, color, alpha in spots:
+        _add_glow(img, cx, cy, r, color, alpha)
 
 
 def _add_particles(img: Image.Image, colors: list, rng: random.Random, n: int = 90):
@@ -95,14 +116,16 @@ def _add_particles(img: Image.Image, colors: list, rng: random.Random, n: int = 
 
 
 def _add_orbits(img: Image.Image, color: tuple, rng: random.Random):
-    """Декоративные дуги-орбиты в правом верхнем углу."""
+    """Декоративные дуги-орбиты в углу."""
     layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(layer)
-    cx, cy = W - rng.randint(60, 160), rng.randint(30, 120)
+    corner = rng.choice(["tr", "tl"])
+    cx = (W - rng.randint(60, 160)) if corner == "tr" else rng.randint(60, 160)
+    cy = rng.randint(30, 120)
     for i, r in enumerate((140, 210, 290, 380)):
         a = 40 - i * 8
-        d.arc([cx - r, cy - r, cx + r, cy + r], start=60, end=290, fill=color + (a,), width=2)
-    # точка-спутник на второй орбите
+        start, end = (60, 290) if corner == "tr" else (250, 480)
+        d.arc([cx - r, cy - r, cx + r, cy + r], start=start, end=end, fill=color + (a,), width=2)
     ang = math.radians(rng.randint(120, 250))
     px, py = cx + 210 * math.cos(ang), cy + 210 * math.sin(ang)
     d.ellipse([px - 4, py - 4, px + 4, py + 4], fill=color + (170,))
@@ -129,13 +152,202 @@ def _vignette(img: Image.Image):
     img.alpha_composite(dark)
 
 
-# ── мотивы (крупный полупрозрачный глиф справа) ──────────────────────
+# ── сцены фона (выбирается одна случайно на каждую обложку) ──────────
+# Каждая функция сама решает, где рисовать, чтобы не перекрывать зону
+# заголовка (условно x < 830, вертикальный центр) — держим там низкую альфу.
 
-def _motif_layer(motif: str, color: tuple, color2: tuple) -> Image.Image:
-    """Рисует глиф ~420px в правой части, контурный стиль + свечение."""
+def _style_grid_floor(img: Image.Image, a1: tuple, a2: tuple, rng: random.Random):
+    """Перспективная сетка-«пол» с точкой схода — классика прошлой версии."""
+    color = a1 if rng.random() < 0.6 else a2
     layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(layer)
-    cx, cy, s = 1010, 360, 190  # центр и радиус глифа
+    horizon = H - rng.randint(210, 260)
+    vx = rng.randint(W // 2 - 150, W // 2 + 250)
+
+    for i in range(-14, 15):
+        x_bottom = vx + i * 170
+        d.line([(vx, horizon), (x_bottom, H)], fill=color + (26,), width=2)
+    y = horizon
+    step = 7.0
+    while y < H:
+        a = int(14 + (y - horizon) / (H - horizon) * 26)
+        d.line([(0, int(y)), (W, int(y))], fill=color + (a,), width=1)
+        y += step
+        step *= 1.38
+    d.line([(0, horizon), (W, horizon)], fill=color + (60,), width=2)
+    layer = layer.filter(ImageFilter.GaussianBlur(0.6))
+    img.alpha_composite(layer)
+    glow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    gd = ImageDraw.Draw(glow)
+    gd.line([(0, horizon), (W, horizon)], fill=color + (70,), width=6)
+    img.alpha_composite(glow.filter(ImageFilter.GaussianBlur(14)))
+
+
+def _style_hex_mesh(img: Image.Image, a1: tuple, a2: tuple, rng: random.Random):
+    """Гексагональная решётка, наискось перекрывающая нижнюю/правую часть кадра."""
+    color = a1 if rng.random() < 0.5 else a2
+    layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(layer)
+    size = rng.randint(46, 64)
+    band_top = rng.randint(320, 420)
+    dx, dy = size * 1.5, size * math.sqrt(3)
+    row = 0
+    y = band_top
+    while y < H + size:
+        offset = (dx / 2) if row % 2 else 0
+        x = -size + offset
+        while x < W + size:
+            pts = [(x + size * math.cos(math.radians(a)), y + size * math.sin(math.radians(a)))
+                   for a in range(0, 360, 60)]
+            fade = max(0, (y - band_top) / max(1, (H - band_top)))
+            alpha = int(10 + fade * 26)
+            d.polygon(pts, outline=color + (alpha,), width=1)
+            x += dx
+        y += dy / 2
+        row += 1
+    img.alpha_composite(layer.filter(ImageFilter.GaussianBlur(0.4)))
+
+
+def _style_circuit(img: Image.Image, a1: tuple, a2: tuple, rng: random.Random):
+    """Монтажные трассы в стиле печатной платы — ломаные линии с контактными площадками."""
+    layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(layer)
+    n_traces = rng.randint(9, 14)
+    for _ in range(n_traces):
+        color = a1 if rng.random() < 0.5 else a2
+        # стартуем преимущественно справа/снизу, чтобы не спорить с заголовком слева
+        x, y = rng.randint(700, W), rng.randint(0, H)
+        segs = rng.randint(3, 6)
+        pts = [(x, y)]
+        for _ in range(segs):
+            if rng.random() < 0.5:
+                x += rng.choice([-1, 1]) * rng.randint(40, 140)
+            else:
+                y += rng.choice([-1, 1]) * rng.randint(40, 140)
+            x = max(600, min(W, x))
+            y = max(0, min(H, y))
+            pts.append((x, y))
+        d.line(pts, fill=color + (34,), width=2)
+        for px, py in pts[::2]:
+            r = rng.choice([3, 4, 5])
+            d.ellipse([px - r, py - r, px + r, py + r], outline=color + (60,), width=2)
+    img.alpha_composite(layer.filter(ImageFilter.GaussianBlur(0.3)))
+
+
+def _style_constellation(img: Image.Image, a1: tuple, a2: tuple, rng: random.Random):
+    """Узлы-звёзды, соединённые тонкими линиями — образ сети/графа."""
+    layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(layer)
+    n_nodes = rng.randint(16, 24)
+    nodes = [(rng.randint(0, W), rng.randint(0, H - 220)) for _ in range(n_nodes)]
+    for i, (x1, y1) in enumerate(nodes):
+        for x2, y2 in nodes[i + 1:]:
+            dist = math.hypot(x1 - x2, y1 - y2)
+            if dist < 210:
+                a = int(62 * (1 - dist / 210))
+                d.line([(x1, y1), (x2, y2)], fill=(a1 if rng.random() < 0.5 else a2) + (a,), width=1)
+    for x, y in nodes:
+        color = a1 if rng.random() < 0.5 else a2
+        r = rng.choice([2, 3, 3, 4])
+        d.ellipse([x - r - 3, y - r - 3, x + r + 3, y + r + 3], fill=color + (40,))  # мягкое гало узла
+        d.ellipse([x - r, y - r, x + r, y + r], fill=color + (180,))
+    img.alpha_composite(layer.filter(ImageFilter.GaussianBlur(0.4)))
+
+
+def _style_aurora(img: Image.Image, a1: tuple, a2: tuple, rng: random.Random):
+    """Плавные светящиеся ленты-волны, как северное сияние — с ярким тонким гребнем поверх,
+    чтобы волна читалась, а не растворялась в фоне."""
+    for band in range(rng.randint(2, 3)):
+        color = a1 if band % 2 == 0 else a2
+        base_y = rng.randint(80, H - 120)
+        amp = rng.randint(60, 140)
+        freq = rng.uniform(1.2, 2.4)
+        phase = rng.uniform(0, math.tau)
+        width = rng.randint(50, 90)
+
+        layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        d = ImageDraw.Draw(layer)
+        pts_top, pts_bot, pts_core = [], [], []
+        for x in range(0, W + 20, 20):
+            yy = base_y + amp * math.sin(freq * x / W * math.tau + phase)
+            pts_top.append((x, yy - width / 2))
+            pts_bot.append((x, yy + width / 2))
+            pts_core.append((x, yy))
+        d.polygon(pts_top + pts_bot[::-1], fill=color + (36,))
+        img.alpha_composite(layer.filter(ImageFilter.GaussianBlur(30)))
+
+        core = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        cd = ImageDraw.Draw(core)
+        cd.line(pts_core, fill=color + (90,), width=3)
+        img.alpha_composite(core.filter(ImageFilter.GaussianBlur(3)))
+
+
+def _style_radial_rays(img: Image.Image, a1: tuple, a2: tuple, rng: random.Random):
+    """Расходящиеся лучи из точки за кадром — целимся в периметр канваса, чтобы лучи
+    гарантированно пересекали кадр, а не терялись за краем."""
+    layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(layer)
+    ox, oy = rng.choice([(-100, -60), (W + 100, -60), (-100, H + 60), (W + 100, H + 60)])
+    n_rays = rng.randint(18, 26)
+    for i in range(n_rays):
+        edge = rng.choice(["top", "bottom", "left", "right"])
+        if edge == "top":
+            tx, ty = rng.randint(0, W), 0
+        elif edge == "bottom":
+            tx, ty = rng.randint(0, W), H
+        elif edge == "left":
+            tx, ty = 0, rng.randint(0, H)
+        else:
+            tx, ty = W, rng.randint(0, H)
+        dx, dy = tx - ox, ty - oy
+        ex, ey = ox + dx * 1.6, oy + dy * 1.6
+        color = a1 if i % 2 == 0 else a2
+        d.line([(ox, oy), (ex, ey)], fill=color + (20,), width=2)
+    for r_ in (260, 380, 500):
+        d.arc([ox - r_, oy - r_, ox + r_, oy + r_], start=0, end=360, fill=a1 + (26,), width=1)
+    img.alpha_composite(layer.filter(ImageFilter.GaussianBlur(0.8)))
+
+
+def _style_isometric(img: Image.Image, a1: tuple, a2: tuple, rng: random.Random):
+    """Плавающие изометрические кубы-контуры — техно-декор без явных полос."""
+    layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(layer)
+    n_cubes = rng.randint(7, 11)
+    for _ in range(n_cubes):
+        cx, cy = rng.randint(650, W - 40), rng.randint(40, H - 60)
+        s = rng.randint(26, 58)
+        color = a1 if rng.random() < 0.5 else a2
+        alpha = rng.randint(24, 46)
+        top = (cx, cy - s)
+        left = (cx - s * 0.87, cy - s * 0.5)
+        right = (cx + s * 0.87, cy - s * 0.5)
+        bottom_l = (cx - s * 0.87, cy + s * 0.5)
+        bottom_r = (cx + s * 0.87, cy + s * 0.5)
+        bottom = (cx, cy + s)
+        d.line([top, left, bottom_l, bottom, bottom_r, right, top], fill=color + (alpha,), width=2)
+        d.line([left, (cx, cy), right], fill=color + (alpha,), width=1)
+        d.line([(cx, cy), bottom], fill=color + (alpha,), width=1)
+    img.alpha_composite(layer.filter(ImageFilter.GaussianBlur(0.3)))
+
+
+BG_STYLES = [
+    _style_grid_floor,
+    _style_hex_mesh,
+    _style_circuit,
+    _style_constellation,
+    _style_aurora,
+    _style_radial_rays,
+    _style_isometric,
+]
+
+
+# ── мотивы (крупный полупрозрачный глиф справа) ──────────────────────
+
+def _motif_layer(motif: str, color: tuple, color2: tuple, cx: int = 1010, cy: int = 360, s: int = 190) -> Image.Image:
+    """Рисует глиф в правой части, контурный стиль + свечение.
+    cx/cy/s чуть гуляют от обложки к обложке (см. generate_cover) для разнообразия."""
+    layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(layer)
     w_main = 10
     c = color + (78,)
     c2 = color2 + (60,)
@@ -380,21 +592,28 @@ def _draw_brand(img: Image.Image, accent: tuple):
 
 def generate_cover(title: str, subtitle: str = "", palette=("#22d3ee", "#8b5cf6"),
                    motif: str = "shield", seed: int | None = None) -> bytes:
-    """Собирает обложку, возвращает PNG-байты."""
+    """Собирает обложку, возвращает PNG-байты.
+    Фон — случайная сцена из BG_STYLES + случайный тон градиента + случайная
+    раскладка световых пятен, так что даже одна и та же тема каждый раз
+    выглядит по-новому."""
     rng = random.Random(seed)
     a1, a2 = _hex(palette[0]), _hex(palette[1])
 
-    img = _gradient_bg().convert("RGBA")
+    img = _gradient_bg(rng, a1, a2).convert("RGBA")
 
-    # неоновые пятна: основное за глифом, вторичное слева-снизу, третье сверху
-    _add_glow(img, 1020, 340, 330, a1, 60)
-    _add_glow(img, rng.randint(80, 260), H - rng.randint(60, 160), 300, a2, 52)
-    _add_glow(img, rng.randint(300, 700), rng.randint(-80, 40), 260, a2, 36)
+    _add_ambient_glows(img, a1, a2, rng)
+    _add_particles(img, [a1, a2], rng, n=rng.randint(70, 150))
 
-    _add_particles(img, [a1, a2], rng)
-    _add_orbits(img, a1, rng)
-    _add_grid(img, a1 if rng.random() < 0.6 else a2, rng)
-    img.alpha_composite(_motif_layer(motif, a1, a2))
+    style_fn = rng.choice(BG_STYLES)
+    style_fn(img, a1, a2, rng)
+    if rng.random() < 0.5:
+        _add_orbits(img, a1 if rng.random() < 0.5 else a2, rng)
+
+    # мотив-глиф чуть гуляет по позиции/размеру от обложки к обложке
+    mcx = rng.randint(975, 1045)
+    mcy = rng.randint(320, 405)
+    ms = rng.randint(172, 206)
+    img.alpha_composite(_motif_layer(motif, a1, a2, cx=mcx, cy=mcy, s=ms))
 
     _vignette(img)
     _draw_headline(img, title, subtitle, a1)
@@ -407,13 +626,14 @@ def generate_cover(title: str, subtitle: str = "", palette=("#22d3ee", "#8b5cf6"
 
 
 if __name__ == "__main__":
-    # локальный тест: рендер всех мотивов
+    # локальный тест: рендер всех мотивов, по несколько раз — проверить разнообразие сцен
     import sys
     out_dir = sys.argv[1] if len(sys.argv) > 1 else "/tmp/covers"
     os.makedirs(out_dir, exist_ok=True)
     from news_topics import TOPICS
     for t in TOPICS[:6]:
-        png = generate_cover(t["title"], "Разбираемся простыми словами", t["palette"], t["motif"], seed=42)
-        with open(os.path.join(out_dir, f"{t['id']}.png"), "wb") as f:
-            f.write(png)
-        print(t["id"], len(png))
+        for i in range(3):
+            png = generate_cover(t["title"], "Разбираемся простыми словами", t["palette"], t["motif"], seed=1000 + i)
+            with open(os.path.join(out_dir, f"{t['id']}_{i}.png"), "wb") as f:
+                f.write(png)
+        print(t["id"], "x3 done")

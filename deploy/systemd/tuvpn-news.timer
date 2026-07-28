@@ -1,10 +1,10 @@
 [Unit]
-Description=TuVPN News Bot — предложки с 09:00 до 00:00 МСК каждые 3 часа
+Description=TuVPN News Bot — предложки 3 раза в день (09/14/19 МСК)
 Requires=tuvpn-news.service
 
 [Timer]
-# Сервер в UTC; слоты МСК 09,12,15,18,21,00 = UTC 06,09,12,15,18,21
-OnCalendar=*-*-* 06,09,12,15,18,21:00:00
+# Сервер в UTC; слоты МСК 09,14,19 = UTC 06,11,16
+OnCalendar=*-*-* 06,11,16:00:00
 RandomizedDelaySec=600
 Persistent=true
 

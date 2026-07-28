@@ -1082,7 +1082,7 @@ def subscription(client_uuid):
     expire_ts = get_client_expire(client_uuid)
     common_headers = {
         "profile-title": "TuVPN",
-        "profile-update-interval": "6",
+        "profile-update-interval": "1",
         "support-url": "https://t.me/MaxArtVPN_bot",
         "subscription-userinfo": f"upload=0; download=0; total=0; expire={expire_ts}",
     }

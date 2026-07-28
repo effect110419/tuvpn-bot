@@ -8,7 +8,7 @@ from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import (InlineKeyboardMarkup, InlineKeyboardButton,
                            ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove)
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter, TelegramForbiddenError
 import base64 as _b64
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -30,6 +30,11 @@ from aiogram.enums import ParseMode
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 sb = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+async def sb_exec(query):
+    """Выполняет sb.table(...)... запрос в отдельном потоке — supabase-py синхронный,
+    прямой вызов .execute() блокирует единственный event loop бота (критично при наплыве регистраций)."""
+    return await asyncio.to_thread(query.execute)
 
 # ══════════════════════════════
 # SUPABASE
@@ -251,7 +256,9 @@ async def give_referral_bonus(user_id, days, reason):
         sub = get_subscription(user_id)
         if sub:
             from proxy import issue_subscription as _issue
-            _res = _issue(user_id, sub.get("devices", 1), days)
+            # в отдельном потоке — issue_subscription синхронно ходит в 4 панели (~2с),
+            # блокировать event loop бота нельзя (иначе при наплыве регистраций всё встанет)
+            _res = await asyncio.to_thread(_issue, user_id, sub.get("devices", 1), days)
             logging.info(f"referral bonus issued for {user_id}: {_res}")
         else:
             try:
@@ -290,7 +297,7 @@ async def give_new_user_bonus(user_id, days=7):
     """Выдать новому юзеру подписку через issue_subscription — на все активные серверы."""
     try:
         from proxy import issue_subscription as _issue
-        res = _issue(user_id, 1, days)
+        res = await asyncio.to_thread(_issue, user_id, 1, days)
         logging.info(f"new user bonus for {user_id}: {res}")
         if res.get("success"):
             try:
@@ -316,6 +323,27 @@ async def give_new_user_bonus(user_id, days=7):
 # ПРОВЕРКА ИСТЁКШИХ ПОДПИСОК
 # ══════════════════════════════
 _check_expired_running = False  # защита от параллельного запуска (П.11)
+
+async def _throttled_notify(user_id, text, kb=None):
+    """Отправка с троттлингом и защитой от flood-control.
+    Возвращает True только при реальной доставке — флаги notified_* ставим
+    только на True, иначе при массовой волне истечений часть юзеров
+    молча теряет уведомление навсегда (флаг стоит, повтора нет).
+    Заблокировавших бота (TelegramForbiddenError) тоже считаем "доставлено" —
+    им всё равно больше нечего слать."""
+    try:
+        await bot.send_message(user_id, text, parse_mode="HTML", reply_markup=kb)
+        await asyncio.sleep(0.05)  # ~20 msg/s, с запасом от лимита Telegram 30 msg/s
+        return True
+    except TelegramRetryAfter as e:
+        logging.warning(f"flood control уведомление user={user_id}, retry_after={e.retry_after}")
+        await asyncio.sleep(e.retry_after + 0.5)
+        return False  # не ретраим тут же — подхватится следующим часовым циклом
+    except TelegramForbiddenError:
+        return True
+    except Exception as e:
+        logging.warning(f"_throttled_notify failed user={user_id}: {e}")
+        return False
 
 async def check_expired():
     """
@@ -358,69 +386,63 @@ async def check_expired():
                         except Exception as e:
                             logging.error(f"xui_toggle_client error: {e}")
                     if not sub.get("notified_expired"):
-                        try:
-                            await bot.send_message(
-                                user_id,
-                                "⚠️ <b>Ваша подписка TuVPN истекла</b>\n\n"
-                                "Продлите подписку чтобы восстановить доступ к VPN. "
-                                "Все ваши настройки сохранены — после оплаты ничего не нужно перенастраивать.",
-                                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                                    [InlineKeyboardButton(text="🛒 Продлить подписку", callback_data="buy")],
-                                    [InlineKeyboardButton(text="💬 Поддержка", url="https://t.me/TuVPNSupport_bot")],
-                                ])
-                            )
-                        except Exception as e:
-                            logging.warning(f"notify_expired failed user={user_id}: {e}")
-                        try:
-                            sb.table("subscriptions").update({"notified_expired": True}).eq("id", sub_id).execute()
-                        except Exception:
-                            pass
+                        sent = await _throttled_notify(
+                            user_id,
+                            "⚠️ <b>Ваша подписка TuVPN истекла</b>\n\n"
+                            "Продлите подписку чтобы восстановить доступ к VPN. "
+                            "Все ваши настройки сохранены — после оплаты ничего не нужно перенастраивать.",
+                            InlineKeyboardMarkup(inline_keyboard=[
+                                [InlineKeyboardButton(text="🛒 Продлить подписку", callback_data="buy")],
+                                [InlineKeyboardButton(text="💬 Поддержка", url="https://t.me/TuVPNSupport_bot")],
+                            ])
+                        )
+                        if sent:
+                            try:
+                                sb.table("subscriptions").update({"notified_expired": True}).eq("id", sub_id).execute()
+                            except Exception:
+                                pass
                     continue
 
                 # ЗА 1 ДЕНЬ ДО ИСТЕЧЕНИЯ
                 if days_left <= 1 and not sub.get("notified_1d"):
-                    try:
-                        await bot.send_message(
-                            user_id,
-                            f"⏰ <b>Завтра истекает ваша подписка TuVPN</b>\n\n"
-                            f"📅 Активна до: <b>{expires.strftime('%d.%m.%Y %H:%M')}</b>\n"
-                            f"📱 Тариф: {sub.get('devices', 1)} устр.\n\n"
-                            f"Продлите сейчас — и не останетесь без VPN. "
-                            f"Все ваши настройки сохранятся, ничего не нужно перенастраивать.",
-                            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                                [InlineKeyboardButton(text="🛒 Продлить", callback_data="buy")],
-                                [InlineKeyboardButton(text="◀️ В меню", callback_data="back")],
-                            ])
-                        )
-                    except Exception as e:
-                        logging.warning(f"notify_1d failed user={user_id}: {e}")
-                    try:
-                        sb.table("subscriptions").update({"notified_1d": True}).eq("id", sub_id).execute()
-                    except Exception:
-                        pass
+                    sent = await _throttled_notify(
+                        user_id,
+                        f"⏰ <b>Завтра истекает ваша подписка TuVPN</b>\n\n"
+                        f"📅 Активна до: <b>{expires.strftime('%d.%m.%Y %H:%M')}</b>\n"
+                        f"📱 Тариф: {sub.get('devices', 1)} устр.\n\n"
+                        f"Продлите сейчас — и не останетесь без VPN. "
+                        f"Все ваши настройки сохранятся, ничего не нужно перенастраивать.",
+                        InlineKeyboardMarkup(inline_keyboard=[
+                            [InlineKeyboardButton(text="🛒 Продлить", callback_data="buy")],
+                            [InlineKeyboardButton(text="◀️ В меню", callback_data="back")],
+                        ])
+                    )
+                    if sent:
+                        try:
+                            sb.table("subscriptions").update({"notified_1d": True}).eq("id", sub_id).execute()
+                        except Exception:
+                            pass
                     continue
 
                 # ЗА 3 ДНЯ ДО ИСТЕЧЕНИЯ
                 if days_left <= 3 and not sub.get("notified_3d"):
-                    try:
-                        await bot.send_message(
-                            user_id,
-                            f"⏳ <b>Через 3 дня истекает ваша подписка TuVPN</b>\n\n"
-                            f"📅 Активна до: <b>{expires.strftime('%d.%m.%Y')}</b>\n"
-                            f"📱 Тариф: {sub.get('devices', 1)} устр.\n\n"
-                            f"Продлите заранее чтобы не остаться без VPN. "
-                            f"Не забудьте — за продление друзей вы получаете +7 дней 🎁",
-                            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                                [InlineKeyboardButton(text="🛒 Продлить", callback_data="buy")],
-                                [InlineKeyboardButton(text="🤝 Позвать друга", callback_data="referral")],
-                            ])
-                        )
-                    except Exception as e:
-                        logging.warning(f"notify_3d failed user={user_id}: {e}")
-                    try:
-                        sb.table("subscriptions").update({"notified_3d": True}).eq("id", sub_id).execute()
-                    except Exception:
-                        pass
+                    sent = await _throttled_notify(
+                        user_id,
+                        f"⏳ <b>Через 3 дня истекает ваша подписка TuVPN</b>\n\n"
+                        f"📅 Активна до: <b>{expires.strftime('%d.%m.%Y')}</b>\n"
+                        f"📱 Тариф: {sub.get('devices', 1)} устр.\n\n"
+                        f"Продлите заранее чтобы не остаться без VPN. "
+                        f"Не забудьте — за продление друзей вы получаете +7 дней 🎁",
+                        InlineKeyboardMarkup(inline_keyboard=[
+                            [InlineKeyboardButton(text="🛒 Продлить", callback_data="buy")],
+                            [InlineKeyboardButton(text="🤝 Позвать друга", callback_data="referral")],
+                        ])
+                    )
+                    if sent:
+                        try:
+                            sb.table("subscriptions").update({"notified_3d": True}).eq("id", sub_id).execute()
+                        except Exception:
+                            pass
             # === СЕРИЯ НАПОМИНАНИЙ ПОСЛЕ ИСТЕЧЕНИЯ (П.25) ===
             # Для inactive-подписок отправляем напоминания через 1д/3д/7д если нет новой оплаты
             try:
@@ -451,11 +473,11 @@ async def check_expired():
                         continue
 
                     async def _send_reminder(uid, event_key, text, kb):
-                        try:
-                            await bot.send_message(uid, text, parse_mode="HTML", reply_markup=kb)
-                            sb.table("system_logs").insert({"event": event_key, "user_id": uid, "category": "reminder", "details": {"sub_id": sub_id}}).execute()
-                        except Exception as e:
-                            logging.warning(f"reminder send failed uid={uid}: {e}")
+                        if await _throttled_notify(uid, text, kb):
+                            try:
+                                sb.table("system_logs").insert({"event": event_key, "user_id": uid, "category": "reminder", "details": {"sub_id": sub_id}}).execute()
+                            except Exception as e:
+                                logging.warning(f"reminder log insert failed uid={uid}: {e}")
 
                     if hours_since >= 168 and "reminder_expired_7d" not in sent:
                         await _send_reminder(user_id, "reminder_expired_7d",
@@ -610,7 +632,7 @@ async def start(message: types.Message):
     campaign = None
     if len(args) > 1 and not args[1].isdigit():
         try:
-            r = sb.table("campaigns").select("*").eq("code", args[1]).eq("is_active", True).limit(1).execute()
+            r = await sb_exec(sb.table("campaigns").select("*").eq("code", args[1]).eq("is_active", True).limit(1))
             if r.data:
                 campaign = r.data[0]
         except Exception as e:
@@ -619,23 +641,25 @@ async def start(message: types.Message):
     user_id = message.from_user.id
     first_name = message.from_user.first_name or ""
 
-    is_new = register_user(user_id, message.from_user.username,
+    # register_user синхронный (2 запроса к Supabase) — уводим в поток, чтобы не блокировать
+    # event loop бота при наплыве регистраций (рекламная кампания с UTM-ссылкой)
+    is_new = await asyncio.to_thread(register_user, user_id, message.from_user.username,
                            first_name, message.from_user.last_name, referrer_id)
 # === UTM FIX 2026-05 === — process new user from campaign
     if is_new and campaign:
         try:
-            sb.table("users").update({"campaign_code": campaign["code"]}).eq("user_id", user_id).execute()
-            sb.table("campaign_clicks").insert({
+            await sb_exec(sb.table("users").update({"campaign_code": campaign["code"]}).eq("user_id", user_id))
+            await sb_exec(sb.table("campaign_clicks").insert({
                 "campaign_code": campaign["code"],
                 "user_id": user_id,
                 "is_new_user": True,
-            }).execute()
+            }))
             bonus_days = int(campaign.get("bonus_days") or 7)
 
             # UTM v2 — direct issue_subscription call (без HTTP, без admin auth)
             try:
                 from proxy import issue_subscription as _issue
-                _res = _issue(user_id, 1, bonus_days)
+                _res = await asyncio.to_thread(_issue, user_id, 1, bonus_days)
                 logging.info(f"UTM issue_subscription for {user_id}: {_res}")
             except Exception as ge:
                 logging.error(f"UTM issue_subscription failed: {ge}")
@@ -1167,7 +1191,7 @@ async def process_successful_payment(message: types.Message):
     # Выдаём подписку через issue_subscription
     try:
         from proxy import issue_subscription as _issue
-        result = _issue(user_id, devices, days)
+        result = await asyncio.to_thread(_issue, user_id, devices, days)
         logging.info(f"Stars issue_subscription for {user_id}: {result}")
     except Exception as e:
         logging.error(f"Stars issue_subscription failed: {e}")
@@ -1444,11 +1468,11 @@ async def howto_ios(callback: types.CallbackQuery):
     await safe_edit(
         callback,
         "🍏 <b>Подключение на iPhone / iPad</b>\n\n"
-        "1️⃣ Установите бесплатное приложение <b>Happ - Proxy Utility</b>\n"
-        "👉 <a href=\"https://apps.apple.com/ru/app/happ-proxy-utility/id6783623643\">Открыть в App Store</a>\n\n"
+        "1️⃣ Установите бесплатное приложение <b>INCY</b>\n"
+        "👉 <a href=\"https://apps.apple.com/ru/app/incy/id6756943388\">Открыть в App Store</a>\n\n"
         "2️⃣ Нажмите «🔗 Получить ссылку подключения» ниже\n\n"
         "3️⃣ Скопируйте ссылку\n\n"
-        "4️⃣ Откройте Happ → нажмите <b>➕</b> → <b>«Из буфера обмена»</b>\n\n"
+        "4️⃣ Откройте INCY → нажмите <b>➕</b> → <b>«Добавить из буфера обмена»</b>\n\n"
         "5️⃣ Выберите любой сервер и нажмите кнопку подключения 🟢\n\n"
         "6️⃣ Разрешите добавление VPN-конфигурации\n\n"
         "❓ Не получилось? Напишите @TuVPNSupport_bot",
@@ -1570,7 +1594,12 @@ async def cmd_status(message: types.Message):
 
 async def main():
     from aiogram.types import BotCommand
+    from concurrent.futures import ThreadPoolExecutor
     logging.basicConfig(level=logging.INFO)
+    # Дефолтный executor asyncio.to_thread на 1 vCPU — всего ~5 потоков.
+    # issue_subscription держит поток ~2-8с (последовательные HTTP-запросы к 4 VPN-панелям),
+    # при наплыве регистраций (рекламная кампания) 5 потоков — сразу очередь. Расширяем пул.
+    asyncio.get_event_loop().set_default_executor(ThreadPoolExecutor(max_workers=40))
     await bot.set_my_commands([
         BotCommand(command="start", description="🏠 Главное меню"),
         BotCommand(command="status", description="✅ Статус подписки"),
@@ -1759,7 +1788,7 @@ async def connection_link(callback: types.CallbackQuery):
         f"<code>{sub['sub_url']}</code>\n\n"
         f"👆 Нажмите на ссылку чтобы скопировать.\n\n"
         f"<b>Дальше всё просто:</b>\n"
-        f"1️⃣ Откройте Happ (или Hiddify на ПК)\n"
+        f"1️⃣ Откройте INCY на iPhone, Happ на Android (или Hiddify на ПК)\n"
         f"2️⃣ Нажмите ➕ → «Добавить из буфера обмена»\n"
         f"3️⃣ Выберите сервер и нажмите кнопку подключения 🟢\n\n"
         f"❓ Нет приложения или не получается? Нажмите «Как настроить» ниже.",
@@ -1783,7 +1812,7 @@ async def my_devices(callback: types.CallbackQuery):
         await callback.message.answer(
             f"📱 <b>Мои устройства (0/{device_limit})</b>\n\n"
             f"🔍 У вас пока нет подключённых устройств.\n\n"
-            f"Получите ссылку подписки и откройте её в Happ (iOS/Android) или Hiddify (ПК) — ваше устройство автоматически появится в этом списке.",
+            f"Получите ссылку подписки и откройте её в INCY (iOS) / Happ (Android) или Hiddify (ПК) — ваше устройство автоматически появится в этом списке.",
             reply_markup=kb
         )
         await callback.answer()
