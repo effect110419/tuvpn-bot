@@ -387,6 +387,85 @@ def xui_v3_write_inbound(session, url, iid, obj):
         return False, str(e)[:150]
 
 
+def _reality_apply_to_stream_settings(stream_settings_obj, sni):
+    """Патчит realitySettings внутри streamSettings: serverNames + донор (target).
+    Донор пишем только в 'target'; legacy-поле 'dest' удаляем, если есть (на fi
+    оно исторически указывало на другой домен, чем target/serverNames — чистый
+    рассинхрон, тащить его дальше незачем).
+    Важно: реальные клиенты всегда шлют ПРАВИЛЬНЫЙ SNI (он зашит в их конфиге),
+    поэтому SNI-mismatch поведение Reality (проксировать на донора или рвать
+    хендшейк) на них не сказывается — это влияет только на проверки/пробы с
+    произвольным SNI (см. monitor_daemon.check_tls_handshake, который раньше
+    ошибочно слал в SNI голый IP)."""
+    if stream_settings_obj.get("security") != "reality":
+        return False, "security != reality"
+    rs = stream_settings_obj.get("realitySettings")
+    if not isinstance(rs, dict):
+        return False, "realitySettings не найдены в inbound"
+    rs["serverNames"] = [sni]
+    rs["target"] = f"{sni}:443"
+    rs.pop("dest", None)
+    return True, "ok"
+
+
+def apply_reality_sni(server):
+    """Записывает SNI из БД (server['sni']) в realitySettings инбаунда на сервере + рестарт xray.
+    Возвращает (ok, message, restarted, restart_msg)."""
+    sni = (server.get("sni") or "").strip()
+    if not sni:
+        return False, "SNI не задан в базе", False, None
+
+    if server.get("api_token"):
+        session, url, iid, obj = xui_v3_read_inbound(server)
+        if not session or obj is None:
+            return False, "не удалось подключиться к панели (v3)", False, None
+        ss = obj.get("streamSettings")
+        ss = json.loads(ss) if isinstance(ss, str) else (ss or {})
+        changed, msg = _reality_apply_to_stream_settings(ss, sni)
+        if not changed:
+            return False, f"realitySettings: {msg}", False, None
+        obj["streamSettings"] = json.dumps(ss)
+        ok, wmsg = xui_v3_write_inbound(session, url, iid, obj)
+        if not ok:
+            return False, f"запись не удалась: {wmsg}", False, None
+        try:
+            r = session.post(f"{url}/panel/api/server/restartXrayService", timeout=20)
+            rj = r.json()
+            return True, f"SNI обновлён на {sni}", bool(rj.get("success")), rj.get("msg")
+        except Exception as e:
+            return True, f"SNI обновлён на {sni}, но рестарт не подтверждён", False, str(e)[:200]
+
+    # v2: cookie-сессия
+    session, srv = xui_session(server)
+    url_s = srv["panel_url"].rstrip("/")
+    iid_s = int(srv["inbound_id"])
+    r = session.get(f"{url_s}/xui/API/inbounds/list", timeout=15)
+    data = r.json()
+    full_inbound = None
+    for ib in data.get("obj", []):
+        if int(ib.get("id", 0)) == iid_s:
+            full_inbound = ib
+            break
+    if not full_inbound:
+        return False, "инбаунд не найден на сервере", False, None
+    ss = full_inbound.get("streamSettings", "{}")
+    ss = json.loads(ss) if isinstance(ss, str) else (ss or {})
+    changed, msg = _reality_apply_to_stream_settings(ss, sni)
+    if not changed:
+        return False, f"realitySettings: {msg}", False, None
+    full_inbound["streamSettings"] = json.dumps(ss)
+    r2 = session.post(f"{url_s}/panel/api/inbounds/update/{iid_s}", json=full_inbound, timeout=20)
+    result2 = r2.json()
+    if not result2.get("success"):
+        return False, f"запись не удалась: {result2.get('msg', '?')}", False, None
+    try:
+        r3 = session.post(f"{url_s}/panel/api/server/restartXrayService", timeout=20)
+        r3j = r3.json()
+        return True, f"SNI обновлён на {sni}", bool(r3j.get("success")), r3j.get("msg")
+    except Exception as e:
+        return True, f"SNI обновлён на {sni}, но рестарт не подтверждён", False, str(e)[:200]
+
+
 def _v3_patch_client(c, client_uuid, devices, expire_ms):
     """Обновляет поля клиента в inbound-объекте."""
     c["id"] = client_uuid
@@ -1415,6 +1494,25 @@ def admin_cleanup_all_servers():
             _sync_jobs[job_id].update({"status": "done", "servers": per_server})
     threading.Thread(target=_run_all, daemon=True).start()
     return jsonify({"success": True, "job_id": job_id, "status": "running", "total_servers": len(servers)})
+
+
+@app.route('/admin-api/servers/<int:server_id>/apply_reality', methods=['POST', 'OPTIONS'])
+def admin_apply_reality(server_id):
+    """Записать SNI/Reality-настройки из БД на сам VPN-сервер (serverNames + донор) + рестарт xray."""
+    if request.method == 'OPTIONS':
+        return make_response('', 204)
+    server = get_server_by_id(server_id)
+    if not server:
+        return jsonify({"success": False, "error": "server not found"}), 404
+    if not server.get("is_active"):
+        return jsonify({"success": False, "error": "server is not active"}), 400
+    try:
+        ok, message, restarted, restart_msg = apply_reality_sni(server)
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)[:300]}), 500
+    if not ok:
+        return jsonify({"success": False, "error": message})
+    return jsonify({"success": True, "message": message, "restarted": restarted, "restart_msg": restart_msg})
 
 
 # === END SERVER SYNC ===

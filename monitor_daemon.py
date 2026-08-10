@@ -107,11 +107,16 @@ def check_tcp(ip, port, timeout=5):
         return False, None
 
 
-def check_tls_handshake(host, port, timeout=6):
+def check_tls_handshake(host, port, sni=None, timeout=6):
     """TLS-хендшейк до host:port. Сильнее голого TCP-коннекта: ловит зависший
     процесс (порт слушает, но handshake не завершается), а не только 'мёртвый' порт.
     Это и есть реальный сигнал "VPN доступен пользователю" — Reality отвечает
     на TLS ClientHello так же, как обычный HTTPS-сайт.
+    sni — какое имя слать в ClientHello (server_hostname); по умолчанию host.
+    Важно передавать настоящий SNI-донор (server['sni']), а не голый IP: если
+    Reality сконфигурирован строго (serverNames без запасного 'dest'-фоллбека),
+    он рвёт хендшейк на несовпадающем SNI как невалидный трафик — так уже давало
+    ложный DOWN, когда сюда прилетал IP вместо реального домена.
     Возвращает (ok, latency_ms)."""
     t0 = time.time()
     try:
@@ -119,7 +124,7 @@ def check_tls_handshake(host, port, timeout=6):
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
         with socket.create_connection((host, port), timeout=timeout) as sock:
-            with ctx.wrap_socket(sock, server_hostname=host) as ssock:
+            with ctx.wrap_socket(sock, server_hostname=(sni or host)) as ssock:
                 _ = ssock.version()
         return True, int((time.time() - t0) * 1000)
     except Exception:
@@ -231,7 +236,7 @@ def check_one(server):
 
     panel_up, panel_latency, clients, panel_err = xui_check(server)
     tcp_ok, _ = check_tcp(ip, port)                            # порт открыт?
-    service_up, service_lat = check_tls_handshake(ip, port)    # реальный сигнал "VPN работает"
+    service_up, service_lat = check_tls_handshake(ip, port, sni=sni)    # реальный сигнал "VPN работает"
     target_ok, target_lat = check_tls_handshake(sni, 443) if sni else (None, None)
 
     _handle_alert(code, name, service_up, panel_err)

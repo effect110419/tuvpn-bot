@@ -133,7 +133,7 @@ DIRECT_DOMAINS = [
     # Сбер услуги
     "domain:sberprime.ru", "domain:sberlogistics.ru",
     "domain:sberhealth.ru", "domain:sberauto.com",
-    "domain:sbol.ru", "domain:sber.ru",
+    "domain:sbol.ru",
     "domain:sberdevices.ru", "domain:salutejazz.ru",
     "domain:sberid.ru", "domain:sberbusiness.live",
     # Тинькофф расширенно
@@ -152,6 +152,57 @@ DIRECT_DOMAINS = [
     "domain:cian.ru", "domain:irr.ru",
     "domain:drom.ru",
     "domain:2gis.ru", "domain:zoon.ru",
+    # === VPN-DETECT FIX 2026-08: МАКС/Госуслуги/банки/маркетплейсы, расширение ===
+    # МАКС/VK детектит VPN не только по своим доменам, а по рассинхрону —
+    # часть его собственных запросов (в т.ч. к внутренней CDN/API-инфраструктуре
+    # VK) должна идти тем же путём, что и основной трафик. Полное покрытие
+    # VK/MAX-инфраструктуры критично, иначе даже с "max.ru" в DIRECT приложение
+    # ловит VPN через побочные вызовы к недостающим поддоменам.
+    "domain:tamtam.chat", "domain:mvk.com",
+    "domain:vkmessenger.app", "domain:vkmessenger.com",
+    "domain:vkgo.app", "domain:vklive.app", "domain:vk.team",
+    "domain:vk-cdn.me", "domain:cdn-vk.ru",
+    "domain:vkuseraudio.com", "domain:vkuseraudio.ru", "domain:vkusercdn.ru",
+    "domain:vkuserlive.net", "domain:vkuserphoto.ru",
+    "domain:vkuservideo.com", "domain:vkuservideo.net", "domain:vkuservideo.ru",
+    "domain:vkcache.com", "domain:vkcloud-static.ru",
+    "domain:vk-analytics.ru", "domain:vk-apps.com", "domain:vk-apps.ru",
+    "domain:vk.cc", "domain:vk.company", "domain:vk.design",
+    "domain:vk.link", "domain:vk.me", "domain:vkontakte.ru",
+    # Госуслуги / федеральные гос. сервисы — расширение
+    "domain:gu-st.ru", "domain:government.ru", "domain:gov.ru",
+    "domain:mgfoms.ru", "domain:cikrf.ru", "domain:ebs.ru",
+    "domain:goskey.ru", "domain:grfc.ru", "domain:izbirkom.ru",
+    "domain:kremlin.ru", "domain:mil.ru",
+    # Банки — расширение (платёжная инфраструктура, доп. бренды)
+    "domain:tbank-online.com", "domain:psbank.ru",
+    "domain:sbpgpb.ru", "domain:gazprombank.tech", "domain:gazprompay.ru",
+    "domain:gorodpay.ru", "domain:tochka.com", "domain:tochka-tech.com",
+    "domain:moex.com", "domain:nbki.ru", "domain:banki.ru",
+    "domain:mirpayonline.ru", "domain:mtsdengi.ru", "domain:netmonet.co",
+    "domain:dbo-dengi.online", "domain:credistory.ru", "domain:finuslugi.ru",
+    "domain:domclick.ru",
+    # Ozon / Wildberries — CDN и доп. домены
+    "domain:ozone.ru", "domain:ozonusercontent.com",
+    # Ритейл РФ (маркетплейсы/сети — по аналогии с ВБ/Озон)
+    "domain:5ka.ru", "domain:chizhik.club", "domain:magnit.ru",
+    "domain:perekrestok.ru", "domain:lenta.com", "domain:dixy.ru",
+    "domain:x5.ru", "domain:x5.tech", "domain:vkusvill.ru",
+    "domain:dns-shop.ru", "domain:lemanapro.ru", "domain:fix-price.com",
+    "domain:kazanexpress.ru", "domain:megamarket.ru", "domain:megamarket.tech",
+    # Яндекс — критичная инфраструктура (CDN/метрика, без них многие
+    # интегрированные РФ-сервисы не дорисовываются/не работают корректно)
+    "domain:mail.ru", "domain:yastatic.net", "domain:yastat.net",
+    "domain:turbopages.org", "domain:yandexcloud.net", "domain:yandexmetrica.com",
+    "domain:naydex.net", "domain:yandexadexchange.net",
+    "domain:imgsmail.ru", "domain:webvisor.com", "domain:webvisor.org",
+    "domain:rambler.ru",
+    # Разное популярное РФ
+    "domain:kaspersky.ru", "domain:kaspersky.com",
+    "domain:dellin.ru", "domain:tutu.ru", "domain:tu-tu.ru",
+    "domain:jivo.ru", "domain:jivochat.com", "domain:jivosite.com",
+    "domain:bitrix24.ru", "domain:1c.ru", "domain:1c-bitrix.ru", "domain:1cfresh.com",
+    "domain:dnevnik.ru",
 ]
 
 # Только проверенные категории geosite (точно есть в стандартной базе)
